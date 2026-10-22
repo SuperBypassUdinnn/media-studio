@@ -1,0 +1,28 @@
+# Local tooling
+.codegraph/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# Media scratch space and render output
+out/
+*.log
+
+# Blender
+*.blend1
+*.blend2
+
+# Local environment
+.env
+secrets.env
