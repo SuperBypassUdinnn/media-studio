@@ -1,0 +1,30 @@
+slug: {{slug}}
+title: {{title}}
+status: draft
+
+deliverables:
+  - id: master-16x9
+    kind: video
+    resolution: 1920x1080
+    fps: 60
+    duration: 20.0
+    loudness_lufs: -14.0
+    container: mp4
+
+timeline:
+  - { start: 0.0, end: 2.7, shot: front-reveal, cue: ambient-drone }
+
+brand:
+  palette:
+    primary: "#0B3D2E"
+    accent: "#C8A24A"
+    ink: "#101010"
+  fonts:
+    heading: Inter
+    body: Inter
+
+assets: {}
+
+budget:
+  max_asset_bytes: 209715200
+  max_project_bytes: 21474836480

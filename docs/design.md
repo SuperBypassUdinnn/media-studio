@@ -59,6 +59,8 @@ chosen. Section 11 records the interview itself.
 | D29 | Git handling | Private GitHub repository, pushed per stage, pull requests only on request | Traceable progress without unsolicited PRs |
 | D30 | Loudness target | Recorded audio normalized to -14 LUFS by default, overridable per project | YouTube and social first, broadcast on demand |
 | D31 | Implementation ordering | Design doc first, implementation in later sessions | Keeps the locked design reviewable before code exists |
+| D32 | Footage triage | Local index and ranking run first (metadata, technical rejects, transcript, on-screen text, embeddings); the model reviews only batched contact sheets and a ranked shortlist, and decisions are cached by content hash | Selecting shots from a large library stays fast and token-bounded |
+| D33 | Preset and template library | Engine-native recipes (MLT, FFmpeg, Blender, LV2, Inkscape SVG) in a searchable registry, plus licensed free packs through the asset ledger; After Effects and Premiere templates are out of scope | Free transitions, video effects, and audio effects that actually execute headless |
 
 ## 3. Architecture
 
@@ -80,19 +82,24 @@ Three layers, each with one responsibility.
 | Blender MCP servers | `sandraschi/blender-mcp` (headless), `ahujasid/blender-mcp` (GUI fallback) | Upstream, installed via `uvx` or clone |
 | `stocky` | Existing Unsplash photo MCP server | Existing |
 
-### 3.2 Monorepo layout (planned)
+### 3.2 Monorepo layout
 
 ```
 media-studio/
   docs/design.md            this document
-  src/media_studio/         Python package: CLI, MLT writer, runners, ledger, asset clients
-  src/media_studio/mcp/     asset MCP server entry point
+  src/media_studio/         Python package: CLI, MLT writer, runners, ledger, asset clients, presets
+  src/media_studio/mcp/     our asset MCP server entry point (phase 1)
   templates/project/        project scaffold copied by /media-new
   tests/                    pytest suites plus fixture assets
   scripts/selftest.sh       end-to-end selftest behind /studio-test
+  scripts/keys-wizard.sh    interactive key registration into secrets.env
+  scripts/mcp_probe.py      stdio MCP handshake used by the selftest
 ```
 
-### 3.3 Config surface (planned additions to `~/.config/opencode`)
+Implemented in phase 0: `docs/design.md`, `src/media_studio/{cli,tools,project}.py`,
+`templates/project/`, `tests/`, and the three scripts. The MCP server package is phase 1.
+
+### 3.3 Config surface (additions to `~/.config/opencode`)
 
 | Type | Name | Purpose |
 | --- | --- | --- |
@@ -104,10 +111,13 @@ media-studio/
 | Command | `/video`, `/3d`, `/design`, `/assets` | Entry points per domain |
 | Command | `/media-new` | Scaffold a project from the template and verify tooling |
 | Command | `/studio-test` | pytest plus end-to-end selftest with a metric summary per path |
-| MCP | `assets` | Our asset MCP server (video, audio, music, design sources plus the ledger) |
-| MCP | `assets-3d` | Self-hosted `3d-asset-server` over stdio |
-| MCP | `blender-headless` | `sandraschi/blender-mcp` |
+| MCP | `assets` | Our asset MCP server (video, audio, music, design sources plus the ledger); registered in phase 1 |
+| MCP | `assets-3d` | Self-hosted `3d-asset-server` over stdio; registered and verified in phase 0 |
+| MCP | `blender-headless` | `sandraschi/blender-mcp`; registered in phase 1 |
 | MCP | `blender-gui` | `ahujasid/blender-mcp`, kept disabled unless the fallback is needed |
+
+MCP entries that have no working server yet stay commented out in `opencode.jsonc` so startup
+is never delayed by a command that cannot answer.
 
 Existing skills stay authoritative for their areas and must not be duplicated:
 `media-context` (reading video and audio), `transcribe-diarize`, `youtube-subs`,
@@ -198,6 +208,10 @@ Rules:
 - Deduplication is by SHA256; a repeated file is linked, not downloaded twice.
 - An asset with unknown or missing license is quarantined under `assets/_unverified/` and
   is never referenced by a deliverable.
+- Git tracks `assets/index.json`, `CREDITS.md`, and the small brand-kit assets under
+  `assets/design/` including their sidecars. Bulk media under `assets/{3d,video,audio,music}/`
+  stays untracked, so its sidecars stay with it rather than in the repository; the index carries
+  the same fields for everything that is tracked.
 
 ### 4.3 Disk policy
 
@@ -273,6 +287,57 @@ must reproduce the same result.
   directly, keeping the coupling in one place.
 - Fallback when a venv is broken: FFmpeg `arnndn` and `afftdn`, which always exist.
 
+### 5.5 Footage triage (token-bounded shot selection)
+
+Choosing shots from a large footage library must never stream frames into the model. The path is
+a funnel, and only the last two stages cost tokens.
+
+1. Technical index, no model: `ffprobe` metadata, scene detection, `blackdetect`, `signalstats`
+   exposure and clipping, Laplacian-variance sharpness, `vidstabdetect` shake, pHash duplicate
+   grouping, and SHA256 identity. Every reject is recorded with a reason and is not retried.
+2. Clip card, cheap text: duration, resolution, fps, motion and sharpness scores, exposure,
+   dominant palette against the brand tokens, speech presence, transcript with timecodes, and
+   on-screen text through OCR.
+3. Ranking without a language model: local CLIP embeddings compare the concept text with
+   scene-boundary keyframes and keep the top N, default 50.
+4. Batched visual review: contact sheets of at most 20 labelled cells, each cell carrying an id
+   and a timecode. The model answers one JSON verdict per cell (`in`, `hold`, `out`, score,
+   reason). One sheet replaces twenty separate images.
+5. Second pass for `hold` only: a three to four frame strip per finalist at higher resolution,
+   for motion and continuity judgement.
+6. Persistence: `footage/index.jsonl`, `footage/sheets/*.jpg`, and `footage/decisions.jsonl`.
+   Decisions are keyed by content hash and concept hash, so an unchanged concept re-runs at zero
+   tokens and no clip is reviewed twice.
+7. Parallel review: independent sheets may go to subagents that return compressed JSON, so the
+   parent session never receives pixels.
+
+The local `media` MCP server already produces frames, OCR, and transcripts with caching, and this
+path consumes it instead of duplicating it. Rules: review proxies at 480p, prefer scene
+boundaries over uniform sampling, and never modify the originals.
+
+### 5.6 Preset and template library
+
+Most free templates found online are `.mogrt`, `.prproj`, or `.aep`, which this stack cannot
+execute. The library therefore covers three classes.
+
+1. Engine-native recipes, owned here and versioned with the code: transitions, video effects,
+   audio chains, 3D node groups, and title styles expressed as MLT fragments, FFmpeg
+   filtergraphs, Blender node groups, LV2 chains, and parameterized Inkscape SVG. Each preset is
+   a `recipe.yaml` (id, intent tags, engine, parameter schema with ranges, license, provenance)
+   plus its implementation, a preview, and a snapshot test.
+2. Licensed free packs, acquired through the ledger of section 6: CC0 LUT packs, overlay and
+   light-leak elements, sound effect packs, OFL fonts, MIT icon sets, and public-domain
+   illustrations. Attribution and provenance follow the same sidecar rules.
+3. Already-installed free effect plugins: Calf, LSP, x42, Zam, Dragonfly, DeepFilterNet, and the
+   FFmpeg built-ins that form the substrate for class 1.
+
+Discovery is local and textual: a search by intent returns an id, the parameter schema, and a
+preview path, so a preset costs tens of tokens instead of a documentation page. `project.yaml`
+references presets by id with parameters under `effects:`, which keeps projects reproducible.
+
+Out of scope: executing After Effects or Premiere templates, redistributing third-party
+templates, and paid marketplaces.
+
 ## 6. Asset acquisition
 
 ### 6.1 Source matrix (batch 1)
@@ -287,6 +352,7 @@ must reproduce the same result.
 | Images | Stocky (Unsplash, existing), Pexels Images, Pixabay Images, Openverse Images | Pexels and Pixabay keys; Openverse keyless with rate limits |
 | Vectors and icons | Openclipart, Iconify API (200k+ icons), Simple Icons | Keyless |
 | Fonts | Google Fonts (repository and API), Fontshare | Keyless |
+| Preset and template packs | CC0 LUT packs, overlay and light-leak element packs, sound effect packs, OFL font files, Iconify icon sets, unDraw illustrations | Keyless; staged with license sidecars as in section 5.6 |
 | Canva templates and assets | Canva remote MCP | Phase 2, OAuth app registration |
 
 ### 6.2 Rules
@@ -372,7 +438,15 @@ Hard-won facts from the existing pipeline that the new runners must encode.
 - Create the monorepo skeleton, project template, and config entries.
 - This design document.
 
-### Phase 1 - three thin paths plus asset search
+As built on 2026-10-24: `ms` exposes `doctor` (with `--deep` for the Vulkan ICD, both torch
+virtualenvs, and free disk) and `project init`; the project template carries `project.yaml` plus
+the fixed directory layout; 27 pytest cases pass; `ruff check`, `ruff format --check`, and
+`shellcheck` are clean; `scripts/selftest.sh` passes every phase 0 check, including a live stdio
+handshake against `3d-asset-server` that returns its four tools. The key wizard is written but
+awaits the user's interactive run, and the upstream web UI is deliberately not built because the
+MCP path does not need it.
+
+### Phase 1 - three thin paths plus assets, triage, and presets
 
 | Path | Acceptance criteria |
 | --- | --- |
@@ -380,6 +454,8 @@ Hard-won facts from the existing pipeline that the new runners must encode.
 | `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive |
 | `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB |
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
+| Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
+| Preset library | Every registered preset applies to a fixture timeline or scene and renders without manual adjustment, with a snapshot test inside tolerance; a pack downloaded from a free source lands with a complete license sidecar and appears in `CREDITS.md` |
 
 ### Phase 2 - Canva
 
@@ -453,14 +529,38 @@ Decisions were reached in six rounds of a structured interview on 2026-10-22 and
 | 6 | Loudness default | -14 LUFS with per-project override |
 | 6 | Selftest surface | Separate `/studio-test` command |
 
-## 13. Open items for phase 0
+## 13. Items resolved during phase 0
 
-1. Confirm the `3d-asset-server` run mode (pnpm build plus stdio MCP, or its HTTP MCP
-   endpoint) and whether Docker is preferred over native Node.
-2. Decide whether `assimp` is installed from the distribution (requires root, so through the
-   `root-access` skill) or built into a virtualenv.
-3. Define the exact fixture set for the selftest: a short clip, a voice-over sample, a music
-   track, a GLB and an STL model, and a brand kit.
-4. Decide whether the monorepo ships a Python-only implementation or adds a small Node
-   dependency for `gltf-transform`.
-5. Choose how CC-BY music is surfaced in the report when no CC0 alternative exists.
+1. `3d-asset-server` run mode: native Node from a shallow clone at
+   `~/.clone/Github/3d-asset-server`, built with `npm run build:server`. The web UI build is
+   skipped because its `web/` workspace dependencies are not installed and the MCP path does not
+   need the UI. It is registered as the stdio MCP server `assets-3d` running
+   `node ~/.clone/Github/3d-asset-server/dist/cli.js mcp`. Verified 2026-10-24: `initialize` and
+   `tools/list` answer with `search_assets`, `get_asset`, `download_asset`, and
+   `list_providers`. Docker is not used.
+2. `assimp` is not installed from the distribution. Geometry repair goes through Blender's
+   importer plus the `trimesh` and `pymeshlab` Python path first; the distribution package is
+   only revisited if a format proves impossible that way, and then through the `root-access`
+   skill.
+3. Fixture set for the selftest: a 6 s 1080p60 clip with motion and a still frame, a 12 s
+   voice-over WAV at 48 kHz, a 30 s CC0 music track, one textured GLB, one STL, and a brand kit
+   (palette, two OFL fonts, one SVG logo). Fixtures live in `tests/fixtures` with license
+   sidecars; anything large is generated by script rather than committed.
+4. Implementation language: Python only, with no new Node dependency. `gltf-transform` runs
+   through `npx --yes @gltf-transform/cli` from the same Node toolchain as `3d-asset-server`,
+   with the resolved version recorded by `ms doctor`.
+5. CC-BY music is allowed only with a complete sidecar, `CREDITS.md` marking it
+   attribution-required, and a warning line in the deliverable report. CC0 stays the default for
+   YouTube-bound projects, and `budget.require_cc0_music: true` turns the preference into a hard
+   rule.
+
+## 14. Open items for phase 1
+
+1. Funnel thresholds: the shortlist size and the sheet cell count need fixture-measured values
+   rather than the current defaults of 50 clips and 20 cells.
+2. Preset registry size for the first cut: a target of twelve video transitions, eight video
+   effects, six audio chains, four 3D node groups, and three title styles.
+3. Transport for our own asset MCP server: stdio like `assets-3d`, or its HTTP endpoint with the
+   ledger behind it.
+4. Whether clip cards should carry CLIP scores from a local model already present on disk, or a
+   separate small embedding model installed for this purpose.

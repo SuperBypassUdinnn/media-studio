@@ -4,28 +4,45 @@ A headless, script-driven media production toolkit for the OpenCode agent on thi
 video and audio editing, 3D model editing and rendering, graphic design, and acquisition of
 free licensed assets.
 
-Status: locked design, implementation not started. The authoritative specification is
+Status: phase 0 implemented. The authoritative specification is
 [`docs/design.md`](docs/design.md).
 
-## What it will provide
+Phase 0 ships the project convention and the environment gate: `ms doctor`, `ms project init`,
+the project template, the interactive key wizard, and a selftest that includes a live stdio MCP
+handshake against `3d-asset-server`. Timeline authoring, rendering, the asset ledger, footage
+triage, and the preset library are specified and belong to phase 1.
+
+## What it provides
 
 | Area | Surface |
 | --- | --- |
 | Video and audio | MLT XML generation rendered by `melt`, FFmpeg encoding, loudness normalization, music ducking, ffprobe QC |
-| 3D | Blender CLI plus a headless Blender MCP, `gltf-transform`, `assimp`, `trimesh`/`pymeshlab` conversion and repair, GPU render and QC |
+| Footage triage | Local index and ranking first, batched contact sheets for the model, cached decisions |
+| 3D | Blender CLI plus a headless Blender MCP, `gltf-transform`, `trimesh`/`pymeshlab` conversion and repair, GPU render and QC |
 | Design | Brand tokens, SVG templates, Inkscape and ImageMagick export, legibility and overflow checks |
 | Assets | Self-hosted 3D aggregator plus in-house clients for video, audio, music, images, icons, and fonts, with per-asset license sidecars |
+| Presets | Engine-native transitions, video and audio effects, 3D node groups, and title styles in a searchable registry |
 | Audio neural | DeepFilterNet denoise and demucs stem separation behind one wrapper CLI |
 
-## Planned layout
+## Layout
 
 ```
 docs/design.md            full specification and decision record
-src/media_studio/         CLI, MLT writer, runners, ledger, asset clients
-src/media_studio/mcp/     asset MCP server
+src/media_studio/         CLI today; MLT writer, runners, ledger, and asset clients in phase 1
 templates/project/        project scaffold used by /media-new
 tests/                    pytest suites and fixtures
 scripts/selftest.sh       end-to-end selftest behind /studio-test
+scripts/keys-wizard.sh    interactive key registration into secrets.env
+scripts/mcp_probe.py      stdio MCP handshake used by the selftest
+```
+
+## Using it
+
+```bash
+uv venv && uv pip install -e . pytest        # once, inside the checkout
+.venv/bin/python -m media_studio.cli doctor --deep
+.venv/bin/python -m media_studio.cli project init my-project
+bash scripts/selftest.sh
 ```
 
 ## Requirements on this machine

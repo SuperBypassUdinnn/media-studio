@@ -1,0 +1,25 @@
+# Generated output and scratch space
+out/
+*.mlt
+*.kdenlive
+*.blend1
+*.blend2
+*.exr
+
+# Raw sources stay out of git entirely
+sources/
+
+# Bulk media stays out of git: the files are large and replaceable. The tracked
+# record of what they are and where they came from is assets/index.json plus
+# assets/CREDITS.md, both generated from the sidecars.
+#
+# Note the trailing slash: assets/3d/ is ignored as a directory, and git cannot
+# re-include individual files inside an ignored directory, so no negation for
+# nested sidecars is attempted here.
+assets/3d/
+assets/video/
+assets/audio/
+assets/music/
+
+# Brand-kit assets under assets/design/ stay tracked, sidecars included, because
+# they are small and they are inputs to every deliverable.
