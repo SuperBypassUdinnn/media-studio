@@ -9,6 +9,14 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .ledger import (
+    ASSET_CLASSES,
+    LedgerError,
+    build_index,
+    stage_asset,
+    write_index_and_credits,
+)
+from .manifest import ManifestError, load_project, validate_project
 from .project import ProjectError, default_project_root, scaffold_project
 from .tools import CheckResult, DoctorReport, collect_toolchain, deep_checks, path_order_problem
 
@@ -44,6 +52,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init.add_argument("--title", default=None, help="human title for the project")
     init.set_defaults(func=cmd_project_init)
+
+    validate = project_sub.add_parser("validate", help="check a manifest and the assets it names")
+    validate.add_argument("project", nargs="?", help="project path or slug (default: here)")
+    validate.set_defaults(func=cmd_project_validate)
+
+    assets = subparsers.add_parser("assets", help="stage assets and maintain the ledger")
+    assets_sub = assets.add_subparsers(dest="assets_command", required=True)
+
+    stage = assets_sub.add_parser("stage", help="copy or download one asset with its sidecar")
+    stage.add_argument("project", help="project path or slug")
+    stage.add_argument("--class", dest="class_name", required=True, choices=ASSET_CLASSES)
+    source = stage.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file", type=Path, help="local file to copy in")
+    source.add_argument("--url", help="URL to download")
+    stage.add_argument("--license", dest="license_text", required=True, help="licence wording")
+    stage.add_argument("--attribution", default="", help="credit line, when required")
+    stage.add_argument("--source-url", default="", help="page the asset came from")
+    stage.add_argument("--provider", default="", help="provider name")
+    stage.add_argument(
+        "--sha256",
+        dest="expected_sha256",
+        default=None,
+        help="known hash of the asset; skips the transfer when it is already staged",
+    )
+    stage.add_argument(
+        "--allow-noncommercial",
+        action="store_true",
+        help="permit a licence that forbids commercial use (personal work only)",
+    )
+    stage.set_defaults(func=cmd_assets_stage)
+
+    index = assets_sub.add_parser("index", help="regenerate assets/index.json and CREDITS.md")
+    index.add_argument("project", help="project path or slug")
+    index.set_defaults(func=cmd_assets_index)
+
+    listing = assets_sub.add_parser("list", help="show staged assets and their licences")
+    listing.add_argument("project", help="project path or slug")
+    listing.set_defaults(func=cmd_assets_list)
 
     return parser
 
@@ -101,6 +147,123 @@ def cmd_project_init(args: argparse.Namespace) -> int:
     print(f"  slug:  {created.slug}")
     print(f"  title: {created.title}")
     print("next: edit project.yaml, then run the /assets workflow to stage licensed assets")
+    return EXIT_OK
+
+
+def cmd_project_validate(args: argparse.Namespace) -> int:
+    """Validate a manifest and report every problem it has."""
+
+    try:
+        project = load_project(args.project)
+    except ManifestError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    report = validate_project(project)
+    print(f"{project.slug}: {len(report.errors)} error(s), {len(report.warnings)} warning(s)")
+    for problem in report.errors:
+        print(f"  error:   {problem}")
+    for problem in report.warnings:
+        print(f"  warning: {problem}")
+    return EXIT_OK if report.ok else EXIT_FAILURE
+
+
+def cmd_assets_stage(args: argparse.Namespace) -> int:
+    """Stage one asset into the project and write its sidecar."""
+
+    try:
+        project = load_project(args.project)
+        staged = stage_asset(
+            project,
+            class_name=args.class_name,
+            license_text=args.license_text,
+            source_url=args.source_url,
+            attribution=args.attribution,
+            provider=args.provider,
+            local_file=args.file,
+            url=args.url,
+            expected_sha256=args.expected_sha256,
+            allow_noncommercial=args.allow_noncommercial,
+        )
+    except (ManifestError, LedgerError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    if staged.duplicate_of:
+        print(f"already staged: {staged.relative} (duplicate of {staged.duplicate_of})")
+    else:
+        print(f"staged {staged.relative}")
+    print(f"  licence:  {staged.spdx} ({staged.license_label})")
+    print(f"  sha256:   {staged.sha256}")
+    print(f"  bytes:    {staged.size_bytes}")
+    if staged.quarantined:
+        print(
+            "  warning:  licence unknown, quarantined under assets/unverified/; "
+            "no deliverable may reference it",
+            file=sys.stderr,
+        )
+    elif staged.attribution_required and not staged.attribution:
+        print(
+            "  warning:  this licence requires attribution and no credit line was recorded",
+            file=sys.stderr,
+        )
+    return EXIT_OK
+
+
+def cmd_assets_index(args: argparse.Namespace) -> int:
+    """Regenerate the derived index and credits file."""
+
+    try:
+        project = load_project(args.project)
+        index_path, credits_path, index = write_index_and_credits(project)
+    except (ManifestError, LedgerError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    totals = index.totals
+    quota = index.quota
+    print(
+        f"wrote {index_path.relative_to(project.root)} and {credits_path.relative_to(project.root)}"
+    )
+    print(
+        f"  assets: {totals.count} staged, {totals.attribution_required} needing credit, "
+        f"{totals.quarantined} quarantined"
+    )
+    print(
+        f"  bytes: {quota.project_bytes} of {quota.max_project_bytes} allowed"
+        f"{'' if quota.ok else ' (over budget)'}"
+    )
+    if index.unlicensed:
+        print(f"  warning: {len(index.unlicensed)} file(s) have no sidecar")
+    missing_credit = [record for record in index.assets if record.attribution_missing]
+    if missing_credit:
+        print(
+            f"  warning: {len(missing_credit)} asset(s) need a credit line and none was recorded:"
+        )
+        for record in missing_credit:
+            print(f"    {record.path} ({record.spdx})")
+    return EXIT_OK if quota.ok else EXIT_FAILURE
+
+
+def cmd_assets_list(args: argparse.Namespace) -> int:
+    """List staged assets with their licence and attribution duty."""
+
+    try:
+        project = load_project(args.project)
+    except ManifestError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    index = build_index(project)
+    if not index.assets:
+        print("no staged assets; use `ms assets stage` after picking a candidate")
+        return EXIT_OK
+
+    print(f"{'path':<48} {'licence':<14} {'credit':<7} class")
+    for record in index.assets:
+        credit = "yes" if record.attribution_required else "no"
+        print(f"{record.path:<48} {record.spdx:<14} {credit:<7} {record.class_name}")
+    print(f"\n{index.totals.count} asset(s), {index.totals.bytes} bytes staged")
     return EXIT_OK
 
 

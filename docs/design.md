@@ -201,13 +201,15 @@ Rules:
 - Every asset file gets a sidecar `<file>.license` in REUSE style:
   `SPDX-FileCopyrightText`, `SPDX-License-Identifier`, `Source-URL`, `Attribution`,
   `Retrieved-At`, `SHA256`.
-- `assets/index.json` is derived from sidecars and holds the same fields plus class,
-  dimensions or duration, provider, and duplicate groups.
+- `assets/index.json` is derived from sidecars and holds the same fields plus class, byte size,
+  provider, duplicate groups, and the budget state. Media dimensions and duration join the index
+  once the probe lands in phase 1.
 - `CREDITS.md` is generated from the index, listing attribution-required assets with the
   exact credit line.
 - Deduplication is by SHA256; a repeated file is linked, not downloaded twice.
-- An asset with unknown or missing license is quarantined under `assets/_unverified/` and
-  is never referenced by a deliverable.
+- An asset with unknown or missing license is quarantined under `assets/unverified/` and
+  is never referenced by a deliverable. Staging the same bytes again with a valid licence promotes
+  it out of quarantine, replacing the quarantined copy.
 - Git tracks `assets/index.json`, `CREDITS.md`, and the small brand-kit assets under
   `assets/design/` including their sidecars. Bulk media under `assets/{3d,video,audio,music}/`
   stays untracked, so its sidecars stay with it rather than in the repository; the index carries
@@ -456,6 +458,13 @@ MCP path does not need it.
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
 | Preset library | Every registered preset applies to a fixture timeline or scene and renders without manual adjustment, with a snapshot test inside tolerance; a pack downloaded from a free source lands with a complete license sidecar and appears in `CREDITS.md` |
+
+Implemented so far (2026-10-24): manifest loading and validation (`ms project validate`), and the
+asset ledger (`ms assets stage`, `ms assets index`, `ms assets list`) with REUSE sidecars, a derived
+index and `CREDITS.md`, SHA256 dedupe, quarantine for unknown licences, non-commercial licence
+refusal, and budget aborts before anything is written. Provider search clients, the three render
+paths, footage triage, and the preset library remain open. The selftest runs a ledger roundtrip
+end to end, and 68 pytest cases pass.
 
 ### Phase 2 - Canva
 

@@ -4,13 +4,17 @@ A headless, script-driven media production toolkit for the OpenCode agent on thi
 video and audio editing, 3D model editing and rendering, graphic design, and acquisition of
 free licensed assets.
 
-Status: phase 0 implemented. The authoritative specification is
+Status: phase 0 complete, phase 1 started. The authoritative specification is
 [`docs/design.md`](docs/design.md).
 
 Phase 0 ships the project convention and the environment gate: `ms doctor`, `ms project init`,
 the project template, the interactive key wizard, and a selftest that includes a live stdio MCP
-handshake against `3d-asset-server`. Timeline authoring, rendering, the asset ledger, footage
-triage, and the preset library are specified and belong to phase 1.
+handshake against `3d-asset-server`.
+
+Phase 1 so far: manifest validation and the asset ledger (`ms project validate`,
+`ms assets stage|index|list`) with REUSE sidecars, a derived `assets/index.json` and `CREDITS.md`,
+SHA256 dedupe, licence policy, and budget aborts. Provider search clients, timeline authoring,
+rendering, footage triage, and the preset library are still open.
 
 ## What it provides
 
@@ -42,6 +46,10 @@ scripts/mcp_probe.py      stdio MCP handshake used by the selftest
 uv venv && uv pip install -e . pytest        # once, inside the checkout
 .venv/bin/python -m media_studio.cli doctor --deep
 .venv/bin/python -m media_studio.cli project init my-project
+.venv/bin/python -m media_studio.cli project validate my-project
+.venv/bin/python -m media_studio.cli assets stage my-project --class 3d \
+  --file ~/Downloads/tree.glb --license "CC0" --source-url https://example.org/tree
+.venv/bin/python -m media_studio.cli assets index my-project
 bash scripts/selftest.sh
 ```
 
