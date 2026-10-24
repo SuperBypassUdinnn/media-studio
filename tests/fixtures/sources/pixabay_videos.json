@@ -1,0 +1,26 @@
+{
+  "total": 1,
+  "hits": [
+    {
+      "id": 99001,
+      "pageURL": "https://pixabay.com/videos/rain-window-99001/",
+      "duration": 12,
+      "tags": "rain, window, drops",
+      "user": "Carol",
+      "videos": {
+        "large": {
+          "url": "https://cdn.pixabay.com/video/rain_window_1920x1080.mp4",
+          "width": 1920,
+          "height": 1080,
+          "size": 5000000
+        },
+        "medium": {
+          "url": "https://cdn.pixabay.com/video/rain_window_1280x720.mp4",
+          "width": 1280,
+          "height": 720,
+          "size": 2000000
+        }
+      }
+    }
+  ]
+}

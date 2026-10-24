@@ -1,0 +1,28 @@
+{
+  "count": 2,
+  "results": [
+    {
+      "id": 555001,
+      "name": "heavy rain loop.wav",
+      "username": "cleo",
+      "license": "http://creativecommons.org/publicdomain/zero/1.0/",
+      "duration": 30.5,
+      "tags": ["rain", "loop"],
+      "previews": {
+        "preview-hq-mp3": "https://cdn.freesound.org/previews/555/555001_high.mp3",
+        "preview-lq-mp3": "https://cdn.freesound.org/previews/555/555001_low.mp3"
+      }
+    },
+    {
+      "id": 555002,
+      "name": "thunder crack",
+      "username": "dana",
+      "license": "http://creativecommons.org/licenses/by/4.0/",
+      "duration": 8,
+      "tags": ["thunder"],
+      "previews": {
+        "preview-lq-mp3": "https://cdn.freesound.org/previews/555/555002_low.mp3"
+      }
+    }
+  ]
+}

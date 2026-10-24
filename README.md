@@ -13,10 +13,12 @@ handshake against `3d-asset-server`.
 
 Phase 1 so far: manifest validation and the asset ledger (`ms project validate`,
 `ms assets stage|index|list`) with REUSE sidecars, a derived `assets/index.json` and `CREDITS.md`,
-SHA256 dedupe, licence policy, and budget aborts; plus asset search over keyless sources
-(`ms assets search`) with local ranking and `ms assets pull` to stage a chosen candidate. Keyed
-provider coverage, timeline authoring, rendering, footage triage, and the preset library are still
-open.
+SHA256 dedupe, licence policy, and budget aborts; plus asset search (`ms assets search`) with local
+ranking and `ms assets pull` to stage a chosen candidate. Sources are keyless first (Met Museum,
+Wikimedia Commons, Internet Archive) with keyed providers on top (Pixabay, Freesound); a keyed
+provider without a key is reported as skipped, not failed. Credentials are read from the
+environment and then `~/.config/opencode/secrets.env`, always masked. Timeline authoring, rendering,
+footage triage, and the preset library are still open.
 
 ## What it provides
 

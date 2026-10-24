@@ -114,6 +114,20 @@ LICENSE_TABLE: tuple[tuple[str, str, bool, bool, bool, tuple[str, ...]], ...] = 
     ("OFL-1.1", "SIL Open Font License 1.1", True, True, True, ("ofl-1.1", "ofl", "sil ofl")),
     ("BSD-3-Clause", "BSD 3-Clause", True, True, True, ("bsd-3-clause", "bsd 3")),
     (
+        "LicenseRef-Pixabay",
+        "Pixabay Content Licence",
+        False,
+        True,
+        True,
+        (
+            "pixabay content licence",
+            "pixabay content license",
+            "pixabay licence",
+            "pixabay license",
+            "pixabay",
+        ),
+    ),
+    (
         "CC-BY-NC-4.0",
         "CC BY-NC 4.0 (non-commercial)",
         True,

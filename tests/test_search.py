@@ -24,10 +24,13 @@ from media_studio.search import (
 from media_studio.sources import (
     client_names,
     clients_for,
+    freesound,
     internet_archive,
+    jamendo,
     met,
     module_named,
     openverse,
+    pixabay,
     wikimedia,
 )
 from media_studio.sources.base import (
@@ -67,6 +70,14 @@ def router(*fail_hosts: str) -> Callable[[str], bytes]:
             return fixture(f"met_object_{object_id}.json")
         if "collectionapi.metmuseum.org" in url:
             return fixture("met_search.json")
+        if "pixabay.com/api/videos" in url:
+            return fixture("pixabay_videos.json")
+        if "pixabay.com/api/" in url:
+            return fixture("pixabay_images.json")
+        if "freesound.org/apiv2" in url:
+            return fixture("freesound.json")
+        if "api.jamendo.com" in url:
+            return fixture("jamendo.json")
         raise SourceError(f"unexpected url: {url}")
 
     return fetch
@@ -120,12 +131,158 @@ def test_licence_helpers_map_provider_wording() -> None:
     assert license_from_url("https://example.org/nothing") == ""
 
 
+@pytest.fixture(autouse=True)
+def isolated_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Never read the real secrets file, and give keyed clients a value to work with."""
+
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path / "config"))
+    for name in ("PIXABAY_API_KEY", "FREESOUND_API_KEY", "JAMENDO_CLIENT_ID"):
+        monkeypatch.setenv(name, "test-key-0123456789")
+
+
 def test_registry_names_and_kind_support() -> None:
-    assert client_names() == ("met", "openverse", "wikimedia", "internet_archive")
-    assert [module.NAME for module in clients_for("image")] == list(client_names())
-    assert [module.NAME for module in clients_for("video")] == ["wikimedia", "internet_archive"]
+    assert client_names() == (
+        "met",
+        "wikimedia",
+        "internet_archive",
+        "pixabay",
+        "freesound",
+        "jamendo",
+        "openverse",
+    )
+    assert [module.NAME for module in clients_for("image")] == [
+        "met",
+        "wikimedia",
+        "internet_archive",
+        "pixabay",
+        "openverse",
+    ]
+    assert [module.NAME for module in clients_for("video")] == [
+        "wikimedia",
+        "internet_archive",
+        "pixabay",
+    ]
+    assert [module.NAME for module in clients_for("music")] == [
+        "internet_archive",
+        "jamendo",
+        "openverse",
+    ]
     assert module_named("OpenVerse") is openverse
     assert module_named("nowhere") is None
+
+
+def test_pixabay_maps_images_and_videos() -> None:
+    images = pixabay.search("forest", "image", 5, router())
+
+    assert [item.license_text for item in images] == [
+        "Pixabay Content Licence",
+        "Pixabay Content Licence",
+    ]
+    assert images[0].size_label == "1920x1280"
+    assert images[0].creator == "Alice"
+    assert images[0].licensed is True
+    info = classify_license(images[0].license_text)
+    assert info is not None and info.spdx == "LicenseRef-Pixabay"
+    assert info.attribution_required is False
+
+    videos = pixabay.search("rain", "video", 5, router())
+
+    assert videos[0].kind == "video"
+    assert videos[0].download_url is not None
+    assert videos[0].download_url.endswith("rain_window_1920x1080.mp4")
+    assert videos[0].duration == 12.0
+    assert videos[0].size_label == "12s"
+
+
+def test_freesound_maps_licence_and_offers_the_preview() -> None:
+    found = freesound.search("rain", "audio", 5, router())
+
+    assert found[0].license_text == "CC0"
+    assert found[0].download_url is not None
+    assert found[0].download_url.endswith("555001_high.mp3")
+    assert found[0].duration == 30.5
+    assert found[0].creator == "cleo"
+    assert "preview" in found[0].extra["quality"]
+    # The second sound has only a low-quality preview; it is still better than nothing.
+    assert found[1].license_text == "CC BY 4.0"
+    assert found[1].download_url is not None
+    assert found[1].download_url.endswith("555002_low.mp3")
+
+
+def test_jamendo_maps_cc_licences() -> None:
+    found = jamendo.search("rain", "music", 5, router())
+
+    assert [item.license_text for item in found] == ["CC BY 4.0", "CC BY-NC-ND 4.0"]
+    assert found[0].creator == "The Band"
+    assert found[0].download_url is not None
+    assert found[0].download_url.startswith("https://prod-1.storage.jamendo.com/")
+    assert found[0].extra["album"] == "Weather"
+
+
+def test_jamendo_surfaces_the_providers_own_refusal_reason() -> None:
+    body = (
+        b'{"headers": {"status": "failed", "code": 5, "error_message": '
+        b'"Jamendo Api Invalid Client Id Error: Your credential is not authorized."}, '
+        b'"results": []}'
+    )
+
+    with pytest.raises(SourceError) as caught:
+        jamendo.search("rain", "music", 5, lambda _url: body)
+
+    message = str(caught.value)
+    assert "refused the request" in message
+    assert "code 5" in message
+    assert "credential is not authorized" in message
+
+
+def test_jamendo_reports_a_status_without_a_reason() -> None:
+    body = b'{"headers": {"status": "failed"}, "results": []}'
+
+    with pytest.raises(SourceError, match="no reason given"):
+        jamendo.search("rain", "music", 5, lambda _url: body)
+
+
+def test_a_keyed_client_is_skipped_rather_than_failed_without_a_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PIXABAY_API_KEY", raising=False)
+
+    outcome = run_search("forest", "image", limit=3, fetch=router())
+    reports = {report.source: report for report in outcome.reports}
+
+    assert reports["pixabay"].skipped is True
+    assert reports["pixabay"].ok is False
+    assert "PIXABAY_API_KEY" in reports["pixabay"].note
+    assert reports["wikimedia"].ok is True
+    assert "skipped" in outcome.render()
+
+
+def test_a_key_never_appears_in_an_error_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PIXABAY_API_KEY", "super-secret-key-value-9f4c")
+
+    def failing(url: str) -> bytes:
+        raise SourceError(f"{url}: HTTP 503 Service Unavailable")
+
+    with pytest.raises(SourceError) as caught:
+        pixabay.search("forest", "image", 3, failing)
+
+    message = str(caught.value)
+    assert "super-secret-key-value-9f4c" not in message
+    assert "***" in message
+
+
+def test_the_skipped_state_survives_a_saved_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("JAMENDO_CLIENT_ID", raising=False)
+    outcome = run_search("rain", "music", limit=2, fetch=router())
+
+    restored = load_outcome(save_outcome(outcome, tmp_path / "saved.json"))
+
+    skipped = [report.source for report in restored.reports if report.skipped]
+    assert skipped == ["jamendo"]
 
 
 def test_openverse_reports_a_bot_wall_instead_of_parsing_html() -> None:
@@ -282,8 +439,10 @@ def test_internet_archive_reports_an_item_without_a_matching_file() -> None:
 def test_run_search_reports_every_source_and_ranks_licences() -> None:
     outcome = run_search("forest", "image", limit=5, fetch=router())
 
-    assert [report.source for report in outcome.reports] == list(client_names())
+    expected = [module.NAME for module in clients_for("image")]
+    assert [report.source for report in outcome.reports] == expected
     assert all(report.ok for report in outcome.reports)
+    assert not any(report.skipped for report in outcome.reports)
     # The saved Internet Archive response carries one item with no licence URL, and the
     # fixture router serves it for every class; it is hidden rather than staged.
     assert outcome.hidden_unlicensed == 1

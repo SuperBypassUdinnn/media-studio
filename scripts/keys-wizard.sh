@@ -12,19 +12,23 @@ set -euo pipefail
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${HOME}/.config/opencode}"
 SECRETS_FILE="${CONFIG_DIR}/secrets.env"
 
-# NAME|label|used for|signup page|deferred reason (empty when the key is expected)
+# NAME|label|used for|signup page|status
 #
-# A deferred provider is one whose key cannot be obtained right now for a reason
-# outside this project. It is reported as deferred and does not fail --check, so a
-# missing key only ever means an action the user can actually take.
+# status is one of:
+#   required              the toolkit needs it; a missing value fails --check
+#   optional:<reason>     useful, but the toolkit works without it
+#   deferred:<reason>     cannot be obtained now, for a reason outside this project
+#
+# Only `required` counts towards --check, so a reported problem is always something
+# the user can act on.
 PROVIDERS=(
-  "PEXELS_API_KEY|Pexels|video and photo clips|https://www.pexels.com/api/new/|account suspended by the provider, key creation unavailable"
-  "PIXABAY_API_KEY|Pixabay|video, photo, and music|https://pixabay.com/api/docs/|"
-  "FREESOUND_API_KEY|Freesound|sound effects and field recordings|https://freesound.org/apiv2/apply/|"
-  "JAMENDO_CLIENT_ID|Jamendo|Creative Commons music|https://devportal.jamendo.com/|"
-  "UNSPLASH_ACCESS_KEY|Unsplash|photography and textures|https://unsplash.com/oauth/applications|"
-  "SKETCHFAB_API_TOKEN|Sketchfab|3D models (download requires a token)|https://sketchfab.com/settings/password|"
-  "BLENDERKIT_API_KEY|BlenderKit|optional Blender material and model library|https://www.blenderkit.com/account/|"
+  "PIXABAY_API_KEY|Pixabay|video, photos, and audio clips|https://pixabay.com/api/docs/|required"
+  "FREESOUND_API_KEY|Freesound|sound effects and field recordings|https://freesound.org/apiv2/apply/|required"
+  "JAMENDO_CLIENT_ID|Jamendo|Creative Commons music|https://devportal.jamendo.com/|required"
+  "SKETCHFAB_API_TOKEN|Sketchfab|3D models (download requires a token)|https://sketchfab.com/settings/password|required"
+  "UNSPLASH_ACCESS_KEY|Unsplash|photography and textures|https://unsplash.com/oauth/applications|optional:the stocky skill uses it, the ms CLI does not"
+  "BLENDERKIT_API_KEY|BlenderKit|Blender material and model library|https://www.blenderkit.com/account/|optional:only needed for BlenderKit downloads"
+  "PEXELS_API_KEY|Pexels|video and photo clips|https://www.pexels.com/api/new/|deferred:account suspended by the provider, key creation unavailable"
 )
 
 usage() {
@@ -37,6 +41,18 @@ mask() {
     printf 'set (%d chars)' "${#value}"
   else
     printf '%s...%s (%d chars)' "${value:0:4}" "${value: -4}" "${#value}"
+  fi
+}
+
+split_status() {
+  # Sets STATUS_KIND and STATUS_REASON from the provider's status field.
+  local status=$1
+  if [[ ${status} == *:* ]]; then
+    STATUS_KIND=${status%%:*}
+    STATUS_REASON=${status#*:}
+  else
+    STATUS_KIND=${status:-required}
+    STATUS_REASON=""
   fi
 }
 
@@ -113,7 +129,8 @@ run_interactive() {
   printf 'appear in the agent transcript. Press Ctrl+C at any time.\n'
 
   for entry in "${PROVIDERS[@]}"; do
-    IFS='|' read -r name label purpose url note <<<"${entry}"
+    IFS='|' read -r name label purpose url status <<<"${entry}"
+    split_status "${status}"
     existing="$(current_value "${name}")"
     if [[ -n "${existing}" ]]; then
       printf '\n%s\n  already registered: %s\n  replace? [y/N]: ' "${label}" "$(mask "${existing}")"
@@ -122,10 +139,12 @@ run_interactive() {
         y | Y | yes | YES) prompt_key "${name}" "${label}" "${url}" ;;
         *) printf '  kept\n' ;;
       esac
-    elif [[ -n "${note}" ]]; then
-      printf '\n%s\n  deferred: %s\n  skipping; re-run this wizard once the provider is available\n' "${label}" "${note}"
+    elif [[ ${STATUS_KIND} == "deferred" ]]; then
+      printf '\n%s\n  deferred: %s\n  skipping; re-run this wizard once the provider is available\n' \
+        "${label}" "${STATUS_REASON}"
     else
       printf '\n%s (%s)\n' "${label}" "${purpose}"
+      [[ ${STATUS_KIND} == "optional" ]] && printf '  optional: %s\n' "${STATUS_REASON}"
       prompt_key "${name}" "${label}" "${url}"
     fi
   done
@@ -138,16 +157,20 @@ run_interactive() {
 }
 
 run_check() {
-  local entry name label purpose url note value missing=0 deferred=0
+  local entry name label purpose url status value missing=0 optional=0 deferred=0
   printf '\nregistered keys\n'
   for entry in "${PROVIDERS[@]}"; do
-    IFS='|' read -r name label purpose url note <<<"${entry}"
+    IFS='|' read -r name label purpose url status <<<"${entry}"
+    split_status "${status}"
     value="$(current_value "${name}")"
     if [[ -n "${value}" ]]; then
       printf '  %-22s %s\n' "${name}" "$(mask "${value}")"
-    elif [[ -n "${note}" ]]; then
-      printf '  %-22s deferred (%s)\n' "${name}" "${note}"
+    elif [[ ${STATUS_KIND} == "deferred" ]]; then
+      printf '  %-22s deferred (%s)\n' "${name}" "${STATUS_REASON}"
       deferred=$((deferred + 1))
+    elif [[ ${STATUS_KIND} == "optional" ]]; then
+      printf '  %-22s optional, not set (%s)\n' "${name}" "${STATUS_REASON}"
+      optional=$((optional + 1))
     else
       printf '  %-22s missing\n' "${name}"
       missing=$((missing + 1))
@@ -159,14 +182,17 @@ run_check() {
     printf '\nfile: %s (absent)\n' "${SECRETS_FILE}"
   fi
   if [[ ${missing} -gt 0 ]]; then
-    printf '%d key(s) missing\n' "${missing}"
+    printf '%d required key(s) missing\n' "${missing}"
     return 1
   fi
-  if [[ ${deferred} -gt 0 ]]; then
-    printf 'all obtainable keys present (%d deferred by the provider)\n' "${deferred}"
-    return 0
+  printf 'all required keys present'
+  if [[ ${optional} -gt 0 ]]; then
+    printf ' (%d optional not set)' "${optional}"
   fi
-  printf 'all keys present\n'
+  if [[ ${deferred} -gt 0 ]]; then
+    printf ' (%d deferred by the provider)' "${deferred}"
+  fi
+  printf '\n'
   return 0
 }
 

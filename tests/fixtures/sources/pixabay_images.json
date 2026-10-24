@@ -1,0 +1,24 @@
+{
+  "total": 2,
+  "hits": [
+    {
+      "id": 12345,
+      "pageURL": "https://pixabay.com/photos/forest-canopy-12345/",
+      "tags": "forest, canopy, trees",
+      "largeImageURL": "https://cdn.pixabay.com/photo/2020/01/01/forest_1280.jpg",
+      "previewURL": "https://cdn.pixabay.com/photo/2020/01/01/forest_640.jpg",
+      "imageWidth": 1920,
+      "imageHeight": 1280,
+      "user": "Alice"
+    },
+    {
+      "id": 12346,
+      "pageURL": "https://pixabay.com/photos/moss-12346/",
+      "tags": "moss, rock, macro",
+      "largeImageURL": "https://cdn.pixabay.com/photo/2021/02/02/moss_1280.jpg",
+      "imageWidth": 4000,
+      "imageHeight": 3000,
+      "user": "Bo"
+    }
+  ]
+}

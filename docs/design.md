@@ -347,10 +347,12 @@ templates, and paid marketplaces.
 | Class | Sources | Credentials |
 | --- | --- | --- |
 | 3D models, PBR materials, HDRIs | `3d-asset-server`: Poly Haven, ambientCG, Kenney, Quaternius, Smithsonian Open Access, itch.io curated, Sketchfab, CGTrader (link-only), Fab (link-only) | Keyless; Sketchfab token only for downloads |
-| Video footage | Pixabay Videos, Internet Archive, Pexels Videos (deferred) | Pixabay key; Internet Archive keyless. Pexels is deferred while its account is suspended, so the key wizard reports it as deferred rather than missing, and this class is covered by Pixabay plus Internet Archive |
+| Video footage | Pixabay Videos (keyed, live), Internet Archive, Pexels Videos (deferred) | Pixabay key works; Internet Archive keyless. Pexels is deferred while its account is suspended, so the wizard reports it as deferred rather than missing |
+| Sound effects | Freesound (keyed, live), Kenney and Sonniss packs, Openverse audio (blocked) | Freesound token works and yields the high-quality MP3 preview, since original files need OAuth2 |
+| Background music | Internet Archive, Jamendo (keyed, credential rejected), ccMixter, Musopen | Jamendo answers code 5 "credential is not authorized" for the registered client id, so its coverage is off until that is fixed in the Jamendo portal |
 | Video footage (link-only) | Coverr, Mixkit, Videvo | No API; results carry a link and license note |
-| Sound effects | Kenney (CC0), Sonniss GDC packs, Freesound, Pixabay Audio, Openverse audio, ccMixter | Freesound and Pixabay keys; rest keyless |
-| Background music | Openverse aggregation (Free Music Archive, Jamendo, ccMixter, Wikimedia), Free Music Archive, Jamendo, ccMixter, Musopen, Kenney music jingles, Sonniss | FMA and Jamendo keys; Pixabay key for Pixabay audio |
+| Images (Stocky) | Unsplash through the existing `finding-stock-photos` skill | Unsplash key is optional for the toolkit; that skill owns it |
+| Audio packs | Kenney (CC0), Sonniss GDC packs, ccMixter, Pixabay Audio | Keyless downloads; Pixabay key for its audio search when it opens |
 | Images | Met Museum Open Access (keyless, CC0), Wikimedia Commons (keyless), Internet Archive (keyless), Stocky (Unsplash, existing), Pixabay Images, Openverse Images | Pixabay key; the rest keyless. Openverse answers a Cloudflare bot challenge from this network and needs registered credentials before it is usable here; the Met is reachable and served live on 2026-10-24 |
 | Vectors and icons | Openclipart, Iconify API (200k+ icons), Simple Icons | Keyless |
 | Fonts | Google Fonts (repository and API), Fontshare | Keyless |
@@ -379,11 +381,18 @@ templates, and paid marketplaces.
 - Config references keys as `{env:NAME}`; values never appear in chat, commits, or reports.
 - The system works fully keyless first, so missing keys degrade coverage instead of
   breaking the path.
-- A provider whose key cannot be obtained right now, for a reason outside this project, is
-  marked deferred in the wizard: `--check` reports it as deferred, does not count it as missing,
-  and the interactive run skips its prompt. A missing key therefore always means an action the
-  user can actually take. Registered on 2026-10-24: Pixabay, Freesound, Jamendo, Unsplash,
-  Sketchfab, BlenderKit; deferred: Pexels (account suspended by the provider).
+- The wizard carries three states per provider. `required` fails `--check` when absent,
+  `optional` is reported but never counted, and `deferred` marks a provider whose key cannot be
+  obtained now for a reason outside this project, so its prompt is skipped. A reported problem is
+  therefore always an action the user can take.
+- Registered on 2026-10-24: Pixabay, Freesound, Sketchfab (required, all answering live), Unsplash
+  and BlenderKit (optional), Jamendo (value present but the API answers code 5, "credential is not
+  authorized"), Pexels (deferred, account suspended by the provider).
+- Nothing exports the secrets file into a login shell, so the toolkit reads it directly:
+  `media_studio.keys` checks the environment first and then
+  `~/.config/opencode/secrets.env`, and everything user-facing goes through a mask. Keyed clients
+  scrub the credential out of any error they raise, because these providers put the key in the
+  query string.
 
 ## 7. Quality control and testing
 
@@ -472,10 +481,11 @@ keyless sources (`ms assets search`) with local ranking plus `ms assets pull` to
 candidate. The `/assets` acceptance row is met for images and audio: one query returns ranked,
 licensed candidates from three keyless sources that answer live (Met Museum, Wikimedia Commons,
 Internet Archive), the download writes a complete sidecar, the index and `CREDITS.md` regenerate,
-duplicates collapse by hash, and quota violations abort with a message. Still open: keyed-provider
-coverage (Pixabay, Freesound, Jamendo, Unsplash, Sketchfab), the three render paths, footage
-triage, and the preset library. The selftest runs a ledger roundtrip end to end, and 125 pytest
-cases pass.
+duplicates collapse by hash, and quota violations abort with a message. Keyed clients are in as well: Pixabay
+for photos and videos and Freesound for sound effects answer live, while a keyed provider without a
+key is reported as skipped rather than failed. Still open: the three render paths, footage triage,
+and the preset library; Jamendo coverage waits on its credential. The selftest runs a ledger
+roundtrip end to end, and 142 pytest cases pass.
 
 ### Phase 2 - Canva
 
@@ -576,15 +586,14 @@ Decisions were reached in six rounds of a structured interview on 2026-10-22 and
 
 ## 14. Open items for phase 1
 
-1. The key wizard has no notion of an optional provider: BlenderKit, and any Openverse credentials
-   added later, are counted as required by `--check` even though the toolkit works without them.
-   Add a third state (required, optional, deferred) before the next round of keys.
+1. The Jamendo client id in `secrets.env` is rejected with code 5, "credential is not authorized";
+   it needs checking in the Jamendo portal. A `--verify` mode on the key wizard, which makes one
+   live call per provider, would have caught this at registration instead of at first search.
 2. Openverse is unusable from this network while anonymous traffic hits its Cloudflare challenge;
    decide between registering client credentials and dropping the source.
-3. Video and audio search coverage leans on Internet Archive and Wikimedia Commons, which are
-   strong but sparse for modern stock footage; the Pixabay and Freesound keys exist, so keyed
-   clients are the next coverage win. Smithsonian Open Access and NASA Images are keyless
-   candidates for a fourth source.
+3. Keyed coverage now exists for photos, videos, and sound effects; music depends on the Jamendo
+   credential, and audio still leans on Internet Archive and Wikimedia Commons. Smithsonian Open
+   Access and NASA Images are keyless candidates for a fourth source.
 4. Funnel thresholds: the shortlist size and the sheet cell count need fixture-measured values
    rather than the current defaults of 50 clips and 20 cells.
 5. Preset registry size for the first cut: a target of twelve video transitions, eight video

@@ -15,13 +15,20 @@ from pathlib import Path
 
 from .ledger import classify_license
 from .sources import client_names, clients_for
-from .sources.base import Candidate, Fetcher, SourceError, SourceReport, http_fetch
+from .sources.base import (
+    Candidate,
+    Fetcher,
+    SourceError,
+    SourceReport,
+    SourceUnavailable,
+    http_fetch,
+)
 
 SEARCH_KINDS = ("image", "video", "audio", "music")
 SEARCH_DIRECTORY = Path("~/.cache/media-studio/searches")
 SLUG = re.compile(r"[^a-z0-9]+")
 
-LICENCE_RANK = {"CC0-1.0": 0, "Unlicense": 0, "CC-PDDC": 0}
+LICENCE_RANK = {"CC0-1.0": 0, "Unlicense": 0, "CC-PDDC": 0, "LicenseRef-Pixabay": 0}
 
 
 class SearchError(RuntimeError):
@@ -144,6 +151,9 @@ def run_search(
     for module in clients:
         try:
             hits = module.search(query, kind, limit, fetch)
+        except SourceUnavailable as error:
+            reports.append(SourceReport(module.NAME, ok=False, note=str(error), skipped=True))
+            continue
         except SourceError as error:
             reports.append(SourceReport(module.NAME, ok=False, note=str(error)))
             continue
@@ -201,6 +211,7 @@ def load_outcome(path: Path) -> SearchOutcome:
             ok=bool(entry.get("ok")),
             count=int(entry.get("count") or 0),
             note=str(entry.get("note") or ""),
+            skipped=bool(entry.get("skipped")),
         )
         for entry in payload.get("sources", [])
         if isinstance(entry, dict)

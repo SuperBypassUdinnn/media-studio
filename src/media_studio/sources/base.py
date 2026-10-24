@@ -8,6 +8,7 @@ them. Every network read goes through an injected ``fetch`` callable so tests ca
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,11 +40,14 @@ LICENCE_WORDING = {
 LICENCE_URL_HINTS = (
     ("creativecommons.org/publicdomain/zero", "CC0"),
     ("creativecommons.org/publicdomain/mark", "public domain"),
-    ("creativecommons.org/licenses/by-sa", "CC BY-SA"),
+    ("creativecommons.org/licenses/by-nc-sa", "CC BY-NC-SA"),
+    ("creativecommons.org/licenses/by-nc-nd", "CC BY-NC-ND"),
     ("creativecommons.org/licenses/by-nc", "CC BY-NC"),
+    ("creativecommons.org/licenses/by-sa", "CC BY-SA"),
     ("creativecommons.org/licenses/by-nd", "CC BY-ND"),
     ("creativecommons.org/licenses/by", "CC BY"),
 )
+LICENCE_URL_PATH = re.compile(r"/licenses/([a-z-]+)/([0-9.]+)")
 
 
 @dataclass(frozen=True)
@@ -108,17 +112,30 @@ class Candidate:
 
 @dataclass
 class SourceReport:
-    """What one source did during a search, so a partial failure stays visible."""
+    """What one source did during a search, so a partial failure stays visible.
+
+    `skipped` marks a source that is configured out rather than broken: a keyed provider with no
+    key reduces coverage, and saying so is different from reporting a failure.
+    """
 
     source: str
     ok: bool
     count: int = 0
     note: str = ""
+    skipped: bool = False
 
     def to_dict(self) -> dict[str, object]:
-        return {"source": self.source, "ok": self.ok, "count": self.count, "note": self.note}
+        return {
+            "source": self.source,
+            "ok": self.ok,
+            "count": self.count,
+            "note": self.note,
+            "skipped": self.skipped,
+        }
 
     def line(self) -> str:
+        if self.skipped:
+            return f"  {self.source:<16} {'skipped':<7} {self.note}"
         status = "ok" if self.ok else "failed"
         detail = f"{self.count} result(s)" if self.ok else self.note
         return f"  {self.source:<16} {status:<7} {detail}"
@@ -158,6 +175,13 @@ class SourceError(RuntimeError):
     """Raised by a client when a source cannot answer."""
 
 
+class SourceUnavailable(SourceError):
+    """Raised when a source is configured out, such as a keyed provider with no key.
+
+    Separate from a failure on purpose: a missing key is not an error, it is reduced coverage.
+    """
+
+
 def fetch_json(url: str, fetch: Fetcher) -> object:
     """Fetch and decode JSON, turning transport and decode failures into SourceError."""
 
@@ -166,6 +190,20 @@ def fetch_json(url: str, fetch: Fetcher) -> object:
         return json.loads(payload.decode("utf-8", errors="replace"))
     except json.JSONDecodeError as error:
         raise SourceError(f"{url}: not JSON ({error.msg})") from error
+
+
+def scrub(text: str, *secrets: str) -> str:
+    """Remove credential values from any message a user might read.
+
+    Keyed providers put the key in the query string, and transport errors quote the URL, so every
+    client that carries a credential passes it through here before raising.
+    """
+
+    cleaned = text
+    for secret in secrets:
+        if secret:
+            cleaned = cleaned.replace(secret, "***")
+    return cleaned
 
 
 def build_url(base: str, params: dict[str, object]) -> str:
@@ -194,9 +232,14 @@ def license_from_family(family: str, version: str = "") -> str:
 
 
 def license_from_url(url: str) -> str:
-    """Map a licence URL onto wording, when the URL is a recognizable licence."""
+    """Map a licence URL onto wording the ledger understands, version included when present."""
 
     lowered = (url or "").lower()
+    match = LICENCE_URL_PATH.search(lowered)
+    if match:
+        wording = LICENCE_WORDING.get(match.group(1), "")
+        if wording:
+            return f"{wording} {match.group(2)}"
     for fragment, wording in LICENCE_URL_HINTS:
         if fragment in lowered:
             return wording

@@ -9,9 +9,18 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from . import internet_archive, met, openverse, wikimedia
+from . import freesound, internet_archive, jamendo, met, openverse, pixabay, wikimedia
 
-CLIENTS: tuple[ModuleType, ...] = (met, openverse, wikimedia, internet_archive)
+# Keyless clients first: they answer without credentials, so a search never depends on a key.
+CLIENTS: tuple[ModuleType, ...] = (
+    met,
+    wikimedia,
+    internet_archive,
+    pixabay,
+    freesound,
+    jamendo,
+    openverse,
+)
 
 
 def client_names() -> tuple[str, ...]:

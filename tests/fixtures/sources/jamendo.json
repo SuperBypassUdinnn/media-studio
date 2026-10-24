@@ -1,0 +1,25 @@
+{
+  "headers": { "status": "success", "results_count": 2 },
+  "results": [
+    {
+      "id": "1001",
+      "name": "Rainy Day",
+      "artist_name": "The Band",
+      "album_name": "Weather",
+      "license_ccurl": "https://creativecommons.org/licenses/by/4.0/",
+      "audio": "https://prod-1.storage.jamendo.com/?trackid=1001&format=mp32",
+      "duration": 180,
+      "shareurl": "https://www.jamendo.com/track/1001"
+    },
+    {
+      "id": "1002",
+      "name": "Rainy Night",
+      "artist_name": "Solo",
+      "album_name": "Weather",
+      "license_ccurl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "audio": "https://prod-1.storage.jamendo.com/?trackid=1002&format=mp32",
+      "duration": 200,
+      "shareurl": "https://www.jamendo.com/track/1002"
+    }
+  ]
+}
