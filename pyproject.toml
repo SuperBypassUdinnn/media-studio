@@ -26,4 +26,6 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Tests marked `network` hit live provider APIs and are opt-in: `pytest -m network`.
+addopts = "-q -m 'not network'"
+markers = ["network: requires outbound network access to a live provider"]

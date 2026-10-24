@@ -351,7 +351,7 @@ templates, and paid marketplaces.
 | Video footage (link-only) | Coverr, Mixkit, Videvo | No API; results carry a link and license note |
 | Sound effects | Kenney (CC0), Sonniss GDC packs, Freesound, Pixabay Audio, Openverse audio, ccMixter | Freesound and Pixabay keys; rest keyless |
 | Background music | Openverse aggregation (Free Music Archive, Jamendo, ccMixter, Wikimedia), Free Music Archive, Jamendo, ccMixter, Musopen, Kenney music jingles, Sonniss | FMA and Jamendo keys; Pixabay key for Pixabay audio |
-| Images | Stocky (Unsplash, existing), Pexels Images, Pixabay Images, Openverse Images | Pexels and Pixabay keys; Openverse keyless with rate limits |
+| Images | Met Museum Open Access (keyless, CC0), Wikimedia Commons (keyless), Internet Archive (keyless), Stocky (Unsplash, existing), Pixabay Images, Openverse Images | Pixabay key; the rest keyless. Openverse answers a Cloudflare bot challenge from this network and needs registered credentials before it is usable here; the Met is reachable and served live on 2026-10-24 |
 | Vectors and icons | Openclipart, Iconify API (200k+ icons), Simple Icons | Keyless |
 | Fonts | Google Fonts (repository and API), Fontshare | Keyless |
 | Preset and template packs | CC0 LUT packs, overlay and light-leak element packs, sound effect packs, OFL font files, Iconify icon sets, unDraw illustrations | Keyless; staged with license sidecars as in section 5.6 |
@@ -464,12 +464,18 @@ MCP path does not need it.
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
 | Preset library | Every registered preset applies to a fixture timeline or scene and renders without manual adjustment, with a snapshot test inside tolerance; a pack downloaded from a free source lands with a complete license sidecar and appears in `CREDITS.md` |
 
-Implemented so far (2026-10-24): manifest loading and validation (`ms project validate`), and the
-asset ledger (`ms assets stage`, `ms assets index`, `ms assets list`) with REUSE sidecars, a derived
-index and `CREDITS.md`, SHA256 dedupe, quarantine for unknown licences, non-commercial licence
-refusal, and budget aborts before anything is written. Provider search clients, the three render
-paths, footage triage, and the preset library remain open. The selftest runs a ledger roundtrip
-end to end, and 68 pytest cases pass.
+Implemented so far (2026-10-24): manifest loading and validation (`ms project validate`); the asset
+ledger (`ms assets stage`, `ms assets index`, `ms assets list`) with REUSE sidecars, a derived index
+and `CREDITS.md`, SHA256 dedupe, quarantine with promotion on restaging, non-commercial and
+no-derivatives refusal, and budget aborts before anything is written; and asset search across
+keyless sources (`ms assets search`) with local ranking plus `ms assets pull` to stage a chosen
+candidate. The `/assets` acceptance row is met for images and audio: one query returns ranked,
+licensed candidates from three keyless sources that answer live (Met Museum, Wikimedia Commons,
+Internet Archive), the download writes a complete sidecar, the index and `CREDITS.md` regenerate,
+duplicates collapse by hash, and quota violations abort with a message. Still open: keyed-provider
+coverage (Pixabay, Freesound, Jamendo, Unsplash, Sketchfab), the three render paths, footage
+triage, and the preset library. The selftest runs a ledger roundtrip end to end, and 125 pytest
+cases pass.
 
 ### Phase 2 - Canva
 
@@ -570,11 +576,20 @@ Decisions were reached in six rounds of a structured interview on 2026-10-22 and
 
 ## 14. Open items for phase 1
 
-1. Funnel thresholds: the shortlist size and the sheet cell count need fixture-measured values
+1. The key wizard has no notion of an optional provider: BlenderKit, and any Openverse credentials
+   added later, are counted as required by `--check` even though the toolkit works without them.
+   Add a third state (required, optional, deferred) before the next round of keys.
+2. Openverse is unusable from this network while anonymous traffic hits its Cloudflare challenge;
+   decide between registering client credentials and dropping the source.
+3. Video and audio search coverage leans on Internet Archive and Wikimedia Commons, which are
+   strong but sparse for modern stock footage; the Pixabay and Freesound keys exist, so keyed
+   clients are the next coverage win. Smithsonian Open Access and NASA Images are keyless
+   candidates for a fourth source.
+4. Funnel thresholds: the shortlist size and the sheet cell count need fixture-measured values
    rather than the current defaults of 50 clips and 20 cells.
-2. Preset registry size for the first cut: a target of twelve video transitions, eight video
+5. Preset registry size for the first cut: a target of twelve video transitions, eight video
    effects, six audio chains, four 3D node groups, and three title styles.
-3. Transport for our own asset MCP server: stdio like `assets-3d`, or its HTTP endpoint with the
+6. Transport for our own asset MCP server: stdio like `assets-3d`, or its HTTP endpoint with the
    ledger behind it.
-4. Whether clip cards should carry CLIP scores from a local model already present on disk, or a
+7. Whether clip cards should carry CLIP scores from a local model already present on disk, or a
    separate small embedding model installed for this purpose.

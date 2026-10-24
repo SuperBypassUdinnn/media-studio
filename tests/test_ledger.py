@@ -53,6 +53,15 @@ def test_classify_license_maps_provider_wording() -> None:
     assert classify_license("") is None
 
 
+def test_public_domain_and_unlicense_are_distinct() -> None:
+    public_domain = classify_license("public domain")
+    unlicense = classify_license("Unlicense")
+
+    assert public_domain is not None and public_domain.spdx == "CC-PDDC"
+    assert public_domain.attribution_required is False
+    assert unlicense is not None and unlicense.spdx == "Unlicense"
+
+
 def test_classify_license_flags_noncommercial() -> None:
     info = classify_license("CC BY-NC 4.0")
 

@@ -1,0 +1,21 @@
+{
+  "response": {
+    "numFound": 2,
+    "docs": [
+      {
+        "identifier": "forest-sounds-2020",
+        "title": "Forest sounds 2020",
+        "creator": "Archive User",
+        "licenseurl": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "mediatype": "audio",
+        "year": "2020"
+      },
+      {
+        "identifier": "unlicensed-film",
+        "title": "A film without a licence",
+        "mediatype": "movies",
+        "year": "1954"
+      }
+    ]
+  }
+}

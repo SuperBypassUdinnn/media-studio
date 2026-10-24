@@ -1,0 +1,31 @@
+{
+  "query": {
+    "pages": {
+      "12345": {
+        "pageid": 12345,
+        "title": "File:Autumn forest path.jpg",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/x/xx/Autumn_forest_path.jpg",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Autumn_forest_path.jpg",
+            "width": 1920,
+            "height": 1280,
+            "mime": "image/jpeg",
+            "extmetadata": {
+              "LicenseShortName": { "value": "CC BY-SA 4.0" },
+              "LicenseUrl": { "value": "https://creativecommons.org/licenses/by-sa/4.0/" },
+              "Artist": {
+                "value": "<a href=\"//commons.wikimedia.org/wiki/User:Someone\">Someone Else</a>"
+              }
+            }
+          }
+        ]
+      },
+      "99999": {
+        "pageid": 99999,
+        "title": "File:Deleted thing.jpg",
+        "missing": ""
+      }
+    }
+  }
+}

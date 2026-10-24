@@ -13,8 +13,10 @@ handshake against `3d-asset-server`.
 
 Phase 1 so far: manifest validation and the asset ledger (`ms project validate`,
 `ms assets stage|index|list`) with REUSE sidecars, a derived `assets/index.json` and `CREDITS.md`,
-SHA256 dedupe, licence policy, and budget aborts. Provider search clients, timeline authoring,
-rendering, footage triage, and the preset library are still open.
+SHA256 dedupe, licence policy, and budget aborts; plus asset search over keyless sources
+(`ms assets search`) with local ranking and `ms assets pull` to stage a chosen candidate. Keyed
+provider coverage, timeline authoring, rendering, footage triage, and the preset library are still
+open.
 
 ## What it provides
 
@@ -47,6 +49,8 @@ uv venv && uv pip install -e . pytest        # once, inside the checkout
 .venv/bin/python -m media_studio.cli doctor --deep
 .venv/bin/python -m media_studio.cli project init my-project
 .venv/bin/python -m media_studio.cli project validate my-project
+.venv/bin/python -m media_studio.cli assets search "forest canopy" --class image
+.venv/bin/python -m media_studio.cli assets pull my-project --search <saved path> --index 1
 .venv/bin/python -m media_studio.cli assets stage my-project --class 3d \
   --file ~/Downloads/tree.glb --license "CC0" --source-url https://example.org/tree
 .venv/bin/python -m media_studio.cli assets index my-project

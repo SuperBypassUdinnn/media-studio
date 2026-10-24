@@ -84,13 +84,14 @@ class LicenseInfo:
 LICENSE_TABLE: tuple[tuple[str, str, bool, bool, bool, tuple[str, ...]], ...] = (
     ("CC0-1.0", "CC0 1.0", False, True, True, ("cc0", "cc-0", "cc0-1.0", "cc0 1.0")),
     (
-        "Unlicense",
-        "Unlicense (public domain)",
+        "CC-PDDC",
+        "Public domain",
         False,
         True,
         True,
-        ("public domain", "publicdomain", "pdm", "unlicense", "cc-pddc"),
+        ("public domain", "public-domain", "publicdomain", "pdm", "cc-pddc"),
     ),
+    ("Unlicense", "Unlicense", False, True, True, ("unlicense",)),
     (
         "CC-BY-4.0",
         "CC BY 4.0",
