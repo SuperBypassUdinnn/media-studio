@@ -12,15 +12,19 @@ set -euo pipefail
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${HOME}/.config/opencode}"
 SECRETS_FILE="${CONFIG_DIR}/secrets.env"
 
-# NAME|label|used for|signup page
+# NAME|label|used for|signup page|deferred reason (empty when the key is expected)
+#
+# A deferred provider is one whose key cannot be obtained right now for a reason
+# outside this project. It is reported as deferred and does not fail --check, so a
+# missing key only ever means an action the user can actually take.
 PROVIDERS=(
-  "PEXELS_API_KEY|Pexels|video and photo clips|https://www.pexels.com/api/new/"
-  "PIXABAY_API_KEY|Pixabay|video, photo, and music|https://pixabay.com/api/docs/"
-  "FREESOUND_API_KEY|Freesound|sound effects and field recordings|https://freesound.org/apiv2/apply/"
-  "JAMENDO_CLIENT_ID|Jamendo|Creative Commons music|https://devportal.jamendo.com/"
-  "UNSPLASH_ACCESS_KEY|Unsplash|photography and textures|https://unsplash.com/oauth/applications"
-  "SKETCHFAB_API_TOKEN|Sketchfab|3D models (download requires a token)|https://sketchfab.com/settings/password"
-  "BLENDERKIT_API_KEY|BlenderKit|optional Blender material and model library|https://www.blenderkit.com/account/"
+  "PEXELS_API_KEY|Pexels|video and photo clips|https://www.pexels.com/api/new/|account suspended by the provider, key creation unavailable"
+  "PIXABAY_API_KEY|Pixabay|video, photo, and music|https://pixabay.com/api/docs/|"
+  "FREESOUND_API_KEY|Freesound|sound effects and field recordings|https://freesound.org/apiv2/apply/|"
+  "JAMENDO_CLIENT_ID|Jamendo|Creative Commons music|https://devportal.jamendo.com/|"
+  "UNSPLASH_ACCESS_KEY|Unsplash|photography and textures|https://unsplash.com/oauth/applications|"
+  "SKETCHFAB_API_TOKEN|Sketchfab|3D models (download requires a token)|https://sketchfab.com/settings/password|"
+  "BLENDERKIT_API_KEY|BlenderKit|optional Blender material and model library|https://www.blenderkit.com/account/|"
 )
 
 usage() {
@@ -109,7 +113,7 @@ run_interactive() {
   printf 'appear in the agent transcript. Press Ctrl+C at any time.\n'
 
   for entry in "${PROVIDERS[@]}"; do
-    IFS='|' read -r name label purpose url <<<"${entry}"
+    IFS='|' read -r name label purpose url note <<<"${entry}"
     existing="$(current_value "${name}")"
     if [[ -n "${existing}" ]]; then
       printf '\n%s\n  already registered: %s\n  replace? [y/N]: ' "${label}" "$(mask "${existing}")"
@@ -118,6 +122,8 @@ run_interactive() {
         y | Y | yes | YES) prompt_key "${name}" "${label}" "${url}" ;;
         *) printf '  kept\n' ;;
       esac
+    elif [[ -n "${note}" ]]; then
+      printf '\n%s\n  deferred: %s\n  skipping; re-run this wizard once the provider is available\n' "${label}" "${note}"
     else
       printf '\n%s (%s)\n' "${label}" "${purpose}"
       prompt_key "${name}" "${label}" "${url}"
@@ -132,13 +138,16 @@ run_interactive() {
 }
 
 run_check() {
-  local entry name label purpose url value missing=0
+  local entry name label purpose url note value missing=0 deferred=0
   printf '\nregistered keys\n'
   for entry in "${PROVIDERS[@]}"; do
-    IFS='|' read -r name label purpose url <<<"${entry}"
+    IFS='|' read -r name label purpose url note <<<"${entry}"
     value="$(current_value "${name}")"
     if [[ -n "${value}" ]]; then
       printf '  %-22s %s\n' "${name}" "$(mask "${value}")"
+    elif [[ -n "${note}" ]]; then
+      printf '  %-22s deferred (%s)\n' "${name}" "${note}"
+      deferred=$((deferred + 1))
     else
       printf '  %-22s missing\n' "${name}"
       missing=$((missing + 1))
@@ -152,6 +161,10 @@ run_check() {
   if [[ ${missing} -gt 0 ]]; then
     printf '%d key(s) missing\n' "${missing}"
     return 1
+  fi
+  if [[ ${deferred} -gt 0 ]]; then
+    printf 'all obtainable keys present (%d deferred by the provider)\n' "${deferred}"
+    return 0
   fi
   printf 'all keys present\n'
   return 0

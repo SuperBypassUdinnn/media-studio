@@ -347,7 +347,7 @@ templates, and paid marketplaces.
 | Class | Sources | Credentials |
 | --- | --- | --- |
 | 3D models, PBR materials, HDRIs | `3d-asset-server`: Poly Haven, ambientCG, Kenney, Quaternius, Smithsonian Open Access, itch.io curated, Sketchfab, CGTrader (link-only), Fab (link-only) | Keyless; Sketchfab token only for downloads |
-| Video footage | Pexels Videos, Pixabay Videos, Internet Archive | Pexels and Pixabay keys; Internet Archive keyless |
+| Video footage | Pixabay Videos, Internet Archive, Pexels Videos (deferred) | Pixabay key; Internet Archive keyless. Pexels is deferred while its account is suspended, so the key wizard reports it as deferred rather than missing, and this class is covered by Pixabay plus Internet Archive |
 | Video footage (link-only) | Coverr, Mixkit, Videvo | No API; results carry a link and license note |
 | Sound effects | Kenney (CC0), Sonniss GDC packs, Freesound, Pixabay Audio, Openverse audio, ccMixter | Freesound and Pixabay keys; rest keyless |
 | Background music | Openverse aggregation (Free Music Archive, Jamendo, ccMixter, Wikimedia), Free Music Archive, Jamendo, ccMixter, Musopen, Kenney music jingles, Sonniss | FMA and Jamendo keys; Pixabay key for Pixabay audio |
@@ -379,6 +379,11 @@ templates, and paid marketplaces.
 - Config references keys as `{env:NAME}`; values never appear in chat, commits, or reports.
 - The system works fully keyless first, so missing keys degrade coverage instead of
   breaking the path.
+- A provider whose key cannot be obtained right now, for a reason outside this project, is
+  marked deferred in the wizard: `--check` reports it as deferred, does not count it as missing,
+  and the interactive run skips its prompt. A missing key therefore always means an action the
+  user can actually take. Registered on 2026-10-24: Pixabay, Freesound, Jamendo, Unsplash,
+  Sketchfab, BlenderKit; deferred: Pexels (account suspended by the provider).
 
 ## 7. Quality control and testing
 
