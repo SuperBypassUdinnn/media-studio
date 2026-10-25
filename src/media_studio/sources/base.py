@@ -15,6 +15,8 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from ..keys import key_status, shadowed_by_environment
+
 USER_AGENT = "media-studio/0.1 (local asset search)"
 TIMEOUT_SECONDS = 45
 
@@ -190,6 +192,23 @@ def fetch_json(url: str, fetch: Fetcher) -> object:
         return json.loads(payload.decode("utf-8", errors="replace"))
     except json.JSONDecodeError as error:
         raise SourceError(f"{url}: not JSON ({error.msg})") from error
+
+
+def credential_note(key_name: str) -> str:
+    """Where a credential came from, for a provider's refusal message. Never a value.
+
+    Jamendo answers HTTP 200 with a failure body, so its refusal is the one place a provider tells
+    us a credential exists but was not accepted; naming its origin there is what turns an
+    unexplained "not authorized" into a diagnosable one.
+    """
+
+    status = key_status((key_name,))[0]
+    if not status.present:
+        return ""
+    note = f"credential from {status.source}"
+    if shadowed_by_environment(key_name):
+        note += ", which differs from the value in secrets.env"
+    return note
 
 
 def scrub(text: str, *secrets: str) -> str:

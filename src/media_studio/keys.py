@@ -120,6 +120,20 @@ def key_status(names: Sequence[str] = ()) -> list[KeyStatus]:
     return statuses
 
 
+def shadowed_by_environment(name: str) -> bool:
+    """True when the environment supplies a value and the secrets file holds a different one.
+
+    A stale export silently wins over a freshly pasted value, which is how a valid credential can
+    keep being reported as refused while the file looks correct. Neither value is returned.
+    """
+
+    from_environment = os.environ.get(name, "").strip()
+    if not from_environment:
+        return False
+    from_file = load_secrets().get(name, "").strip()
+    return bool(from_file) and from_file != from_environment
+
+
 def missing_required_keys(names: Sequence[str] = REQUIRED_KEYS) -> list[str]:
     """Required credentials that are not available."""
 

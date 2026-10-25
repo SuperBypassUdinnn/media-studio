@@ -6,6 +6,7 @@ fixture responses, so parsing is pinned without touching a provider.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -136,7 +137,12 @@ def isolated_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     """Never read the real secrets file, and give keyed clients a value to work with."""
 
     monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path / "config"))
-    for name in ("PIXABAY_API_KEY", "FREESOUND_API_KEY", "JAMENDO_CLIENT_ID"):
+    for name in (
+        "PIXABAY_API_KEY",
+        "FREESOUND_API_KEY",
+        "JAMENDO_CLIENT_ID",
+        "SKETCHFAB_API_TOKEN",
+    ):
         monkeypatch.setenv(name, "test-key-0123456789")
 
 
@@ -233,6 +239,17 @@ def test_jamendo_surfaces_the_providers_own_refusal_reason() -> None:
     assert "refused the request" in message
     assert "code 5" in message
     assert "credential is not authorized" in message
+
+
+def test_jamendo_refusal_names_where_the_credential_came_from() -> None:
+    """A refusal is only diagnosable if it says which credential the provider actually saw."""
+
+    body = json.dumps(
+        {"headers": {"status": "failed", "code": 5, "error_message": "not authorized"}}
+    ).encode()
+
+    with pytest.raises(SourceError, match="credential from environment"):
+        jamendo.search("rain", "music", 5, lambda _url: body)
 
 
 def test_jamendo_reports_a_status_without_a_reason() -> None:

@@ -468,7 +468,7 @@ templates, and paid marketplaces.
 | 3D models, PBR materials, HDRIs | `3d-asset-server`: Poly Haven, ambientCG, Kenney, Quaternius, Smithsonian Open Access, itch.io curated, Sketchfab, CGTrader (link-only), Fab (link-only) | Keyless; Sketchfab token only for downloads |
 | Video footage | Pixabay Videos (keyed, live), Internet Archive, Pexels Videos (deferred) | Pixabay key works; Internet Archive keyless. Pexels is deferred while its account is suspended, so the wizard reports it as deferred rather than missing |
 | Sound effects | Freesound (keyed, live), Kenney and Sonniss packs, Openverse audio (blocked) | Freesound token works and yields the high-quality MP3 preview, since original files need OAuth2 |
-| Background music | Internet Archive, Jamendo (keyed, credential rejected), ccMixter, Musopen | Jamendo answers code 5 "credential is not authorized" for the registered client id, so its coverage is off until that is fixed in the Jamendo portal |
+| Background music | Internet Archive, Jamendo (keyed, live 2026-10-26), ccMixter, Musopen | Jamendo answers live with its eight-character client id; its catalogue is dominated by non-commercial and no-derivatives tracks, so the licence policy admits a minority (measured: 11 of 100 instrumental results are BY or BY-SA) |
 | Video footage (link-only) | Coverr, Mixkit, Videvo | No API; results carry a link and license note |
 | Images (Stocky) | Unsplash through the existing `finding-stock-photos` skill | Unsplash key is optional for the toolkit; that skill owns it |
 | Audio packs | Kenney (CC0), Sonniss GDC packs, ccMixter, Pixabay Audio | Keyless downloads; Pixabay key for its audio search when it opens |
@@ -505,9 +505,20 @@ templates, and paid marketplaces.
   obtained now for a reason outside this project, so its prompt is skipped. A reported problem is
   therefore always an action the user can take.
 - Registered on 2026-10-24: Pixabay, Freesound, Sketchfab (required, all answering live), Unsplash
-  and BlenderKit (optional), Jamendo (value present but the API answers code 5, "credential is not
-  authorized"), Pexels (deferred, account suspended by the provider).
-- Nothing exports the secrets file into a login shell, so the toolkit reads it directly:
+  and BlenderKit (optional), Jamendo (required), Pexels (deferred, account suspended by the
+  provider).
+- Jamendo resolved on 2026-10-26, after two corrections. Its client id really is eight characters,
+  and the wizard's blanket sixteen-character minimum refused it, so a valid credential could not be
+  registered at all; minimums are now per credential. Once the file held the right value the API
+  still answered code 5, because a stale `JAMENDO_CLIENT_ID` was exported into the session
+  environment and the documented precedence (environment first, then the file) made it win:
+  `env -u JAMENDO_CLIENT_ID` answered `ok` immediately, and a direct `curl` with the file's value
+  succeeded while the toolkit failed. A credential-origin note now rides on a provider's refusal
+  ("credential from environment, which differs from the value in secrets.env"), and
+  `shadowed_by_environment()` is what detects it. This also falsifies the sentence below about
+  nothing exporting the secrets file into a login shell.
+- A login shell *can* export a credential (it does on this machine, as the Jamendo episode shows),
+  so the toolkit reads the file directly and the environment only overrides it:
   `media_studio.keys` checks the environment first and then
   `~/.config/opencode/secrets.env`, and everything user-facing goes through a mask. Keyed clients
   scrub the credential out of any error they raise, because these providers put the key in the
@@ -606,11 +617,11 @@ key is reported as skipped rather than failed. The video path is in and measured
 loudness normalisation, ducking driven by `silencedetect` on the voice track, title overlays, fades
 and A/B dissolves, a QC report with seven checks, and a contact sheet. Everything else in the table
 above landed on 2026-10-25: footage triage, the preset registry, the design path, the 3D path, and
-material and HDRI binding. Still open in phase 1: the Kdenlive handoff, which was then measured on
-2026-10-26 and needs a Kdenlive-compatible document (section 5.1 states the causes and the reference
-schema); Jamendo coverage, which waits on its credential; a downloaded preset pack staged through the
-ledger; and the phase 3 `scr2026` baseline reproduction, which the acceptance matrix still lists as
-pending. The selftest runs a ledger roundtrip end to end, reports every phase 0
+material and HDRI binding, and Jamendo on 2026-10-26 once its eight-character client id could be
+registered and a stale environment export stopped shadowing it. Still open in phase 1: the Kdenlive
+handoff, which was then measured and needs a Kdenlive-compatible document (section 5.1 states the
+causes and the reference schema); a downloaded preset pack staged through the ledger; and the phase 3
+`scr2026` baseline reproduction, which the acceptance matrix still lists as pending. The selftest runs a ledger roundtrip end to end, reports every phase 0
 check and every phase 1 check except that baseline row as implemented, and 260 pytest cases pass.
 
 ### Phase 2 - Canva
@@ -728,14 +739,16 @@ Decisions were reached in six rounds of a structured interview on 2026-10-22 and
 0. The Kdenlive handoff is untested: the generated `.mlt` parses and renders, but no one has opened
    it in Kdenlive on this machine yet.
 
-1. The Jamendo client id in `secrets.env` is rejected with code 5, "credential is not authorized";
-   it needs checking in the Jamendo portal. A `--verify` mode on the key wizard, which makes one
-   live call per provider, would have caught this at registration instead of at first search.
+1. Closed on 2026-10-26: Jamendo was two problems, not one — a wizard minimum that refused its
+   eight-character client id, and a stale environment export that shadowed the corrected file. Both
+   are fixed and covered by tests. A `--verify` mode on the key wizard, which makes one live call per
+   provider, would still have caught the second at registration instead of at first search.
 2. Openverse is unusable from this network while anonymous traffic hits its Cloudflare challenge;
    decide between registering client credentials and dropping the source.
-3. Keyed coverage now exists for photos, videos, and sound effects; music depends on the Jamendo
-   credential, and audio still leans on Internet Archive and Wikimedia Commons. Smithsonian Open
-   Access and NASA Images are keyless candidates for a fourth source.
+3. Keyed coverage now exists for photos, videos, sound effects, and music; music still leans on
+   Internet Archive and Wikimedia Commons as well, because Jamendo's permissive licences are a
+   minority of its catalogue. Smithsonian Open Access and NASA Images are keyless candidates for a
+   fourth source.
 4. Funnel thresholds: the shortlist size and the sheet cell count need fixture-measured values
    rather than the current defaults of 50 clips and 20 cells.
 5. Preset registry size for the first cut: a target of twelve video transitions, eight video

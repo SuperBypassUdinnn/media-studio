@@ -17,6 +17,7 @@ from .base import (
     SourceUnavailable,
     as_float,
     build_url,
+    credential_note,
     fetch_json,
     license_from_url,
     scrub,
@@ -65,7 +66,11 @@ def search(query: str, kind: str, limit: int, fetch: Fetcher) -> list[Candidate]
         reason = text(headers.get("error_message")) or text(headers.get("warnings"))
         code = text(headers.get("code"))
         detail = f" (code {code})" if code else ""
-        raise SourceError(f"jamendo refused the request{detail}: {reason or 'no reason given'}")
+        note = credential_note(KEY_NAME)
+        suffix = f" [{note}]" if note else ""
+        raise SourceError(
+            f"jamendo refused the request{detail}: {reason or 'no reason given'}{suffix}"
+        )
 
     results = payload.get("results")
     if not isinstance(results, list):

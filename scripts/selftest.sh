@@ -73,7 +73,7 @@ Acceptance matrix
   phase 0  3D asset MCP stdio handshake                  implemented
   phase 1  manifest validation (ms project validate)     implemented
   phase 1  asset ledger: stage, index, CREDITS           implemented
-  phase 1  asset search: keyless plus keyed sources      implemented (offline tests; live run 2026-10-24)
+  phase 1  asset search: keyless plus keyed sources      implemented (offline tests; live run 2026-10-24, Jamendo 2026-10-26)
   phase 1  video render: MLT, melt, loudness, ducking    implemented (offline tests; live render 2026-10-24)
   phase 1  Kdenlive handoff                              failed  (measured 2026-10-26: Incorrect project file)
   phase 1  3D render through Blender CLI                 implemented (offline tests; live render 2026-10-25)

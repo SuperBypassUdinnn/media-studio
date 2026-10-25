@@ -15,6 +15,7 @@ from media_studio.keys import (
     missing_required_keys,
     parse_secrets,
     secrets_file,
+    shadowed_by_environment,
 )
 
 FAKE = "example-secret-value-1234567890"
@@ -142,3 +143,67 @@ def test_key_status_reports_where_each_value_came_from(
     assert statuses["BLENDERKIT_API_KEY"].requirement == "optional"
     assert statuses["PEXELS_API_KEY"].requirement == "deferred"
     assert missing_required_keys() == ["FREESOUND_API_KEY", "SKETCHFAB_API_TOKEN"]
+
+
+def test_an_environment_value_that_differs_from_the_file_is_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale export silently wins, so a refusal has to be able to say the two disagree."""
+
+    (tmp_path / "secrets.env").write_text("JAMENDO_CLIENT_ID=freshvalue1234\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path))
+
+    monkeypatch.setenv("JAMENDO_CLIENT_ID", "freshvalue1234")
+    assert shadowed_by_environment("JAMENDO_CLIENT_ID") is False
+
+    monkeypatch.setenv("JAMENDO_CLIENT_ID", "stalevalue123456")
+    assert shadowed_by_environment("JAMENDO_CLIENT_ID") is True
+
+
+def test_an_environment_only_value_shadows_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("JAMENDO_CLIENT_ID", "envonlyvalue1234")
+
+    assert shadowed_by_environment("JAMENDO_CLIENT_ID") is False
+
+
+def test_an_absent_credential_shadows_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("JAMENDO_CLIENT_ID", raising=False)
+
+    assert shadowed_by_environment("JAMENDO_CLIENT_ID") is False
+
+
+def test_the_credential_note_reports_origin_without_a_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note is the whole point of the change, so both of its shapes are pinned."""
+
+    from media_studio.sources.base import credential_note
+
+    (tmp_path / "secrets.env").write_text("JAMENDO_CLIENT_ID=freshvalue1234\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("JAMENDO_CLIENT_ID", "freshvalue1234")
+
+    assert credential_note("JAMENDO_CLIENT_ID") == "credential from environment"
+
+    monkeypatch.setenv("JAMENDO_CLIENT_ID", "stalevalue123456")
+    note = credential_note("JAMENDO_CLIENT_ID")
+
+    assert note == "credential from environment, which differs from the value in secrets.env"
+    assert "stalevalue" not in note and "freshvalue" not in note
+
+
+def test_the_credential_note_is_empty_for_an_absent_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from media_studio.sources.base import credential_note
+
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("JAMENDO_CLIENT_ID", raising=False)
+
+    assert credential_note("JAMENDO_CLIENT_ID") == ""
