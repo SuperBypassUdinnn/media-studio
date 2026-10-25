@@ -278,6 +278,19 @@ must reproduce the same result.
 
 ### 5.3 Design
 
+As built (2026-10-25): `media_studio/design.py` composes SVG templates from `templates/design/`
+with brand tokens, a staged logo, and a staged font, exports PNG and PDF through Inkscape, and
+publishes checks that can fail: WCAG contrast from the colours written into the file, text boxes
+measured with Inkscape's own geometry query against the template's safe area, the smallest font
+size present, and the exported pixel size. `ms design render` reports them and writes
+`out/reports/<slug>-design-qc.json` plus a contact sheet. The font layer is
+`media_studio/fonts.py`: `ms fonts search` filters installed families by name, role, and language
+coverage (Indonesian included), `ms fonts specimen` batches candidates into one image set in the
+project's own headline, `fonts.embedding_permission` reads the OS/2 fsType so a font that forbids
+embedding is refused, and `fonts.font_environment` writes a project fontconfig that adds the staged
+font directory, which makes a project's fonts resolvable by Inkscape and `melt` without installing
+anything system-wide.
+
 1. Load brand tokens from `project.yaml` (palette, fonts, logo assets).
 2. Compose SVG templates per output format, with layout rules expressed in the template and
    content injected from the manifest.

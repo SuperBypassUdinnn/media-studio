@@ -32,9 +32,12 @@ MANIFEST_KEYS = frozenset(
         "assets",
         "effects",
         "video",
+        "design",
         "budget",
     }
 )
+DESIGN_KEYS = frozenset({"logo", "fonts", "variants"})
+VARIANT_KEYS = frozenset({"id", "template", "size", "headline", "subhead"})
 VIDEO_KEYS = frozenset({"shots", "voice", "music", "fade_in", "fade_out", "crossfade"})
 SHOT_KEYS = frozenset({"asset", "in", "duration", "transition"})
 TITLE_KEYS = frozenset({"text", "start", "duration", "size", "colour", "position"})
@@ -113,6 +116,27 @@ class VideoPlan:
 
 
 @dataclass(frozen=True)
+class VariantSpec:
+    """One rendered design: a template, a canvas, and the words on it."""
+
+    id: str
+    template: str
+    width: int
+    height: int
+    headline: str = ""
+    subhead: str = ""
+
+
+@dataclass(frozen=True)
+class DesignSpec:
+    """How the image deliverables are composed."""
+
+    variants: tuple[VariantSpec, ...]
+    logo: str | None = None
+    fonts: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Brand:
     """Colour and type tokens every design path reads."""
 
@@ -143,6 +167,7 @@ class Project:
     assets: dict[str, str]
     timeline: tuple[dict[str, Any], ...]
     video: VideoPlan | None
+    design: DesignSpec | None
     effects: tuple[dict[str, Any], ...]
     raw: dict[str, Any]
 
@@ -214,6 +239,7 @@ def load_project(location: str | Path | None = None) -> Project:
         assets=_assets(raw.get("assets")),
         timeline=tuple(raw.get("timeline") or ()),
         video=_video(raw.get("video")),
+        design=_design(raw.get("design")),
         effects=_effects(raw.get("effects")),
         raw=raw,
     )
@@ -284,6 +310,53 @@ def _optional_int(value: Any, field_name: str) -> int:
         return int(value)
     except (TypeError, ValueError) as error:
         raise ManifestError(f"{field_name} must be a whole number, got {value!r}") from error
+
+
+def _design(value: Any) -> DesignSpec | None:
+    """The design section: a logo, font roles, and the variants to render."""
+
+    if value in (None, {}):
+        return None
+    if not isinstance(value, dict):
+        raise ManifestError("design must be a mapping with variants")
+
+    variants: list[VariantSpec] = []
+    for entry in value.get("variants") or []:
+        if not isinstance(entry, dict) or not entry.get("id") or not entry.get("template"):
+            raise ManifestError(f"every design variant needs an id and a template, got {entry!r}")
+        size = str(entry.get("size") or "")
+        width, height = _size(size, str(entry["id"]))
+        variants.append(
+            VariantSpec(
+                id=str(entry["id"]),
+                template=str(entry["template"]),
+                width=width,
+                height=height,
+                headline=str(entry.get("headline") or ""),
+                subhead=str(entry.get("subhead") or ""),
+            )
+        )
+    if not variants:
+        raise ManifestError("design.variants must list at least one variant")
+
+    fonts = value.get("fonts") or {}
+    if not isinstance(fonts, dict):
+        raise ManifestError("design.fonts must map a role to an asset id")
+    logo = value.get("logo")
+    return DesignSpec(
+        variants=tuple(variants),
+        logo=str(logo) if logo else None,
+        fonts={str(role): str(asset) for role, asset in fonts.items()},
+    )
+
+
+def _size(value: str, variant_id: str) -> tuple[int, int]:
+    if not RESOLUTION_PATTERN.match(value):
+        raise ManifestError(
+            f"design variant {variant_id!r}: size {value!r} must be WxH, for example 1080x1080"
+        )
+    width, _, height = value.partition("x")
+    return int(width), int(height)
 
 
 def _effects(value: Any) -> tuple[dict[str, Any], ...]:
@@ -403,6 +476,7 @@ def _unknown_fields(project: Project) -> list[str]:
         ("brand", BRAND_KEYS),
         ("budget", BUDGET_KEYS),
         ("video", VIDEO_KEYS),
+        ("design", DESIGN_KEYS),
     )
     for name, allowed in sections:
         section = project.raw.get(name)
@@ -425,6 +499,12 @@ def _unknown_fields(project: Project) -> list[str]:
             if isinstance(entry, dict):
                 for key in sorted(set(entry) - TITLE_KEYS):
                     problems.append(f"unknown video.titles field: {key}")
+    design = project.raw.get("design")
+    if isinstance(design, dict):
+        for entry in design.get("variants") or []:
+            if isinstance(entry, dict):
+                for key in sorted(set(entry) - VARIANT_KEYS):
+                    problems.append(f"unknown design.variants field: {key}")
     return problems
 
 

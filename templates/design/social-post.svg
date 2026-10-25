@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="{{width}}" height="{{height}}" viewBox="0 0 {{width}} {{height}}">
+  <rect id="bg" data-bg="true" x="0" y="0" width="{{width}}" height="{{height}}" fill="{{primary}}"/>
+  <rect id="safe" data-safe="true" x="90" y="90" width="900" height="900" fill="none" stroke="none"/>
+  <rect id="accent-bar" x="90" y="612" width="180" height="12" fill="{{accent}}"/>
+  <text id="headline" data-role="text" x="90" y="520" font-family="{{font_heading}}" font-size="96"
+        font-weight="700" fill="{{ink}}">{{headline}}</text>
+  <text id="subhead" data-role="text" x="90" y="700" font-family="{{font_body}}" font-size="40"
+        fill="{{ink}}">{{subhead}}</text>
+  <image id="logo" x="90" y="820" width="220" height="220" preserveAspectRatio="xMinYMin meet"
+         xlink:href="{{logo_href}}"/>
+</svg>

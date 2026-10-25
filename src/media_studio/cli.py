@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 
 from . import __version__, media
+from .design import DesignError, validate_design
+from .design import render as render_design
+from .fonts import FontError, font_environment, inventory, specimen_sheet
+from .fonts import search as search_fonts
 from .ledger import (
     ASSET_CLASSES,
     LedgerError,
@@ -188,6 +192,28 @@ def build_parser() -> argparse.ArgumentParser:
     qc.add_argument("--file", type=Path, required=True, help="file to measure")
     qc.set_defaults(func=cmd_video_qc)
 
+    design = subparsers.add_parser("design", help="render brand-consistent images")
+    design_sub = design.add_subparsers(dest="design_command", required=True)
+    draw = design_sub.add_parser("render", help="compose and export every declared variant")
+    draw.add_argument("project", help="project path or slug")
+    draw.add_argument("--variant", default=None, help="render only this variant")
+    draw.add_argument("--check-only", action="store_true", help="check what is already rendered")
+    draw.set_defaults(func=cmd_design_render)
+
+    fonts = subparsers.add_parser("fonts", help="find and preview fonts")
+    fonts_sub = fonts.add_subparsers(dest="fonts_command", required=True)
+    find = fonts_sub.add_parser("search", help="search installed families by intent")
+    find.add_argument("query")
+    find.add_argument("--limit", type=int, default=8)
+    find.add_argument("--mono", action="store_true", help="only monospaced families")
+    find.set_defaults(func=cmd_fonts_search)
+    preview = fonts_sub.add_parser("specimen", help="render candidates with the project's words")
+    preview.add_argument("project", help="project path or slug")
+    preview.add_argument("--text", required=True, help="the headline to set in each candidate")
+    preview.add_argument("--query", default="", help="narrow the candidates by name")
+    preview.add_argument("--limit", type=int, default=6)
+    preview.set_defaults(func=cmd_fonts_specimen)
+
     presets = subparsers.add_parser("presets", help="search the preset registry")
     presets_sub = presets.add_subparsers(dest="presets_command", required=True)
 
@@ -233,6 +259,79 @@ def build_parser() -> argparse.ArgumentParser:
     status.set_defaults(func=cmd_triage_status)
 
     return parser
+
+
+def cmd_design_render(args: argparse.Namespace) -> int:
+    """Render variants and report the checks."""
+
+    try:
+        project = load_project(args.project)
+        report = render_design(project, args.variant, check_only=args.check_only)
+    except (ManifestError, DesignError, FontError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    for variant in report.variants:
+        mark = "ok  " if variant.get("ok") else "FAIL"
+        print(f"  {mark} {variant.get('id')}")
+        for problem in variant.get("problems") or []:
+            print(f"        {problem}")
+    if report.sheet is not None:
+        print(f"  sheet: {report.sheet.relative_to(project.root)}")
+    if report.report_path is not None:
+        print(f"  report: {report.report_path.relative_to(project.root)}")
+    print("verdict: " + ("pass" if report.ok else "FAIL"))
+    return EXIT_OK if report.ok else EXIT_FAILURE
+
+
+def cmd_fonts_search(args: argparse.Namespace) -> int:
+    """Search installed families, filtered to those that can set the text."""
+
+    try:
+        fonts = search_fonts(
+            inventory(),
+            args.query,
+            monospace=True if args.mono else None,
+            limit=max(args.limit, 1),
+        )
+    except FontError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    if not fonts:
+        print(f"no family matches {args.query!r} with Indonesian coverage")
+        return EXIT_OK
+    for font in fonts:
+        print(f"  {font.family}  ({font.style})")
+        print(f"    {font.file}")
+    print(
+        "\nstage one with `ms assets stage <project> --class design "
+        "--file <path> --license OFL-1.1`"
+    )
+    return EXIT_OK
+
+
+def cmd_fonts_specimen(args: argparse.Namespace) -> int:
+    """Render candidate families with the project's own headline."""
+
+    try:
+        project = load_project(args.project)
+        environment = font_environment(project)
+        candidates = search_fonts(inventory(environment), args.query, limit=max(args.limit, 1))
+        sheet = specimen_sheet(
+            candidates,
+            args.text,
+            project.root / "out" / "images" / "font-specimen.png",
+            environment=environment,
+        )
+    except (ManifestError, FontError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"{len(candidates)} candidate(s): {', '.join(font.family for font in candidates)}")
+    print(f"  sheet: {sheet.relative_to(project.root)}")
+    print("choose one, stage it into assets/design/fonts, then set design.fonts in project.yaml")
+    return EXIT_OK
 
 
 def _load_registry() -> dict[str, object]:
@@ -597,6 +696,7 @@ def cmd_project_validate(args: argparse.Namespace) -> int:
 
     report = validate_project(project)
     report.errors.extend(validate_effects(project.effects))
+    report.errors.extend(validate_design(project))
     print(f"{project.slug}: {len(report.errors)} error(s), {len(report.warnings)} warning(s)")
     for problem in report.errors:
         print(f"  error:   {problem}")
