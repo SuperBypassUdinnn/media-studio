@@ -301,6 +301,17 @@ must reproduce the same result.
 
 ### 5.5 Footage triage (token-bounded shot selection)
 
+As built (2026-10-25): `media_studio/triage.py` measures a library with `ms triage index`
+(exposure and clipping, edge energy as a sharpness proxy, frame-to-frame motion, a perceptual hash
+for duplicates, shake from `vidstabdetect`, and scene cuts), explains every reject with a reason,
+and persists the cards to `footage/index.jsonl`, which doubles as the measurement cache: a second
+run over unchanged clips measures nothing and reuses every card. Ranking is local and explicit
+(`score_clip`), not a model. `ms triage sheets` batches the clips that have no verdict yet into
+labelled contact sheets, `ms triage decide` records a verdict in `footage/decisions.jsonl` keyed by
+clip and concept, and `ms triage status` reports progress. CLIP embeddings are deliberately not in
+this increment: the funnel already cuts the reviewed image count drastically, and the model would
+add a large download for an unproven gain.
+
 Choosing shots from a large footage library must never stream frames into the model. The path is
 a funnel, and only the last two stages cost tokens.
 

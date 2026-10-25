@@ -60,6 +60,14 @@ class Loudness:
         )
 
 
+def triage_scratch() -> Path:
+    """Where triage keeps throwaway measurement files."""
+
+    directory = Path("/tmp/opencode/triage")
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
 def run_command(
     command: list[str], *, label: str, expect_stdout: bool = True
 ) -> subprocess.CompletedProcess[str]:
@@ -417,3 +425,210 @@ def render_timeline(mlt_path: Path, intermediate: Path) -> Path:
     if not intermediate.is_file():
         raise MediaError(f"melt did not write {intermediate}")
     return intermediate
+
+
+@dataclass(frozen=True)
+class FrameStats:
+    """Luma statistics of a sampled frame set: exposure, contrast, and clipping."""
+
+    mean: float
+    minimum: float
+    maximum: float
+    low_clip: float
+    high_clip: float
+
+
+def frame_stats(path: Path, *, frames: int = 12) -> FrameStats:
+    """Sample frames and report exposure, contrast, and how much is clipped."""
+
+    completed = run_command(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-vf",
+            f"select='not(mod(n\\,{max(frames, 1)}))',signalstats,metadata=print:file=-",
+            "-f",
+            "null",
+            "-",
+        ],
+        label=f"read frame statistics of {path.name}",
+    )
+    values = re.findall(r"lavfi\.signalstats\.(YAVG|YMIN|YMAX)=([\d.]+)", completed.stdout or "")
+    if not values:
+        raise MediaError(f"no frame statistics for {path.name}")
+    series: dict[str, list[float]] = {"YAVG": [], "YMIN": [], "YMAX": []}
+    for key, value in values:
+        series[key].append(float(value))
+    lows = sum(1 for value in series["YMIN"] if value <= 16.5)
+    highs = sum(1 for value in series["YMAX"] if value >= 234.5)
+    count = max(len(series["YAVG"]), 1)
+    return FrameStats(
+        mean=sum(series["YAVG"]) / count,
+        minimum=min(series["YMIN"]),
+        maximum=max(series["YMAX"]),
+        low_clip=lows / count,
+        high_clip=highs / count,
+    )
+
+
+def edge_strength(path: Path, *, frames: int = 8) -> float:
+    """Mean edge energy, a sharpness proxy that needs no Python imaging stack."""
+
+    completed = run_command(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-vf",
+            f"select='not(mod(n\\,{max(frames, 1)}))',sobel,signalstats,metadata=print:file=-",
+            "-f",
+            "null",
+            "-",
+        ],
+        label=f"measure edge strength of {path.name}",
+    )
+    values = [
+        float(value)
+        for value in re.findall(r"lavfi\.signalstats\.YAVG=([\d.]+)", completed.stdout or "")
+    ]
+    if not values:
+        raise MediaError(f"no edge strength for {path.name}")
+    return sum(values) / len(values)
+
+
+def motion_level(path: Path, *, frames: int = 12) -> float:
+    """Mean frame-to-frame difference: near zero means a held shot."""
+
+    completed = run_command(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-vf",
+            f"select='not(mod(n\\,{max(frames, 1)}))',"
+            "tblend=all_mode=difference,signalstats,metadata=print:file=-",
+            "-f",
+            "null",
+            "-",
+        ],
+        label=f"measure motion in {path.name}",
+    )
+    values = [
+        float(value)
+        for value in re.findall(r"lavfi\.signalstats\.YAVG=([\d.]+)", completed.stdout or "")
+    ]
+    if not values:
+        raise MediaError(f"no motion reading for {path.name}")
+    return sum(values) / len(values)
+
+
+def scene_cuts(path: Path, *, threshold: float = 0.3) -> list[float]:
+    """Timestamps where the picture changes scene."""
+
+    completed = run_command(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-vf",
+            f"select='gt(scene\\,{threshold})',metadata=print:file=-",
+            "-f",
+            "null",
+            "-",
+        ],
+        label=f"detect scene cuts in {path.name}",
+        expect_stdout=False,
+    )
+    # `metadata=print:file=-` writes to stdout, not stderr.
+    shown = re.findall(r"pts_time:([\d.]+)", completed.stdout or "")
+    return sorted({round(float(value), 3) for value in shown})
+
+
+def perceptual_hash(path: Path, *, size: int = 8) -> str:
+    """Difference hash of one frame: identical pictures hash identically."""
+
+    # Raw pixels need bytes, not decoded text.
+    completed = subprocess.run(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-nostats",
+            "-ss",
+            "1",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale={size + 1}:{size},format=gray",
+            "-f",
+            "rawvideo",
+            "-",
+        ],
+        capture_output=True,
+        check=False,
+        timeout=TIMEOUT_SECONDS,
+    )
+    if completed.returncode != 0:
+        raise MediaError(f"could not hash {path.name}: {completed.stderr[-200:]!r}")
+    pixels = completed.stdout
+    if len(pixels) < (size + 1) * size:
+        raise MediaError(f"could not read pixels from {path.name}")
+    bits: list[str] = []
+    for row in range(size):
+        offset = row * (size + 1)
+        for column in range(size):
+            bits.append("1" if pixels[offset + column] > pixels[offset + column + 1] else "0")
+    return f"{int(''.join(bits), 2):0{size * size // 4}x}"
+
+
+def shake_level(path: Path, *, scratch: Path) -> float:
+    """Standard deviation of per-frame translations, a shake proxy from vidstab."""
+
+    scratch.mkdir(parents=True, exist_ok=True)
+    transforms = scratch / f"{path.stem}-transforms.trf"
+    run_command(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-vf",
+            f"vidstabdetect=shakiness=5:result={transforms}",
+            "-f",
+            "null",
+            "-",
+        ],
+        label=f"measure shake in {path.name}",
+        expect_stdout=False,
+    )
+    if not transforms.is_file():
+        return 0.0
+    xs: list[float] = []
+    ys: list[float] = []
+    for line in transforms.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) >= 6:
+            try:
+                xs.append(float(parts[4]))
+                ys.append(float(parts[5]))
+            except ValueError:
+                continue
+    if len(xs) < 2:
+        return 0.0
+
+    def spread(values: list[float]) -> float:
+        mean = sum(values) / len(values)
+        return (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
+
+    return round((spread(xs) + spread(ys)) / 2, 4)
