@@ -211,6 +211,21 @@ def deep_checks(
         else:
             results.append(CheckResult(f"torch {label}", True, version))
 
+    # Blender can be present and still refuse to start (a library upgrade mismatch did exactly
+    # that once), so the version is read through the same environment a render uses.
+    try:
+        from .blender import BlenderError, environment, version_string
+
+        built = environment(create_shim=False)
+        detail = version_string()
+        if built.notes:
+            detail = f"{detail} ({built.describe()})"
+        results.append(CheckResult("Blender headless", True, detail))
+    except BlenderError as error:
+        results.append(CheckResult("Blender headless", False, str(error)))
+    except Exception as error:
+        results.append(CheckResult("Blender headless", False, f"cannot run: {error}"))
+
     usage = shutil.disk_usage(Path.home())
     free_gib = usage.free / (1024**3)
     results.append(

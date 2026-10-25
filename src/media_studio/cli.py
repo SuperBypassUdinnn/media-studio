@@ -10,6 +10,19 @@ import sys
 from pathlib import Path
 
 from . import __version__, media
+from .blender import (
+    EXPORT_FORMATS,
+    BlenderError,
+    project_output,
+    turntable,
+    write_report,
+)
+from .blender import (
+    convert as convert_model,
+)
+from .blender import (
+    inspect as inspect_model,
+)
 from .design import DesignError, validate_design
 from .design import render as render_design
 from .fonts import FontError, font_environment, inventory, specimen_sheet
@@ -192,6 +205,26 @@ def build_parser() -> argparse.ArgumentParser:
     qc.add_argument("--file", type=Path, required=True, help="file to measure")
     qc.set_defaults(func=cmd_video_qc)
 
+    three_d = subparsers.add_parser("3d", help="inspect, convert, and render models")
+    three_d_sub = three_d.add_subparsers(dest="three_d_command", required=True)
+    inspect = three_d_sub.add_parser("inspect", help="report a model's geometry")
+    inspect.add_argument("model", type=Path)
+    inspect.add_argument("--json", action="store_true")
+    inspect.set_defaults(func=cmd_3d_inspect)
+    convert = three_d_sub.add_parser("convert", help="repair and re-export a model")
+    convert.add_argument("model", type=Path)
+    convert.add_argument("--to", required=True, choices=sorted(EXPORT_FORMATS))
+    convert.add_argument("--out", type=Path, default=None, help="output directory")
+    convert.add_argument("--decimate", type=float, default=0.0, help="ratio below 1.0 to simplify")
+    convert.set_defaults(func=cmd_3d_convert)
+    spin = three_d_sub.add_parser("turntable", help="render a turntable headlessly")
+    spin.add_argument("model", type=Path)
+    spin.add_argument("--project", default=None, help="project to write outputs and reports into")
+    spin.add_argument("--frames", type=int, default=24)
+    spin.add_argument("--resolution", default="640x360", help="WxH, default 640x360")
+    spin.add_argument("--baseline", type=Path, default=None, help="a previous turntable-qc.json")
+    spin.set_defaults(func=cmd_3d_turntable)
+
     design = subparsers.add_parser("design", help="render brand-consistent images")
     design_sub = design.add_subparsers(dest="design_command", required=True)
     draw = design_sub.add_parser("render", help="compose and export every declared variant")
@@ -259,6 +292,96 @@ def build_parser() -> argparse.ArgumentParser:
     status.set_defaults(func=cmd_triage_status)
 
     return parser
+
+
+def _resolution(value: str) -> tuple[int, int]:
+    width, _, height = value.lower().partition("x")
+    try:
+        return int(width), int(height)
+    except ValueError as error:
+        raise BlenderError(f"resolution {value!r} must be WxH, for example 640x360") from error
+
+
+def cmd_3d_inspect(args: argparse.Namespace) -> int:
+    """Report what a model contains, measured by Blender."""
+
+    try:
+        report = inspect_model(args.model)
+    except BlenderError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    if args.json:
+        json.dump(report.facts, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return EXIT_OK
+    facts = report.facts
+    print(f"{args.model.name}")
+    print(f"  objects:   {facts.get('objects')} ({facts.get('mesh_objects')} mesh)")
+    print(f"  geometry:  {facts.get('vertices')} vertices, {facts.get('triangles')} triangles")
+    print(f"  size:      {facts.get('size')}")
+    print(f"  materials: {', '.join(facts.get('materials') or []) or 'none'}")
+    problems = report.problems
+    if problems:
+        print("  problems:  " + ", ".join(problems))
+    print("verdict: " + ("clean" if not problems else "needs repair; run `ms 3d convert`"))
+    return EXIT_OK
+
+
+def cmd_3d_convert(args: argparse.Namespace) -> int:
+    """Repair a model and write it in another format."""
+
+    destination = (args.out or args.model.parent) / f"{args.model.stem}{EXPORT_FORMATS[args.to]}"
+    try:
+        before = inspect_model(args.model)
+        conversion = convert_model(args.model, destination, decimate=args.decimate)
+    except BlenderError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"wrote {conversion.destination}")
+    print(f"  triangles: {before.triangles} -> {conversion.triangles}")
+    print(f"  problems:  {', '.join(conversion.problems) or 'none'}")
+    return EXIT_OK if not conversion.problems else EXIT_FAILURE
+
+
+def cmd_3d_turntable(args: argparse.Namespace) -> int:
+    """Render a turntable and report its measured frames."""
+
+    try:
+        resolution = _resolution(args.resolution)
+        if args.project:
+            project = load_project(args.project)
+            destination = project_output(project, args.model.stem)
+        else:
+            project = None
+            destination = Path("/tmp/opencode/blender") / args.model.stem
+        result = turntable(
+            args.model,
+            destination,
+            frames=max(args.frames, 2),
+            resolution=resolution,
+            baseline=args.baseline,
+        )
+    except (ManifestError, BlenderError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    report = result.facts
+    width, height = report["resolution"]
+    print(f"rendered {report['frames']} frame(s) at {width}x{height}")
+    print(f"  directory: {result.directory}")
+    print(f"  sheet:     {result.sheet.name}")
+    print(f"  report:    {result.report_path.name}")
+    if report.get("environment") and report["environment"] != "clean":
+        print(f"  environment: {report['environment']}")
+    if project is not None:
+        written = write_report(project, report, f"{args.model.stem}-turntable-qc.json")
+        print(f"  archived:  {written.relative_to(project.root)}")
+    for name, passed in (report.get("checks") or {}).items():
+        print(f"  {'ok  ' if passed else 'FAIL'} {name}")
+    print("verdict: " + ("pass" if report.get("ok") else "FAIL"))
+    return EXIT_OK if report.get("ok") else EXIT_FAILURE
 
 
 def cmd_design_render(args: argparse.Namespace) -> int:

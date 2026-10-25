@@ -258,6 +258,22 @@ instrumental-only or vocal-only variants when a project needs them.
 
 ### 5.2 3D
 
+As built (2026-10-26): `media_studio/blender.py` runs Blender headless and every run carries the
+environment this machine needs, in one place: `VK_ICD_FILENAMES` plus `--gpu-backend vulkan`, and
+`/usr/bin` ahead of `~/.local/bin` on `PATH`. It also detects a packaging mismatch that stops
+Blender from starting at all (Blender 17:5.2.3-3 links `libdraco.so.10`, the installed `draco`
+package ships `libdraco.so.9`), shims the missing name through a private `LD_LIBRARY_PATH`, and
+says so in every report so the real fix is not forgotten; `ms doctor --deep` reports the same
+state. `ms 3d inspect` measures a model (objects, vertices, triangles, non-manifold edges, loose
+vertices, materials, bounds, unit scale) and names what needs repair; `ms 3d convert` applies
+transforms, rebuilds outward normals, welds duplicate vertices, optionally decimates, and reports
+the repaired mesh rather than the exported file, because a glTF round trip splits vertices per
+attribute; `ms 3d turntable` builds a pivot, camera, key light and world, keyframes a full rotation,
+renders through EEVEE on the Vulkan backend, measures per-frame luminance and time, builds a
+contact sheet, and compares against a recorded baseline by luminance with a stated tolerance
+(frame hashes are kept, but EEVEE's temporal jitter makes them differ between identical runs). This
+build ships EEVEE only; Cycles is not available.
+
 1. Import or convert the input (glTF, GLB, OBJ, FBX, USD, or STL) through Blender;
    `gltf-transform` handles web-ready validation, Draco and meshopt compression, and
    texture dedupe.
@@ -512,7 +528,7 @@ MCP path does not need it.
 | --- | --- |
 | `/assets` | A single query returns ranked, licensed candidates from at least three keyless 3D sources; download writes the file plus a complete sidecar; the index and `CREDITS.md` regenerate; duplicates collapse by hash; quota violations abort with a clear message |
 | `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive. Met for everything except the Kdenlive open, which is still unverified on this machine |
-| `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB |
+| `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB. OBJ, STL, and GLB conversion, normalisation, and the headless turntable with metrics and a contact sheet are met and tested; material and HDRI binding through `assets-3d` is still open |
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
 | Preset library | Every registered preset applies to a fixture timeline or scene and renders without manual adjustment, with a snapshot test inside tolerance; a pack downloaded from a free source lands with a complete license sidecar and appears in `CREDITS.md`. Met for the in-house recipes: each is applied through `effects:` and the video-effect and transition kinds are verified by measuring a rendered frame; the downloaded-pack half still belongs to the asset ledger |
