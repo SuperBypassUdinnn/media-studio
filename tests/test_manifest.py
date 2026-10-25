@@ -164,6 +164,55 @@ budget:
     assert "unknown budget field: max_asset_byte" in joined
 
 
+def test_video_titles_validate(project_root: Path) -> None:
+    """The renderer supports titles, so the validator must accept them, entries and all."""
+
+    write_manifest(
+        project_root,
+        """
+slug: demo
+deliverables:
+  - {id: a, kind: video, resolution: 640x360}
+assets:
+  clip: assets/video/clip.mp4
+video:
+  shots:
+    - {asset: clip}
+  titles:
+    - {text: "Hello", start: 1.0, duration: 2.0, size: 32, position: "+10+10"}
+""",
+    )
+
+    report = validate_project(load_project(project_root))
+
+    assert report.ok, report.errors
+    # The declared clip is not staged yet, which is a warning and never an error.
+    assert report.warnings == ["assets.clip: assets/video/clip.mp4 is not staged yet"]
+
+
+def test_a_bad_field_inside_a_title_is_still_rejected(project_root: Path) -> None:
+    write_manifest(
+        project_root,
+        """
+slug: demo
+deliverables:
+  - {id: a, kind: video, resolution: 640x360}
+assets:
+  clip: assets/video/clip.mp4
+video:
+  shots:
+    - {asset: clip}
+  titles:
+    - {text: "Hello", start: 1.0, duration: 2.0, colour: "#ffffff", sizee: 32}
+""",
+    )
+
+    report = validate_project(load_project(project_root))
+
+    assert not report.ok
+    assert "unknown video.titles field: sizee" in "\n".join(report.errors)
+
+
 def test_declared_asset_needs_a_sidecar(project_root: Path) -> None:
     body = (project_root / "project.yaml").read_text(encoding="utf-8")
     (project_root / "project.yaml").write_text(

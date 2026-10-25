@@ -38,7 +38,7 @@ MANIFEST_KEYS = frozenset(
 )
 DESIGN_KEYS = frozenset({"logo", "fonts", "variants"})
 VARIANT_KEYS = frozenset({"id", "template", "size", "headline", "subhead"})
-VIDEO_KEYS = frozenset({"shots", "voice", "music", "fade_in", "fade_out", "crossfade"})
+VIDEO_KEYS = frozenset({"shots", "voice", "music", "titles", "fade_in", "fade_out", "crossfade"})
 SHOT_KEYS = frozenset({"asset", "in", "duration", "transition"})
 TITLE_KEYS = frozenset({"text", "start", "duration", "size", "colour", "position"})
 CUE_KEYS = frozenset({"asset", "in", "gain", "fade_in", "fade_out", "duck"})
