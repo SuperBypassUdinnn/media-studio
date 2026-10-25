@@ -9,6 +9,7 @@ temporary directory first, so a quota or licence refusal leaves the project unto
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import re
@@ -548,7 +549,15 @@ def stage_asset(
         if destination.exists() and sha256_of(destination) != digest:
             destination = target_dir / f"{digest[:8]}-{filename}"
         if url is not None:
-            incoming.replace(destination)
+            try:
+                incoming.replace(destination)
+            except OSError as error:
+                # The staging directory lives in the system temp, which is often a different
+                # filesystem from the project (tmpfs against a home volume), and renaming across
+                # devices fails with EXDEV. A move copies and then unlinks instead.
+                if error.errno != errno.EXDEV:
+                    raise
+                shutil.move(str(incoming), str(destination))
         else:
             shutil.copy2(incoming, destination)
     finally:

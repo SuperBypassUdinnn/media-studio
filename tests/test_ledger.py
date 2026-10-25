@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 from typing import ClassVar
@@ -238,6 +239,38 @@ def test_stage_asset_downloads_through_the_opener(project: Project) -> None:
     assert staged.relative == "assets/music/track.mp3"
     assert staged.path.read_bytes() == b"downloaded-payload"
     assert read_sidecar(staged.path)["Attribution"] == "Composer"
+
+
+def test_stage_asset_survives_a_cross_device_staging_directory(
+    project: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Staging lives in the system temp; a rename to the project fails with EXDEV on tmpfs."""
+
+    class Response:
+        def read(self) -> bytes:
+            return b"downloaded-payload"
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def replace(_self: Path, _target: Path) -> Path:
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(Path, "replace", replace)
+    staged = stage_asset(
+        project,
+        class_name="3d",
+        license_text="CC0",
+        url="https://example.org/tree.glb",
+        opener=lambda *_args, **_kwargs: Response(),
+        retrieved_at=FIXED_TIME,
+    )
+
+    assert staged.path.read_bytes() == b"downloaded-payload"
+    assert staged.relative == "assets/3d/tree.glb"
 
 
 def test_no_derivatives_licence_is_refused(project: Project, asset_file: Path) -> None:
