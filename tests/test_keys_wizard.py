@@ -107,3 +107,43 @@ def test_values_are_never_printed(tmp_path: Path) -> None:
     assert FAKE_VALUE not in completed.stdout
     assert "unit-test" not in completed.stdout
     assert "..." in completed.stdout
+
+
+def run_validator(tmp_path: Path, name: str, value: str) -> subprocess.CompletedProcess[str]:
+    """Source the wizard and call its validator, so the rule is testable without a terminal.
+
+    The config directory is a temp path even though the validator writes nothing, so a future
+    change cannot reach the real secrets file by accident.
+    """
+
+    environment = dict(os.environ)
+    environment["OPENCODE_CONFIG_DIR"] = str(tmp_path)
+    return subprocess.run(
+        ["bash", "-c", f'source "{WIZARD}"; validate_key "$1" "$2"', "bash", name, value],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+
+def test_jamendo_accepts_its_eight_character_client_id(tmp_path: Path) -> None:
+    """Jamendo's client id really is eight characters; a blanket 16 refused a valid credential."""
+
+    completed = run_validator(tmp_path, "JAMENDO_CLIENT_ID", "1a2b3c4d")
+
+    assert completed.returncode == 0, completed.stdout
+
+
+def test_other_keys_still_need_sixteen_characters(tmp_path: Path) -> None:
+    completed = run_validator(tmp_path, "PIXABAY_API_KEY", "1a2b3c4d")
+
+    assert completed.returncode != 0
+    assert "PIXABAY_API_KEY needs at least 16 characters, got 8" in completed.stdout
+
+
+def test_whitespace_is_refused_for_every_key(tmp_path: Path) -> None:
+    completed = run_validator(tmp_path, "JAMENDO_CLIENT_ID", "1a2b 3c4d")
+
+    assert completed.returncode != 0
+    assert "contains whitespace" in completed.stdout

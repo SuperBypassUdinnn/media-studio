@@ -31,6 +31,13 @@ PROVIDERS=(
   "PEXELS_API_KEY|Pexels|video and photo clips|https://www.pexels.com/api/new/|deferred:account suspended by the provider, key creation unavailable"
 )
 
+# Provider-specific minimum length. Most credentials are long opaque tokens, but Jamendo issues an
+# 8-character client id which is a valid credential on its own, and a blanket minimum refuses it.
+declare -A MINIMUM_LENGTH=(
+  [JAMENDO_CLIENT_ID]=8
+)
+DEFAULT_MINIMUM_LENGTH=16
+
 usage() {
   sed -n '2,7p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
@@ -84,9 +91,12 @@ write_secret() {
 }
 
 validate_key() {
-  local value=$1
-  if [[ ${#value} -lt 16 ]]; then
-    printf '  too short: keys are at least 16 characters, got %d\n' "${#value}"
+  # Two statements on purpose: within one `local`, an earlier assignment is not yet in effect when a
+  # later one references it (shellcheck SC2318), so the name has to exist first.
+  local name=$1
+  local value=$2 minimum=${MINIMUM_LENGTH[${name}]:-${DEFAULT_MINIMUM_LENGTH}}
+  if [[ ${#value} -lt ${minimum} ]]; then
+    printf '  too short: %s needs at least %d characters, got %d\n' "${name}" "${minimum}" "${#value}"
     return 1
   fi
   if [[ "${value}" =~ [[:space:]] ]]; then
@@ -107,7 +117,7 @@ prompt_key() {
       printf '  left unchanged\n'
       return 0
     fi
-    if validate_key "${value}"; then
+    if validate_key "${name}" "${value}"; then
       write_secret "${name}" "${value}"
       printf '  saved %s\n' "$(mask "${value}")"
       return 0
@@ -209,4 +219,7 @@ main() {
   esac
 }
 
-main "$@"
+# Sourced by the tests to exercise the validators directly; executed normally otherwise.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
