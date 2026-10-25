@@ -256,6 +256,29 @@ Audio inside the path: voice-over cleanup (high-pass, denoise, compression), mus
 driven by voice-over segments, fades, and final loudness. Stem separation supplies
 instrumental-only or vocal-only variants when a project needs them.
 
+Kdenlive handoff, measured on 2026-10-26 with Kdenlive 26.08.2. The `.mlt` our writer produces is a
+valid MLT document that `melt` renders, but Kdenlive will not open it as a project: File > Open
+answers "Incorrect project file — Version of the project file cannot be read", and accepting the
+following "Attempting to open nonetheless" ends on an empty project. Two causes are established.
+First, the document carries no `kdenlive:` properties at all, while a project Kdenlive writes itself
+carries `kdenlive:docproperties.version` (1.1), `kdenlive:docproperties.kdenliveversion`,
+`kdenlive:docproperties.documentid`, a `main_bin` **playlist** holding the bin and the document
+properties, per-track `kdenlive:trackheight` and `kdenlive:timeline_active`, a sequence tractor with
+`kdenlive:sequenceproperties.*`, and a final tractor marked `kdenlive:projectTractor`. That reference
+document is kept as evidence at
+`~/.local/state/opencode-media-studio/kdenlive-evidence/kdenlive-reference-schema.mlt`, saved from an
+empty project Kdenlive created through its own dialog. Second, the fades are cross-fades against a
+generated black clip that the writer points at under `/tmp/opencode/<slug>/`, which is purged after
+encoding, so a handed-off project references a file that no longer exists; Kdenlive reports exactly
+that as a clip problem and the title's `Sans` family as a placeholder. Screenshots of both dialogs sit
+beside the reference. Two method notes, because they cost real time: launching `kdenlive <file>` does
+not open a project on this build, it imports the file into the bin as a clip — it does the same to a
+project Kdenlive saved itself, so that path proves nothing about a document's validity; and the Open
+dialog filters on the `.kdenlive` extension, so a `.mlt` is invisible in its file list until the
+file-type filter is changed or the name is typed into the field. A fix therefore means a
+Kdenlive-compatible handoff document, and a filler clip that lives inside the project rather than in
+`/tmp`.
+
 ### 5.2 3D
 
 As built (2026-10-26): `media_studio/blender.py` runs Blender headless and every run carries the
@@ -563,7 +586,7 @@ MCP path does not need it.
 | Path | Acceptance criteria |
 | --- | --- |
 | `/assets` | A single query returns ranked, licensed candidates from at least three keyless 3D sources; download writes the file plus a complete sidecar; the index and `CREDITS.md` regenerate; duplicates collapse by hash; quota violations abort with a clear message |
-| `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive. Met for everything except the Kdenlive open, which is still unverified on this machine |
+| `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive. Met for everything except the Kdenlive open, which was verified on 2026-10-26 and **failed**: Kdenlive recognises the file as a project but answers "Incorrect project file — Version of the project file cannot be read", and acknowledging that ends on an empty project. The two causes and the reference schema for the fix are recorded in section 5.1 |
 | `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB. Met for all of it: OBJ, STL, and GLB conversion and normalisation, the headless turntable with metrics and a contact sheet, and material and HDRI binding, which was proved live on 2026-10-25 with `mossy_rock` and `belfast_sunset_puresky` at 1k (four shader slots bound, eight CC0 assets staged and indexed, a GLB with embedded textures, and a proof frame at 138.9 mean luma) |
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
@@ -583,10 +606,11 @@ key is reported as skipped rather than failed. The video path is in and measured
 loudness normalisation, ducking driven by `silencedetect` on the voice track, title overlays, fades
 and A/B dissolves, a QC report with seven checks, and a contact sheet. Everything else in the table
 above landed on 2026-10-25: footage triage, the preset registry, the design path, the 3D path, and
-material and HDRI binding. Still open in phase 1: opening a generated `.mlt` in Kdenlive, which needs
-a person at the display; Jamendo coverage, which waits on its credential; a downloaded preset pack
-staged through the ledger; and the phase 3 `scr2026` baseline reproduction, which the acceptance
-matrix still lists as pending. The selftest runs a ledger roundtrip end to end, reports every phase 0
+material and HDRI binding. Still open in phase 1: the Kdenlive handoff, which was then measured on
+2026-10-26 and needs a Kdenlive-compatible document (section 5.1 states the causes and the reference
+schema); Jamendo coverage, which waits on its credential; a downloaded preset pack staged through the
+ledger; and the phase 3 `scr2026` baseline reproduction, which the acceptance matrix still lists as
+pending. The selftest runs a ledger roundtrip end to end, reports every phase 0
 check and every phase 1 check except that baseline row as implemented, and 260 pytest cases pass.
 
 ### Phase 2 - Canva
