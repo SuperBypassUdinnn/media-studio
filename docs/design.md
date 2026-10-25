@@ -598,11 +598,13 @@ Decisions were reached in six rounds of a structured interview on 2026-10-22 and
 
 ## 14. Open items for phase 1
 
-0. Titles appear in a hand-written MLT probe but not in the XML this toolkit generates, with the
-   same structure and `compositing=1`; something still differs and it is not yet isolated. The
-   manifest wiring and the XML shape are in place, so the work left is the difference itself.
-   Until then, treat titles as wired but not visibly verified.
-0. A/B cross-fades and fades: **done** (a `luma` dissolve, since `mix` is audio-only). `qtext` is available for text and `mix`/`luma`
+0. A/B cross-fades and fades: **done** (a `luma` dissolve, since `mix` is audio-only).
+0. Titles: **done**, and the reason they looked broken is worth keeping. Declaring
+   `sample_aspect_num="1" sample_aspect_den="1"` on the profile makes this MLT build drop the
+   qtblend title composite entirely, while a hand-written file without those attributes renders
+   text. The profile now derives the display aspect from the canvas (so a square or vertical
+   deliverable is described correctly) and omits the sample aspect, and a test asserts white text
+   appears in the rendered frame. `qtext` is available for text and `mix`/`luma`
    for transitions, but compositing a title over the picture needs a `qtblend`-style transition and
    a second video track, and a true cross-fade needs an A/B roll with blank padding. Both are
    deliberately deferred rather than half-built.

@@ -55,6 +55,9 @@ def test_xml_has_one_producer_and_entry_per_clip() -> None:
     assert producers[1].find("property").text == "/tmp/b.mp4"
     profile = root.find("profile")
     assert profile.get("width") == "320"
+    assert profile.get("display_aspect_num") == "16"
+    assert profile.get("display_aspect_den") == "9"
+    assert profile.get("sample_aspect_num") is None  # 1:1 here drops qtblend composites
     assert root.find("tractor").get("out") == "95"  # 4.0s at 24fps, inclusive
 
 
@@ -175,6 +178,23 @@ def test_audio_tracks_use_static_entry_filters() -> None:
         float(element.text or 0) == 0.0
         for element in voice_entries[0].find("filter").findall("property")
         if element.get("name") == "level"
+    )
+
+
+def test_the_display_aspect_follows_the_canvas() -> None:
+    vertical = timeline(width=1080, height=1920)
+    square = timeline(width=1080, height=1080)
+
+    vertical_profile = ElementTree.fromstring(vertical.to_xml()).find("profile")
+    square_profile = ElementTree.fromstring(square.to_xml()).find("profile")
+
+    assert (
+        vertical_profile.get("display_aspect_num"),
+        vertical_profile.get("display_aspect_den"),
+    ) == ("9", "16")
+    assert (square_profile.get("display_aspect_num"), square_profile.get("display_aspect_den")) == (
+        "1",
+        "1",
     )
 
 

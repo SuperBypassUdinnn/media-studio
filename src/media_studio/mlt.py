@@ -162,6 +162,7 @@ class Timeline:
                 "producer": "main",
             },
         )
+        gcd = math.gcd(self.width, self.height) or 1
         header.append(
             ElementTree.Element(
                 "profile",
@@ -170,10 +171,11 @@ class Timeline:
                     "width": str(self.width),
                     "height": str(self.height),
                     "progressive": "1",
-                    "sample_aspect_num": "1",
-                    "sample_aspect_den": "1",
-                    "display_aspect_num": "16",
-                    "display_aspect_den": "9",
+                    # The display aspect comes from the canvas, so a square or vertical
+                    # deliverable is described correctly. Sample aspect is deliberately not
+                    # declared: with it set to 1:1 this MLT build drops qtblend title composites.
+                    "display_aspect_num": str(self.width // gcd),
+                    "display_aspect_den": str(self.height // gcd),
                     "frame_rate_num": f"{fps:g}",
                     "frame_rate_den": "1",
                     "colorspace": "709",

@@ -308,6 +308,38 @@ def mean_luminance_at(path: Path, at: float, crop: str | None = None) -> float:
     return float(values[0])
 
 
+def brightest_luminance_at(path: Path, at: float, crop: str | None = None) -> float:
+    """Brightest pixel in a frame or region.
+
+    A categorical signal for something small and bright, such as white text, where a mean would
+    barely move.
+    """
+
+    completed = run_command(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-nostats",
+            "-ss",
+            f"{at:.3f}",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-vf",
+            (f"crop={crop}," if crop else "") + "signalstats,metadata=print:file=-",
+            "-f",
+            "null",
+            "-",
+        ],
+        label=f"read peak luminance at {at:.3f}s in {path.name}",
+    )
+    values = re.findall(r"lavfi\.signalstats\.YMAX=([\d.]+)", completed.stdout or "")
+    if not values:
+        raise MediaError(f"no peak luminance reading for {path.name} at {at:.3f}s")
+    return float(values[0])
+
+
 def contact_sheet(
     source: Path, destination: Path, *, columns: int = 4, rows: int = 3, width: int = 320
 ) -> Path:

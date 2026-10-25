@@ -226,12 +226,11 @@ def test_ducking_measurably_lowers_the_music(project_root: Path, tmp_path: Path)
     assert levels["ducked"] < levels["flat"] - 3.0, levels
 
 
-def test_titles_are_emitted_with_a_compositing_blend(tmp_path: Path) -> None:
-    """Structural check only, and it says so.
+def test_titles_render_over_the_picture(tmp_path: Path) -> None:
+    """The text must actually appear, so this measures a region where the title sits.
 
-    A hand-written probe of the same shape renders the text, but the XML this module generates
-    does not show it yet, so no luminance claim is made here. The gap is recorded as an open item
-    in the design document rather than papered over with an assertion that would pass either way.
+    Getting here took a bisect: declaring `sample_aspect_num="1"` on the profile made qtblend
+    drop the title composite entirely in this MLT build.
     """
 
     from media_studio.mlt import Title
@@ -258,14 +257,17 @@ def test_titles_are_emitted_with_a_compositing_blend(tmp_path: Path) -> None:
         titles=(Title(text="DEMO", start=0.5, duration=1.0, size=60),),
     )
     xml = timeline.to_xml(tmp_path)
-
-    assert "qtext" in xml
-    assert "qtblend" in xml
+    assert "qtext" in xml and "qtblend" in xml
     assert '<property name="compositing">1</property>' in xml
-    assert "<blank" in xml  # the title is placed with transparent padding
 
     rendered = media.render_timeline(_write(tmp_path / "titles.mlt", xml), tmp_path / "titles.mkv")
-    assert media.probe(rendered).duration == pytest.approx(2.0, abs=0.1)
+
+    # Peak brightness, not a mean: white text on black is a few hundred bright pixels.
+    window = "240:90:0:0"
+    plain = media.brightest_luminance_at(rendered, 0.2, crop=window)
+    titled = media.brightest_luminance_at(rendered, 1.0, crop=window)
+    assert plain <= 20.0, plain  # nothing bright without the title
+    assert titled >= 150.0, titled  # antialiased white text, far above the black background
 
 
 def _write(path: Path, body: str) -> Path:
