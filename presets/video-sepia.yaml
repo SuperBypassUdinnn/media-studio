@@ -1,0 +1,27 @@
+id: video-sepia
+title: Sepia
+kind: video-effect
+engine: mlt
+intent: [sepia, vintage, nostalgic, look, stylise, stylize, flashback]
+applies_to: [video]
+summary: A one-step sepia tone, for a vintage insert or a flashback beat.
+implementation:
+  mlt_filter: sepia
+  properties:
+    u: "{u}"
+    v: "{v}"
+parameters:
+  - name: u
+    type: number
+    default: 0.2
+    minimum: 0.0
+    maximum: 1.0
+    description: MLT's u chroma offset; measured to change the tone at 0.2.
+  - name: v
+    type: number
+    default: 0.1
+    minimum: 0.0
+    maximum: 1.0
+    description: MLT's v chroma offset; the pair sets how far the picture drifts.
+license: CC0-1.0
+provenance: in-house, verified by a frame whose pixels changed but whose mean level did not

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -11,7 +13,7 @@ from media_studio import media
 from media_studio.cli import main
 from media_studio.ledger import stage_asset
 from media_studio.manifest import load_project
-from media_studio.mlt import Clip, Timeline
+from media_studio.mlt import Clip, Timeline, Title
 from media_studio.presets import (
     KINDS,
     PresetError,
@@ -106,6 +108,16 @@ def test_audio_and_title_recipes_resolve_their_settings(recipes: dict) -> None:
     assert resolved["size"] == "64"
     assert resolved["position"] == "+10+900"
 
+    caption = recipes["title-caption-top"]
+    defaults = caption.title_settings(caption.resolve())
+
+    def y_offset(position: str) -> int:
+        return int(position.rsplit("+", 1)[1])
+
+    # The top caption sits above the middle of a 1080p frame; the lower third sits below it.
+    assert defaults["position"] == "+120+80"
+    assert y_offset(defaults["position"]) < y_offset(resolved["position"])
+
 
 def test_resolve_effects_keeps_placement_keys_out_of_parameters(recipes: dict) -> None:
     resolved = resolve_effects(
@@ -147,7 +159,8 @@ def test_cli_lists_searches_and_shows(capsys: pytest.CaptureFixture[str]) -> Non
     assert main(["presets", "list"]) == 0
     listing = capsys.readouterr().out
     assert "video-cross-dissolve" in listing
-    assert "7 preset(s)" in listing
+    # Derive the count instead of pinning it, so adding a recipe never breaks this test.
+    assert f"{len(load_recipes())} preset(s)" in listing
 
     assert main(["presets", "search", "blur"]) == 0
     assert "video-soften" in capsys.readouterr().out
@@ -190,6 +203,82 @@ def clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return destination
 
 
+@pytest.fixture(scope="module")
+def patterned_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """An asymmetric moving pattern, so a crop, a mirror, or a tint has to change pixels."""
+
+    work = tmp_path_factory.mktemp("preset-pattern")
+    destination = work / "pattern.mp4"
+    completed = subprocess.run(
+        [
+            media.FFMPEG,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=24:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-300:]
+    return destination
+
+
+def render_pair(
+    tmp_path: Path, clip: Path, service: str, properties: dict, prefix: str = "pair"
+) -> tuple[Path, Path]:
+    """Render the same clip with and without one filter, and return both videos."""
+
+    def timeline(filters: tuple) -> Timeline:
+        return Timeline(
+            width=160,
+            height=90,
+            fps=24.0,
+            clips=(Clip(resource=clip, duration=1.0, filters=filters),),
+        )
+
+    rendered: list[Path] = []
+    for name, filters in (("plain", ()), ("filtered", ((service, properties),))):
+        path = tmp_path / f"{prefix}-{name}.mlt"
+        path.write_text(timeline(filters).to_xml(tmp_path), encoding="utf-8")
+        rendered.append(media.render_timeline(path, tmp_path / f"{prefix}-{name}.mkv"))
+    return rendered[0], rendered[1]
+
+
+@pytest.mark.parametrize(
+    ("recipe_id", "overrides"),
+    [
+        ("video-warm-grade", {}),
+        ("video-crop-vertical", {"left": 40, "right": 40}),
+        ("video-sepia", {}),
+        ("video-glitch-wave", {"amplitude": 12}),
+    ],
+)
+def test_a_look_recipe_reaches_the_frame(
+    tmp_path: Path, patterned_clip: Path, recipes: dict, recipe_id: str, overrides: dict
+) -> None:
+    recipe = recipes[recipe_id]
+    service = recipe.implementation["mlt_filter"]
+    properties = recipe.render(recipe.resolve(overrides))
+
+    plain_frame, filtered_frame = render_pair(
+        tmp_path, patterned_clip, service, properties, prefix=recipe_id
+    )
+
+    assert media.pixel_digest(filtered_frame) != media.pixel_digest(plain_frame)
+
+
 def test_a_video_effect_preset_changes_the_picture(
     tmp_path: Path, clip: Path, recipes: dict
 ) -> None:
@@ -198,21 +287,7 @@ def test_a_video_effect_preset_changes_the_picture(
     brighten = recipes["video-brighten"]
     properties = brighten.render(brighten.resolve({"amount": 1.5}))
 
-    plain = Timeline(width=160, height=90, fps=24.0, clips=(Clip(resource=clip, duration=1.0),))
-    filtered = Timeline(
-        width=160,
-        height=90,
-        fps=24.0,
-        clips=(Clip(resource=clip, duration=1.0, filters=(("brightness", properties),)),),
-    )
-
-    plain_path = tmp_path / "plain.mlt"
-    plain_path.write_text(plain.to_xml(tmp_path), encoding="utf-8")
-    filtered_path = tmp_path / "filtered.mlt"
-    filtered_path.write_text(filtered.to_xml(tmp_path), encoding="utf-8")
-
-    plain_frame = media.render_timeline(plain_path, tmp_path / "plain.mkv")
-    filtered_frame = media.render_timeline(filtered_path, tmp_path / "filtered.mkv")
+    plain_frame, filtered_frame = render_pair(tmp_path, clip, "brightness", properties, "brighten")
 
     plain_luma = media.mean_luminance_at(plain_frame, 0.5)
     filtered_luma = media.mean_luminance_at(filtered_frame, 0.5)
@@ -311,3 +386,140 @@ def test_an_unknown_effect_is_refused_by_validate(tmp_path: Path) -> None:
     assert validate_effects(project.effects)
     with pytest.raises(Exception, match="no preset 'video-nope'"):
         build_timeline(project, project.deliverables[0])
+
+
+# Snapshot coverage --------------------------------------------------------------------------
+
+# Every recipe of a rendered kind is snapshotted, so adding one adds its coverage automatically.
+SNAPSHOT_DIRECTORY = Path(__file__).parent / "snapshots" / "presets"
+SNAPSHOT_VIDEO_EFFECTS = sorted(
+    recipe.id for recipe in load_recipes().values() if recipe.kind == "video-effect"
+)
+SNAPSHOT_TITLES = sorted(recipe.id for recipe in load_recipes().values() if recipe.kind == "title")
+# Mean absolute difference per channel on the 0-255 scale. Measured drift on this machine is 0.00
+# for every video effect and 0.34-0.39 for the two titles, where text rasterisation is the only
+# jitter, so 1.5 leaves room for that and still fails on any real change to a look.
+SNAPSHOT_TOLERANCE = 1.5
+# A snapshot has to differ from the unfiltered frame, or the recipe proves nothing. Measured against
+# the fixture below this holds for every video effect once the defaults fit the frame.
+SNAPSHOT_MINIMUM_CHANGE = 1.0
+# Some defaults describe a 1920x1080 frame, which the small fixture cannot honour, so the crop is
+# snapshotted with an override that actually removes pixels.
+SNAPSHOT_OVERRIDES: dict[str, dict] = {"video-crop-vertical": {"left": 40, "right": 40}}
+
+
+def frame_png(video: Path, destination: Path, at: float = 0.5) -> Path:
+    """One decoded frame as PNG, so two renders can be compared pixel by pixel."""
+
+    completed = subprocess.run(
+        [
+            media.FFMPEG,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            str(at),
+            "-i",
+            str(video),
+            "-frames:v",
+            "1",
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-300:]
+    return destination
+
+
+def mean_absolute_difference(left: Path, right: Path) -> float:
+    """How far apart two images are, averaged over every channel, on the 0-255 scale."""
+
+    completed = subprocess.run(
+        [
+            "magick",
+            str(left),
+            str(right),
+            "-compose",
+            "difference",
+            "-composite",
+            "-format",
+            "%[fx:mean*255]",
+            "info:",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(completed.stdout.strip())
+
+
+def compare_with_snapshot(rendered: Path, recipe_id: str) -> None:
+    """Compare against the recorded frame, or record it when MS_PRESET_SNAPSHOTS=regen.
+
+    The baselines encode this machine's `melt`, encoder, and font versions. Regenerating them
+    therefore rewrites committed files with whatever is installed here, which is meant to be a
+    deliberate, reviewable change rather than a step to make a failing test pass.
+    """
+
+    baseline = SNAPSHOT_DIRECTORY / f"{recipe_id}.png"
+    if os.environ.get("MS_PRESET_SNAPSHOTS") == "regen":
+        baseline.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(rendered, baseline)
+        return
+    assert baseline.is_file(), f"no snapshot at {baseline}; run with MS_PRESET_SNAPSHOTS=regen"
+    difference = mean_absolute_difference(rendered, baseline)
+    assert difference <= SNAPSHOT_TOLERANCE, (
+        f"{recipe_id} differs from its snapshot by {difference:.2f} of {SNAPSHOT_TOLERANCE}"
+    )
+
+
+@pytest.mark.parametrize("recipe_id", SNAPSHOT_VIDEO_EFFECTS)
+def test_every_video_effect_matches_its_snapshot(
+    tmp_path: Path, patterned_clip: Path, recipes: dict, recipe_id: str
+) -> None:
+    recipe = recipes[recipe_id]
+    properties = recipe.render(recipe.resolve(SNAPSHOT_OVERRIDES.get(recipe_id)))
+
+    plain, filtered = render_pair(
+        tmp_path, patterned_clip, recipe.implementation["mlt_filter"], properties, recipe_id
+    )
+
+    plain_frame = frame_png(plain, tmp_path / f"{recipe_id}-plain.png")
+    filtered_frame = frame_png(filtered, tmp_path / f"{recipe_id}.png")
+
+    # A snapshot that matches the unfiltered frame would pass while the recipe did nothing.
+    assert mean_absolute_difference(filtered_frame, plain_frame) >= SNAPSHOT_MINIMUM_CHANGE, (
+        f"{recipe_id} left the fixture frame unchanged"
+    )
+    compare_with_snapshot(filtered_frame, recipe_id)
+
+
+@pytest.mark.parametrize("recipe_id", SNAPSHOT_TITLES)
+def test_every_title_recipe_matches_its_snapshot(
+    tmp_path: Path, patterned_clip: Path, recipes: dict, recipe_id: str
+) -> None:
+    recipe = recipes[recipe_id]
+    settings = recipe.title_settings(recipe.resolve())
+    title = Title(
+        text="Snapshot",
+        start=0.2,
+        duration=0.8,
+        size=int(settings["size"]),
+        colour=settings["colour"],
+        geometry=settings["position"],
+    )
+    timeline = Timeline(
+        width=160,
+        height=90,
+        fps=24.0,
+        clips=(Clip(resource=patterned_clip, duration=1.0),),
+        titles=(title,),
+    )
+    path = tmp_path / f"{recipe_id}.mlt"
+    path.write_text(timeline.to_xml(tmp_path), encoding="utf-8")
+    video = media.render_timeline(path, tmp_path / f"{recipe_id}.mkv")
+
+    compare_with_snapshot(frame_png(video, tmp_path / f"{recipe_id}.png"), recipe_id)

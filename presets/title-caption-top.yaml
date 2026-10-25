@@ -1,0 +1,44 @@
+id: title-caption-top
+title: Top caption
+kind: title
+engine: mlt
+intent: [title, caption, top, headline, banner, text]
+applies_to: [video]
+summary: A caption across the top of a 1080p frame, for a headline or a context line.
+implementation:
+  title:
+    size: "{size}"
+    position: "{position}"
+    colour: "{colour}"
+parameters:
+  - name: start
+    type: number
+    default: 1.0
+    minimum: 0.0
+    maximum: 3600.0
+    unit: s
+    description: When the text appears.
+  - name: duration
+    type: number
+    default: 2.0
+    minimum: 0.2
+    maximum: 60.0
+    unit: s
+    description: How long the text stays.
+  - name: size
+    type: integer
+    default: 48
+    minimum: 18
+    maximum: 200
+    unit: px
+    description: Font size in pixels.
+  - name: position
+    type: string
+    default: "+120+80"
+    description: X and Y offset for the text.
+  - name: colour
+    type: string
+    default: "#ffffffff"
+    description: Text colour as #rrggbbaa.
+license: CC0-1.0
+provenance: in-house, verified by measuring text pixels in a rendered frame

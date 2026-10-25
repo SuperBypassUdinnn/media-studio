@@ -1,0 +1,21 @@
+id: video-glitch-wave
+title: Wave glitch
+kind: video-effect
+engine: mlt
+intent: [glitch, wave, distortion, datamosh, punch, beat]
+applies_to: [video]
+summary: A horizontal sine-wave displacement, short and wrong on purpose, for a beat.
+implementation:
+  mlt_filter: wave
+  properties:
+    wave: "{amplitude}"
+parameters:
+  - name: amplitude
+    type: number
+    default: 8
+    minimum: 1
+    maximum: 40
+    unit: px
+    description: Peak horizontal displacement.
+license: CC0-1.0
+provenance: in-house, verified against a measured frame

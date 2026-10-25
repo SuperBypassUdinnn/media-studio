@@ -413,15 +413,25 @@ Discovery is local and textual: a search by intent returns an id, the parameter 
 preview path, so a preset costs tens of tokens instead of a documentation page. `project.yaml`
 references presets by id with parameters under `effects:`, which keeps projects reproducible.
 
-As built (2026-10-25): seven recipes live under `presets/*.yaml` and `media_studio/presets.py`
+As built (2026-10-26): twelve recipes live under `presets/*.yaml` and `media_studio/presets.py`
 loads, integrity-checks, searches, and parameter-validates them. `ms presets list|search|show`
 exposes the registry to a person and to the agent, and `project.yaml` references a recipe by id
 under `effects:` with parameter overrides; `ms project validate` rejects an unknown id, an out of
 range parameter, or a title effect without text. Application is wired to the mechanisms verified
 this week: a transition becomes a `luma` dissolve, a video effect becomes a static MLT filter on
 the clip's producer, an audio effect sets the music bed's level, fades, and duck depth, and a title
-becomes a `qtext` overlay. The two transition recipes, three video effects, one audio effect, and
-one title are in-house and each records its provenance as a verified render.
+becomes a `qtext` overlay. The two transition recipes, seven video effects, one audio effect, and two
+titles are in-house and each records its provenance as a verified render. The five added on
+2026-10-26 were chosen by probing which MLT filters this build actually applies: warming through
+`lift_gamma_gain`, a 9:16 `crop`, a one-step `sepia`, and a `wave` displacement, plus a top caption
+built on the `qtext` title mechanism the video path already renders. That probe is committed as
+`scripts/probe-preset-filters.py`, which renders one clip through each candidate and prints the
+frame's mean level and a digest of its pixels; saturation, hue, colorbalance, and rgba are the
+candidates it measures as having no effect here, so no recipe claims them. Render coverage has two layers: each video effect is rendered on a fixed clip with and without
+the filter and the decoded pixels are compared, and every recipe of a rendered kind — all seven video
+effects and both titles — is compared against a recorded frame in `tests/snapshots/presets/` within a
+mean absolute difference of 1.5 of 255, which is a snapshot that also has to differ from the
+unfiltered frame, regenerated deliberately with `MS_PRESET_SNAPSHOTS=regen`.
 
 Out of scope: executing After Effects or Premiere templates, redistributing third-party
 templates, and paid marketplaces.
@@ -557,7 +567,7 @@ MCP path does not need it.
 | `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB. Met for all of it: OBJ, STL, and GLB conversion and normalisation, the headless turntable with metrics and a contact sheet, and material and HDRI binding, which was proved live on 2026-10-25 with `mossy_rock` and `belfast_sunset_puresky` at 1k (four shader slots bound, eight CC0 assets staged and indexed, a GLB with embedded textures, and a proof frame at 138.9 mean luma) |
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
-| Preset library | Every registered preset applies to a fixture timeline or scene and renders without manual adjustment, with a snapshot test inside tolerance; a pack downloaded from a free source lands with a complete license sidecar and appears in `CREDITS.md`. Met for the in-house recipes: each is applied through `effects:` and the video-effect and transition kinds are verified by measuring a rendered frame; the downloaded-pack half still belongs to the asset ledger |
+| Preset library | Every registered preset applies to a fixture timeline or scene and renders without manual adjustment, with a snapshot test inside tolerance; a pack downloaded from a free source lands with a complete license sidecar and appears in `CREDITS.md`. Met for the in-house recipes: each is applied through `effects:`, every recipe of a rendered kind (seven video effects, two titles) is compared against a recorded frame within a mean absolute difference of 1.5 of 255, a snapshot that matches the unfiltered frame fails outright, and the video-effect and transition kinds are additionally verified by measuring a rendered frame; the downloaded-pack half still belongs to the asset ledger |
 
 Implemented so far (2026-10-24): manifest loading and validation (`ms project validate`); the asset
 ledger (`ms assets stage`, `ms assets index`, `ms assets list`) with REUSE sidecars, a derived index

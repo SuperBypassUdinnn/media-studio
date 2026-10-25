@@ -1,0 +1,34 @@
+id: video-warm-grade
+title: Warm grade
+kind: video-effect
+engine: mlt
+intent: [grade, warm, golden, colour, color, temperature, sunset]
+applies_to: [video]
+summary: Warms the picture by gaining red and green while pulling blue down.
+implementation:
+  mlt_filter: lift_gamma_gain
+  properties:
+    gain_r: "{red}"
+    gain_g: "{green}"
+    gain_b: "{blue}"
+parameters:
+  - name: red
+    type: number
+    default: 1.1
+    minimum: 0.5
+    maximum: 2.0
+    description: Red channel gain.
+  - name: green
+    type: number
+    default: 1.02
+    minimum: 0.5
+    maximum: 2.0
+    description: Green channel gain.
+  - name: blue
+    type: number
+    default: 0.85
+    minimum: 0.5
+    maximum: 2.0
+    description: Blue channel gain; below 1 warms the picture.
+license: CC0-1.0
+provenance: in-house, verified against a measured frame

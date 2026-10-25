@@ -6,6 +6,7 @@ errors, and `melt`'s duplicate-registration chatter is ignored because it is har
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -15,6 +16,7 @@ from pathlib import Path
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
 MELT = "melt"
+MAGICK = "magick"
 TIMEOUT_SECONDS = 3600
 OUTPUT_TAIL = 1200
 LOUDNESS_JSON = re.compile(r"\{\s*\"input_i\".*?\}", re.DOTALL)
@@ -282,6 +284,22 @@ def _segments(
         (start, ends[index] if index < len(ends) else duration)
         for index, start in enumerate(starts)
     ]
+
+
+def pixel_digest(path: Path) -> str:
+    """A digest of the decoded pixels.
+
+    Two renders can share a mean level and still differ, so anything comparing looks compares this
+    instead: it decodes every channel at 8 bits and hashes the result, which is deterministic for
+    the same input and independent of how the file was encoded.
+    """
+
+    completed = subprocess.run(
+        [MAGICK, str(path), "-depth", "8", "rgb:-"], capture_output=True, check=False
+    )
+    if completed.returncode != 0:
+        raise MediaError(f"{MAGICK} could not decode {path.name}")
+    return hashlib.sha256(completed.stdout).hexdigest()
 
 
 def mean_luminance_at(path: Path, at: float, crop: str | None = None) -> float:
