@@ -261,10 +261,12 @@ instrumental-only or vocal-only variants when a project needs them.
 As built (2026-10-26): `media_studio/blender.py` runs Blender headless and every run carries the
 environment this machine needs, in one place: `VK_ICD_FILENAMES` plus `--gpu-backend vulkan`, and
 `/usr/bin` ahead of `~/.local/bin` on `PATH`. It also detects a packaging mismatch that stops
-Blender from starting at all (Blender 17:5.2.3-3 links `libdraco.so.10`, the installed `draco`
-package ships `libdraco.so.9`), shims the missing name through a private `LD_LIBRARY_PATH`, and
-says so in every report so the real fix is not forgotten; `ms doctor --deep` reports the same
-state. `ms 3d inspect` measures a model (objects, vertices, triangles, non-manifold edges, loose
+Blender from starting at all, and shims the missing library name through a private
+`LD_LIBRARY_PATH` while saying so in every report. That guard was exercised for real on
+2026-10-25, when Blender 17:5.2.3-3 linked `libdraco.so.10` while the installed `draco` still
+shipped `libdraco.so.9`; updating `draco` to 1.5.8 resolved it the same day, the shim was removed,
+and `ms doctor --deep` reported Blender 5.2.3 clean afterwards. The guard stays because the
+combination can break again on any partial upgrade, but it should never be the steady state. `ms 3d inspect` measures a model (objects, vertices, triangles, non-manifold edges, loose
 vertices, materials, bounds, unit scale) and names what needs repair; `ms 3d convert` applies
 transforms, rebuilds outward normals, welds duplicate vertices, optionally decimates, and reports
 the repaired mesh rather than the exported file, because a glTF round trip splits vertices per
