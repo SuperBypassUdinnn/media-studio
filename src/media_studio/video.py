@@ -21,6 +21,7 @@ from . import media
 from .ledger import read_sidecar
 from .manifest import AudioCue, Deliverable, Project, VideoPlan
 from .mlt import AudioPlan, Clip, Timeline, Title, ducking_from_speech, timeline_seconds
+from .presets import PresetError, resolve_effects
 from .sidecar import UNKNOWN_SPDX
 
 SCRATCH_ROOT = Path("/tmp/opencode")
@@ -120,6 +121,7 @@ def build_timeline(
         )
         for shot in plan.shots
     )
+    clips, music_overrides, titles_from_presets = _apply_effects(project, plan, clips)
 
     width, height, fps = _geometry(deliverable)
     scratch = scratch_directory(project.slug)
@@ -140,29 +142,123 @@ def build_timeline(
         }
     voice_plan = _audio_plan(project, plan.voice)
 
+    music = _audio_plan(project, plan.music, ducking)
+    if music is not None and music_overrides:
+        music = replace(music, **music_overrides)
+
     timeline = Timeline(
         width=width,
         height=height,
         fps=fps,
         clips=clips,
-        music=_audio_plan(project, plan.music, ducking),
+        music=music,
         voice=voice_plan,
-        titles=tuple(
-            Title(
-                text=title.text,
-                start=title.start,
-                duration=title.duration,
-                size=title.size,
-                colour=title.colour,
-                geometry=title.position,
-            )
-            for title in plan.titles
+        titles=(
+            *(
+                Title(
+                    text=title.text,
+                    start=title.start,
+                    duration=title.duration,
+                    size=title.size,
+                    colour=title.colour,
+                    geometry=title.position,
+                )
+                for title in plan.titles
+            ),
+            *titles_from_presets,
         ),
         transition_duration=plan.crossfade,
         title=f"{project.slug} {deliverable.id}",
     )
     ducking_evidence["plan_intervals"] = [list(interval) for interval in ducking]
     return timeline, ducking_evidence
+
+
+def _apply_effects(
+    project: Project, plan: VideoPlan, clips: tuple[Clip, ...]
+) -> tuple[tuple[Clip, ...], dict[str, object], tuple[Title, ...]]:
+    """Lay manifest effects onto the plan: filter, transition, audio settings, or title."""
+
+    if not project.effects:
+        return clips, {}, ()
+    try:
+        resolved = resolve_effects([dict(entry) for entry in project.effects])
+    except PresetError as error:
+        raise VideoError(str(error)) from error
+
+    working = list(clips)
+    music_overrides: dict[str, object] = {}
+    titles: list[Title] = []
+
+    for entry, (recipe, values) in zip(project.effects, resolved, strict=True):
+        target = str(entry.get("at") or "")
+        index = _shot_index(plan, target)
+        if recipe.kind == "video-effect":
+            if index is None:
+                raise VideoError(f"effect {recipe.id} needs an `at` naming a shot")
+            properties = recipe.render(values)
+            working[index] = replace(
+                working[index],
+                filters=(
+                    *working[index].filters,
+                    (str(recipe.implementation["mlt_filter"]), properties),
+                ),
+            )
+        elif recipe.kind == "transition":
+            if index is None:
+                raise VideoError(f"transition {recipe.id} needs an `at` naming a shot")
+            duration = float(values.get("duration") or 0.5)
+            if recipe.implementation.get("to") == "next-shot":
+                working[index + 1] = (
+                    replace(working[index + 1], transition="crossfade", crossfade=duration)
+                    if index + 1 < len(working)
+                    else working[index + 1]
+                )
+            else:
+                black = _black_clip(scratch_directory(project.slug), 1920, 1080, 30.0, duration)
+                working.insert(
+                    index + 1,
+                    Clip(
+                        resource=black,
+                        duration=duration,
+                        transition="crossfade",
+                        crossfade=duration,
+                    ),
+                )
+        elif recipe.kind == "audio-effect":
+            settings = recipe.audio_settings(values)
+            if "gain_db" in settings:
+                music_overrides["gain"] = 10 ** (float(settings["gain_db"]) / 20)
+            for key in ("fade_in", "fade_out", "duck_level"):
+                if key in settings:
+                    music_overrides[key] = float(settings[key])
+        elif recipe.kind == "title":
+            settings = recipe.title_settings(values)
+            titles.append(
+                Title(
+                    text=str(entry.get("text") or ""),
+                    start=float(values.get("start") or 0.0),
+                    duration=float(values.get("duration") or 2.0),
+                    size=int(float(str(settings.get("size") or 54))),
+                    colour=str(settings.get("colour") or "#ffffffff"),
+                    geometry=str(settings.get("position") or "+0+0"),
+                )
+            )
+    return tuple(working), music_overrides, tuple(titles)
+
+
+def _shot_index(plan: VideoPlan, target: str) -> int | None:
+    """Find the shot an effect names, by asset id or by position."""
+
+    if not target:
+        return None
+    if target.isdigit():
+        index = int(target) - 1
+        return index if 0 <= index < len(plan.shots) else None
+    for index, shot in enumerate(plan.shots):
+        if shot.asset == target:
+            return index
+    raise VideoError(f"effect names shot {target!r}, which video.shots does not contain")
 
 
 def _with_fades(

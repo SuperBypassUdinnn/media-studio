@@ -37,6 +37,7 @@ class Clip:
     in_point: float = 0.0
     transition: str = "cut"
     crossfade: float | None = None  # overrides the timeline default for this clip
+    filters: tuple[tuple[str, dict[str, str]], ...] = ()  # static MLT filters, name then properties
 
     def out_point(self) -> float:
         return self.in_point + self.duration
@@ -197,6 +198,13 @@ class Timeline:
                 },
             )
             _property(producer, "resource", str(clip.resource))
+            for service, properties in clip.filters:
+                clip_filter = ElementTree.SubElement(
+                    producer, "filter", {"id": f"clip{index}_{service}"}
+                )
+                _property(clip_filter, "mlt_service", service)
+                for name, value in properties.items():
+                    _property(clip_filter, name, value)
 
         if self.titles:
             self._title_producers(header)

@@ -1,0 +1,43 @@
+id: audio-music-bed
+title: Music bed with ducking
+kind: audio-effect
+engine: mlt
+intent: [music, ducking, bed, background, voiceover]
+applies_to: [music]
+summary: Sets the bed level, its fades, and how far it drops under the voice.
+implementation:
+  audio:
+    gain_db: "{gain_db}"
+    fade_in: "{fade_in}"
+    fade_out: "{fade_out}"
+    duck_level: "{depth}"
+parameters:
+  - name: gain_db
+    type: number
+    default: -6.0
+    minimum: -40.0
+    maximum: 0.0
+    unit: dB
+    description: Bed level relative to the voice.
+  - name: fade_in
+    type: number
+    default: 1.0
+    minimum: 0.0
+    maximum: 10.0
+    unit: s
+    description: Fade up at the start.
+  - name: fade_out
+    type: number
+    default: 1.5
+    minimum: 0.0
+    maximum: 10.0
+    unit: s
+    description: Fade down at the end.
+  - name: depth
+    type: number
+    default: 0.3
+    minimum: 0.05
+    maximum: 1.0
+    description: Level kept while the voice is speaking.
+license: CC0-1.0
+provenance: in-house, verified by measuring a ducked window

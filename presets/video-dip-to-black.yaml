@@ -1,0 +1,20 @@
+id: video-dip-to-black
+title: Dip to black
+kind: transition
+engine: mlt
+intent: [transition, dip, black, pause, section-break]
+applies_to: [video]
+summary: Fades the picture to black and back, a hard punctuation between sections.
+implementation:
+  transition: dissolve
+  to: black
+parameters:
+  - name: duration
+    type: number
+    default: 0.5
+    minimum: 0.1
+    maximum: 3.0
+    unit: s
+    description: Length of the dip on each side.
+license: CC0-1.0
+provenance: in-house, verified by measuring a fade that darkens the edges

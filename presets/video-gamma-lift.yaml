@@ -1,0 +1,20 @@
+id: video-gamma-lift
+title: Gamma lift
+kind: video-effect
+engine: mlt
+intent: [exposure, gamma, contrast, shadows, moody]
+applies_to: [video]
+summary: Lifts the midtones without touching the ends, for a softer look.
+implementation:
+  mlt_filter: gamma
+  properties:
+    gamma: "{gamma}"
+parameters:
+  - name: gamma
+    type: number
+    default: 1.2
+    minimum: 0.5
+    maximum: 3.0
+    description: Above 1 lifts the midtones.
+license: CC0-1.0
+provenance: in-house, verified against a measured frame

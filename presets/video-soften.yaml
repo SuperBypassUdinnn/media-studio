@@ -1,0 +1,22 @@
+id: video-soften
+title: Soften
+kind: video-effect
+engine: mlt
+intent: [blur, soften, dreamy, texture, skin]
+applies_to: [video]
+summary: A small symmetric blur, enough to take the edge off digital sharpness.
+implementation:
+  mlt_filter: boxblur
+  properties:
+    hori: "{radius}"
+    vert: "{radius}"
+parameters:
+  - name: radius
+    type: number
+    default: 4
+    minimum: 1
+    maximum: 24
+    unit: px
+    description: Blur radius in pixels.
+license: CC0-1.0
+provenance: in-house, verified against a measured frame

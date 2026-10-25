@@ -1,0 +1,20 @@
+id: video-cross-dissolve
+title: Cross dissolve
+kind: transition
+engine: mlt
+intent: [transition, dissolve, crossfade, smooth, gentle]
+applies_to: [video]
+summary: Overlaps two shots and dissolves between them, so a cut becomes a breath.
+implementation:
+  transition: dissolve
+  to: next-shot
+parameters:
+  - name: duration
+    type: number
+    default: 0.5
+    minimum: 0.1
+    maximum: 3.0
+    unit: s
+    description: How long the two shots overlap.
+license: CC0-1.0
+provenance: in-house, verified by rendering a red-to-blue dissolve

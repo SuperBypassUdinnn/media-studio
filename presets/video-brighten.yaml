@@ -1,0 +1,20 @@
+id: video-brighten
+title: Brighten
+kind: video-effect
+engine: mlt
+intent: [exposure, brighten, lift, flat-footage]
+applies_to: [video]
+summary: Multiplies the picture level, for footage that came out flat.
+implementation:
+  mlt_filter: brightness
+  properties:
+    level: "{amount}"
+parameters:
+  - name: amount
+    type: number
+    default: 1.15
+    minimum: 0.5
+    maximum: 2.0
+    description: Above 1 brightens, below 1 darkens.
+license: CC0-1.0
+provenance: in-house, verified against a measured frame

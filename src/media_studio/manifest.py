@@ -143,6 +143,7 @@ class Project:
     assets: dict[str, str]
     timeline: tuple[dict[str, Any], ...]
     video: VideoPlan | None
+    effects: tuple[dict[str, Any], ...]
     raw: dict[str, Any]
 
     @property
@@ -213,6 +214,7 @@ def load_project(location: str | Path | None = None) -> Project:
         assets=_assets(raw.get("assets")),
         timeline=tuple(raw.get("timeline") or ()),
         video=_video(raw.get("video")),
+        effects=_effects(raw.get("effects")),
         raw=raw,
     )
 
@@ -282,6 +284,21 @@ def _optional_int(value: Any, field_name: str) -> int:
         return int(value)
     except (TypeError, ValueError) as error:
         raise ManifestError(f"{field_name} must be a whole number, got {value!r}") from error
+
+
+def _effects(value: Any) -> tuple[dict[str, Any], ...]:
+    """Top-level preset references. Validated against the registry by the caller."""
+
+    if value in (None, {}):
+        return ()
+    if not isinstance(value, list):
+        raise ManifestError("effects must be a list of preset references")
+    entries: list[dict[str, Any]] = []
+    for entry in value:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            raise ManifestError(f"every effects entry needs a preset id, got {entry!r}")
+        entries.append(dict(entry))
+    return tuple(entries)
 
 
 def _video(value: Any) -> VideoPlan | None:

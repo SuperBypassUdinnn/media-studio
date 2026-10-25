@@ -23,8 +23,15 @@ brand:
     heading: Inter
     body: Inter
 
-# Reserved for the preset registry (design decision D33): references by preset id
-# with parameter overrides. The `ms` CLI ignores this section until that lands.
+# Preset references (design decision D33). Search the registry with
+# `ms presets search <intent>`, inspect one with `ms presets show <id>`, and validate the
+# whole manifest with `ms project validate`.
+#
+# effects:
+#   - { id: video-cross-dissolve, at: shot-open, duration: 0.6 }
+#   - { id: video-brighten, at: shot-detail, amount: 1.2 }
+#   - { id: title-lower-third, text: "Nama Kamu", start: 1.0, duration: 2.5 }
+#   - { id: audio-music-bed, gain_db: -8, depth: 0.25 }
 effects: []
 
 # Assets referenced by id, as paths relative to the project root. The ledger writes

@@ -358,6 +358,16 @@ Discovery is local and textual: a search by intent returns an id, the parameter 
 preview path, so a preset costs tens of tokens instead of a documentation page. `project.yaml`
 references presets by id with parameters under `effects:`, which keeps projects reproducible.
 
+As built (2026-10-25): seven recipes live under `presets/*.yaml` and `media_studio/presets.py`
+loads, integrity-checks, searches, and parameter-validates them. `ms presets list|search|show`
+exposes the registry to a person and to the agent, and `project.yaml` references a recipe by id
+under `effects:` with parameter overrides; `ms project validate` rejects an unknown id, an out of
+range parameter, or a title effect without text. Application is wired to the mechanisms verified
+this week: a transition becomes a `luma` dissolve, a video effect becomes a static MLT filter on
+the clip's producer, an audio effect sets the music bed's level, fades, and duck depth, and a title
+becomes a `qtext` overlay. The two transition recipes, three video effects, one audio effect, and
+one title are in-house and each records its provenance as a verified render.
+
 Out of scope: executing After Effects or Premiere templates, redistributing third-party
 templates, and paid marketplaces.
 
@@ -492,7 +502,7 @@ MCP path does not need it.
 | `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB |
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
-| Preset library | Every registered preset applies to a fixture timeline or scene and renders without manual adjustment, with a snapshot test inside tolerance; a pack downloaded from a free source lands with a complete license sidecar and appears in `CREDITS.md` |
+| Preset library | Every registered preset applies to a fixture timeline or scene and renders without manual adjustment, with a snapshot test inside tolerance; a pack downloaded from a free source lands with a complete license sidecar and appears in `CREDITS.md`. Met for the in-house recipes: each is applied through `effects:` and the video-effect and transition kinds are verified by measuring a rendered frame; the downloaded-pack half still belongs to the asset ledger |
 
 Implemented so far (2026-10-24): manifest loading and validation (`ms project validate`); the asset
 ledger (`ms assets stage`, `ms assets index`, `ms assets list`) with REUSE sidecars, a derived index
