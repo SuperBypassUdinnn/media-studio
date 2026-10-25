@@ -74,7 +74,7 @@ Acceptance matrix
   phase 1  manifest validation (ms project validate)     implemented
   phase 1  asset ledger: stage, index, CREDITS           implemented
   phase 1  asset search: keyless plus keyed sources      implemented (offline tests; live run 2026-10-24)
-  phase 1  video render with loudness and QC             pending
+  phase 1  video render: MLT, melt, loudness, ducking    implemented (offline tests; live render 2026-10-24)
   phase 1  3D render through Blender CLI                 pending
   phase 1  design render through Inkscape                pending
   phase 1  scr2026 baseline reproduction                 pending

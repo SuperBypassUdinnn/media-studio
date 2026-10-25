@@ -242,6 +242,16 @@ Rules:
    `.kdenlive` for manual refinement. That copy is a working file, never the source of
    truth, and is excluded from the repository.
 
+As built (2026-10-24): the timeline is written by `media_studio/mlt.py`, rendered by `melt` to an
+FFV1 intermediate under `/tmp/opencode/<slug>/`, encoded by FFmpeg with a **two-pass** `loudnorm`
+(the measurement pass feeds `measured_I/LRA/TP/thresh` into the encode, with a `-1.5 dBTP`
+ceiling), and verified by `media_studio/media.py`: seven checks covering streams, duration,
+loudness distance, true peak, black frames, and frozen frames. Two MLT facts were established by reading its XML module and by rendering
+probes: an XML-declared filter is applied **statically** (the deserialiser stores nested properties
+as a string, so an animated `level` never reaches the filter), and the `volume` filter's `level` is
+in **dB**, not a linear factor. Ducking is therefore a chain of entries, each carrying a static
+level, with ramps quantised to 50 ms steps.
+
 Audio inside the path: voice-over cleanup (high-pass, denoise, compression), music ducking
 driven by voice-over segments, fades, and final loudness. Stem separation supplies
 instrumental-only or vocal-only variants when a project needs them.
@@ -467,7 +477,7 @@ MCP path does not need it.
 | Path | Acceptance criteria |
 | --- | --- |
 | `/assets` | A single query returns ranked, licensed candidates from at least three keyless 3D sources; download writes the file plus a complete sidecar; the index and `CREDITS.md` regenerate; duplicates collapse by hash; quota violations abort with a clear message |
-| `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive |
+| `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive. Met for everything except the Kdenlive open, which is still unverified on this machine |
 | `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB |
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
@@ -483,9 +493,11 @@ licensed candidates from three keyless sources that answer live (Met Museum, Wik
 Internet Archive), the download writes a complete sidecar, the index and `CREDITS.md` regenerate,
 duplicates collapse by hash, and quota violations abort with a message. Keyed clients are in as well: Pixabay
 for photos and videos and Freesound for sound effects answer live, while a keyed provider without a
-key is reported as skipped rather than failed. Still open: the three render paths, footage triage,
-and the preset library; Jamendo coverage waits on its credential. The selftest runs a ledger
-roundtrip end to end, and 142 pytest cases pass.
+key is reported as skipped rather than failed. The video path is in and measured: manifest to MLT, `melt` render, two-pass
+loudness normalisation, ducking driven by `silencedetect` on the voice track, a QC report with seven
+checks, and a contact sheet. Still open: the 3D and design paths, footage triage, the preset
+library, CSL titles, and A/B cross-fades between shots; Jamendo coverage waits on its credential.
+The selftest runs a ledger roundtrip end to end, and 167 pytest cases pass.
 
 ### Phase 2 - Canva
 
@@ -585,6 +597,16 @@ Decisions were reached in six rounds of a structured interview on 2026-10-22 and
    rule.
 
 ## 14. Open items for phase 1
+
+0. Titles and A/B cross-fades in the generated MLT. `qtext` is available for text and `mix`/`luma`
+   for transitions, but compositing a title over the picture needs a `qtblend`-style transition and
+   a second video track, and a true cross-fade needs an A/B roll with blank padding. Both are
+   deliberately deferred rather than half-built.
+0. `ms assets stage` writes the file and its sidecar but does not add the asset to the manifest's
+   `assets:` map, so a render refuses until the user names it. The stage output should print the
+   exact YAML line to paste.
+0. The Kdenlive handoff is untested: the generated `.mlt` parses and renders, but no one has opened
+   it in Kdenlive on this machine yet.
 
 1. The Jamendo client id in `secrets.env` is rejected with code 5, "credential is not authorized";
    it needs checking in the Jamendo portal. A `--verify` mode on the key wizard, which makes one

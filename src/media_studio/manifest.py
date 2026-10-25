@@ -31,9 +31,13 @@ MANIFEST_KEYS = frozenset(
         "brand",
         "assets",
         "effects",
+        "video",
         "budget",
     }
 )
+VIDEO_KEYS = frozenset({"shots", "voice", "music", "fade_in", "fade_out"})
+SHOT_KEYS = frozenset({"asset", "in", "duration"})
+CUE_KEYS = frozenset({"asset", "in", "gain", "fade_in", "fade_out", "duck"})
 DELIVERABLE_KEYS = frozenset(
     {"id", "kind", "container", "resolution", "fps", "duration", "loudness_lufs"}
 )
@@ -58,6 +62,38 @@ class Deliverable:
     fps: float | None = None
     duration: float | None = None
     loudness_lufs: float | None = None
+
+
+@dataclass(frozen=True)
+class Shot:
+    """One cut on the video track."""
+
+    asset: str
+    in_point: float = 0.0
+    duration: float | None = None
+
+
+@dataclass(frozen=True)
+class AudioCue:
+    """A music bed or a voice track, referenced by asset id."""
+
+    asset: str
+    in_point: float = 0.0
+    gain: float = 1.0
+    fade_in: float = 0.0
+    fade_out: float = 0.0
+    duck: bool = True
+
+
+@dataclass(frozen=True)
+class VideoPlan:
+    """How the video deliverable is assembled."""
+
+    shots: tuple[Shot, ...]
+    voice: AudioCue | None = None
+    music: AudioCue | None = None
+    fade_in: float = 0.0
+    fade_out: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -90,6 +126,7 @@ class Project:
     budget: Budget
     assets: dict[str, str]
     timeline: tuple[dict[str, Any], ...]
+    video: VideoPlan | None
     raw: dict[str, Any]
 
     @property
@@ -159,6 +196,7 @@ def load_project(location: str | Path | None = None) -> Project:
         budget=_budget(raw.get("budget")),
         assets=_assets(raw.get("assets")),
         timeline=tuple(raw.get("timeline") or ()),
+        video=_video(raw.get("video")),
         raw=raw,
     )
 
@@ -230,6 +268,56 @@ def _optional_int(value: Any, field_name: str) -> int:
         raise ManifestError(f"{field_name} must be a whole number, got {value!r}") from error
 
 
+def _video(value: Any) -> VideoPlan | None:
+    if value in (None, {}):
+        return None
+    if not isinstance(value, dict):
+        raise ManifestError("video must be a mapping with shots, and optionally voice and music")
+
+    shots: list[Shot] = []
+    for entry in value.get("shots") or []:
+        if not isinstance(entry, dict) or not entry.get("asset"):
+            raise ManifestError(f"every video.shots entry needs an asset id, got {entry!r}")
+        shots.append(
+            Shot(
+                asset=str(entry["asset"]),
+                in_point=_optional_float(entry.get("in"), "in") or 0.0,
+                duration=_optional_float(entry.get("duration"), "duration"),
+            )
+        )
+    if not shots:
+        raise ManifestError("video.shots must list at least one asset id")
+
+    cues: dict[str, AudioCue | None] = {}
+    for name in ("voice", "music"):
+        raw_cue = value.get(name)
+        if raw_cue in (None, {}):
+            cues[name] = None
+            continue
+        if not isinstance(raw_cue, dict) or not raw_cue.get("asset"):
+            raise ManifestError(f"video.{name} needs an asset id")
+        cues[name] = AudioCue(
+            asset=str(raw_cue["asset"]),
+            in_point=_optional_float(raw_cue.get("in"), "in") or 0.0,
+            gain=_optional_float(raw_cue.get("gain"), "gain") or 1.0,
+            fade_in=_optional_float(raw_cue.get("fade_in"), "fade_in") or 0.0,
+            fade_out=_optional_float(raw_cue.get("fade_out"), "fade_out") or 0.0,
+            duck=bool(raw_cue.get("duck", True)),
+        )
+    fade_in = _optional_float(value.get("fade_in"), "fade_in") or 0.0
+    fade_out = _optional_float(value.get("fade_out"), "fade_out") or 0.0
+    for name, fade in (("fade_in", fade_in), ("fade_out", fade_out)):
+        if fade < 0:
+            raise ManifestError(f"video.{name} cannot be negative")
+    return VideoPlan(
+        shots=tuple(shots),
+        voice=cues["voice"],
+        music=cues["music"],
+        fade_in=fade_in,
+        fade_out=fade_out,
+    )
+
+
 def _assets(value: Any) -> dict[str, str]:
     if value in (None, {}):
         return {}
@@ -253,12 +341,25 @@ def _unknown_fields(project: Project) -> list[str]:
     sections = (
         ("brand", BRAND_KEYS),
         ("budget", BUDGET_KEYS),
+        ("video", VIDEO_KEYS),
     )
     for name, allowed in sections:
         section = project.raw.get(name)
         if isinstance(section, dict):
             for key in sorted(set(section) - allowed):
                 problems.append(f"unknown {name} field: {key}")
+
+    video = project.raw.get("video")
+    if isinstance(video, dict):
+        for entry in video.get("shots") or []:
+            if isinstance(entry, dict):
+                for key in sorted(set(entry) - SHOT_KEYS):
+                    problems.append(f"unknown video.shots field: {key}")
+        for name in ("voice", "music"):
+            cue = video.get(name)
+            if isinstance(cue, dict):
+                for key in sorted(set(cue) - CUE_KEYS):
+                    problems.append(f"unknown video.{name} field: {key}")
     return problems
 
 
@@ -323,6 +424,22 @@ def validate_project(project: Project) -> ValidationReport:
                 f"assets.{asset_id}: {relative} is quarantined with an unknown licence; confirm "
                 "the licence and stage it again"
             )
+
+    if project.video is not None:
+        referenced = [shot.asset for shot in project.video.shots]
+        for name, cue in (("voice", project.video.voice), ("music", project.video.music)):
+            if cue is not None:
+                referenced.append(cue.asset)
+            if cue is not None and cue.gain <= 0:
+                errors.append(f"video.{name}.gain must be positive")
+        for asset_id in referenced:
+            if asset_id not in project.assets:
+                errors.append(
+                    f"video references asset {asset_id!r}, which is not declared under assets:"
+                )
+        for shot in project.video.shots:
+            if shot.duration is not None and shot.duration <= 0:
+                errors.append(f"video.shots[{shot.asset}].duration must be positive")
 
     if not project.deliverables:
         warnings.append("no deliverables declared; renders have nothing to produce")

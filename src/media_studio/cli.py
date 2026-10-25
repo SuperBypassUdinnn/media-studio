@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__
+from . import __version__, media
 from .ledger import (
     ASSET_CLASSES,
     LedgerError,
@@ -18,11 +18,14 @@ from .ledger import (
     write_index_and_credits,
 )
 from .manifest import ManifestError, load_project, validate_project
+from .media import MediaError
 from .project import ProjectError, default_project_root, scaffold_project
 from .search import SEARCH_KINDS, SearchError, load_outcome, run_search, save_outcome
 from .sources import module_named
 from .sources.base import Candidate, SourceError, http_fetch
 from .tools import CheckResult, DoctorReport, collect_toolchain, deep_checks, path_order_problem
+from .video import VideoError, qc_report
+from .video import render as render_video
 
 # A search class is not always the staging class: a stock photo belongs in the design set.
 STAGING_CLASS_FOR_KIND = {"image": "design", "video": "video", "audio": "audio", "music": "music"}
@@ -140,7 +143,103 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pull.set_defaults(func=cmd_assets_pull)
 
+    video = subparsers.add_parser("video", help="render and verify video deliverables")
+    video_sub = video.add_subparsers(dest="video_command", required=True)
+
+    render = video_sub.add_parser("render", help="render one video deliverable end to end")
+    render.add_argument("project", help="project path or slug")
+    render.add_argument("--deliverable", default=None, help="deliverable id from project.yaml")
+    render.add_argument("--preview", action="store_true", help="small and fast, for a look")
+    render.add_argument(
+        "--keep-intermediate",
+        action="store_true",
+        help="keep the lossless render under /tmp/opencode for inspection",
+    )
+    render.set_defaults(func=cmd_video_render)
+
+    qc = video_sub.add_parser("qc", help="measure an existing file and write a report")
+    qc.add_argument("project", help="project path or slug")
+    qc.add_argument("--file", type=Path, required=True, help="file to measure")
+    qc.set_defaults(func=cmd_video_qc)
+
     return parser
+
+
+def cmd_video_render(args: argparse.Namespace) -> int:
+    """Render a deliverable and report the measured QC checks."""
+
+    try:
+        project = load_project(args.project)
+        result = render_video(
+            project,
+            args.deliverable,
+            preview=args.preview,
+            keep_intermediate=args.keep_intermediate,
+        )
+    except (ManifestError, VideoError, MediaError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"rendered {result.deliverable.relative_to(project.root)}")
+    print(f"  mlt:      {result.mlt_path.relative_to(project.root)}")
+    print(f"  report:   {result.report_path.relative_to(project.root)}")
+    print(f"  sheet:    {result.contact_sheet.relative_to(project.root)}")
+    return _report_video_qc(result.report)
+
+
+def cmd_video_qc(args: argparse.Namespace) -> int:
+    """Measure a file against the project's expectations."""
+
+    try:
+        project = load_project(args.project)
+        source = Path(args.file).expanduser()
+        if not source.is_file():
+            raise VideoError(f"no such file: {source}")
+        deliverable = next(
+            (item for item in project.deliverables if item.kind == "video"),
+            None,
+        )
+        expected = deliverable.duration if deliverable and deliverable.duration else None
+        if expected is None:
+            expected = media.probe(source).duration
+        report = qc_report(
+            source,
+            expected_duration=expected,
+            target_lufs=project.loudness_lufs,
+        )
+    except (ManifestError, VideoError, MediaError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    report_path = project.root / "out" / "reports" / f"{source.stem}-qc.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"measured {source.name}")
+    print(f"  report:   {report_path.relative_to(project.root)}")
+    return _report_video_qc(report)
+
+
+def _report_video_qc(report: dict[str, object]) -> int:
+    """Print every check and return the exit status that matches them."""
+
+    loudness = report.get("loudness")
+    if isinstance(loudness, dict):
+        print(
+            f"  loudness: {loudness['integrated_lufs']} LUFS "
+            f"(target {loudness['target_lufs']}, off by {loudness['distance_lu']} LU), "
+            f"true peak {loudness['true_peak_dbtp']} dBTP"
+        )
+    print(
+        f"  media:    {report['width']}x{report['height']} @ {report['fps']} fps, "
+        f"{report['duration_seconds']}s, {report['video_codec']}/{report['audio_codec']}"
+    )
+    checks = report.get("checks")
+    if isinstance(checks, dict):
+        for name, passed in checks.items():
+            print(f"  {'ok  ' if passed else 'FAIL'} {name}")
+    ok = bool(report.get("ok"))
+    print("verdict: " + ("pass" if ok else "FAIL"))
+    return EXIT_OK if ok else EXIT_FAILURE
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:

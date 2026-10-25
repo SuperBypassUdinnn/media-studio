@@ -117,8 +117,19 @@ def test_key_status_reports_where_each_value_came_from(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path))
+    # The ambient environment may already carry real keys, so clear them first: this test is
+    # about precedence, not about what happens to be exported.
+    for name in (
+        "PIXABAY_API_KEY",
+        "FREESOUND_API_KEY",
+        "JAMENDO_CLIENT_ID",
+        "SKETCHFAB_API_TOKEN",
+        "UNSPLASH_ACCESS_KEY",
+        "BLENDERKIT_API_KEY",
+        "PEXELS_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PIXABAY_API_KEY", FAKE)
-    monkeypatch.delenv("PEXELS_API_KEY", raising=False)
     (tmp_path / "secrets.env").write_text("JAMENDO_CLIENT_ID=file-value\n", encoding="utf-8")
 
     statuses = {status.name: status for status in key_status()}

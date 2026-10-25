@@ -17,8 +17,10 @@ SHA256 dedupe, licence policy, and budget aborts; plus asset search (`ms assets 
 ranking and `ms assets pull` to stage a chosen candidate. Sources are keyless first (Met Museum,
 Wikimedia Commons, Internet Archive) with keyed providers on top (Pixabay, Freesound); a keyed
 provider without a key is reported as skipped, not failed. Credentials are read from the
-environment and then `~/.config/opencode/secrets.env`, always masked. Timeline authoring, rendering,
-footage triage, and the preset library are still open.
+environment and then `~/.config/opencode/secrets.env`, always masked. The video path is in as well: `ms video render` authors MLT XML, renders it with `melt`, encodes
+with a two-pass `loudnorm` onto the project's loudness target, derives music ducking from the
+voice track, and writes an `ffprobe`-measured QC report plus a contact sheet. The 3D and design
+paths, footage triage, and the preset library are still open.
 
 ## What it provides
 
@@ -56,6 +58,8 @@ uv venv && uv pip install -e . pytest        # once, inside the checkout
 .venv/bin/python -m media_studio.cli assets stage my-project --class 3d \
   --file ~/Downloads/tree.glb --license "CC0" --source-url https://example.org/tree
 .venv/bin/python -m media_studio.cli assets index my-project
+.venv/bin/python -m media_studio.cli video render my-project          # add --preview for a look
+.venv/bin/python -m media_studio.cli video qc my-project --file out/video/master-16x9.mp4
 bash scripts/selftest.sh
 ```
 

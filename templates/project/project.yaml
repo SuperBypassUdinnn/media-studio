@@ -31,6 +31,16 @@ effects: []
 # the files and their sidecars; name the ones a deliverable uses here.
 assets: {}
 
+# How the video deliverable is assembled. Uncomment and point it at staged assets.
+# video:
+#   shots:
+#     - { asset: shot-open, in: 0.5, duration: 2.7 }
+#     - { asset: shot-detail }        # duration omitted means "the whole clip"
+#   voice: { asset: vo-main }
+#   music: { asset: music-bed, gain: 0.6, fade_in: 1.0, fade_out: 1.5, duck: true }
+#   fade_in: 0.5
+#   fade_out: 0.8
+
 budget:
   max_asset_bytes: 209715200
   max_project_bytes: 21474836480

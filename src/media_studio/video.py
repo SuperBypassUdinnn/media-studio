@@ -1,0 +1,339 @@
+"""The video path: manifest to MLT to a measured deliverable.
+
+Steps, in order: resolve and licence-check the assets, build the timeline, derive the ducking
+windows from the voice track itself, write the MLT XML, render it through `melt`, encode with a
+two-pass `loudnorm` so the measured loudness lands on the project target, then verify the result
+and write both a QC report and a contact sheet.
+
+Scratch intermediates live under ``/tmp/opencode/<slug>/`` so a long render never fills the
+project, and they are deleted unless the caller asks to keep them.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from . import media
+from .ledger import read_sidecar
+from .manifest import AudioCue, Deliverable, Project, VideoPlan
+from .mlt import AudioPlan, Clip, Timeline, ducking_from_speech
+from .sidecar import UNKNOWN_SPDX
+
+SCRATCH_ROOT = Path("/tmp/opencode")
+DEFAULT_SHOT_SECONDS = 3.0
+LOUDNESS_TOLERANCE_LU = 0.5
+TRUE_PEAK_CEILING = -1.5
+
+
+class VideoError(RuntimeError):
+    """Raised when the video path cannot continue."""
+
+
+@dataclass(frozen=True)
+class RenderResult:
+    """What one render produced."""
+
+    deliverable: Path
+    mlt_path: Path
+    report_path: Path
+    contact_sheet: Path
+    intermediate: Path | None
+    report: dict[str, object]
+
+    @property
+    def ok(self) -> bool:
+        checks = self.report.get("checks")
+        return bool(isinstance(checks, dict) and all(checks.values()))
+
+
+def scratch_directory(slug: str) -> Path:
+    """Where intermediates go for one project."""
+
+    return SCRATCH_ROOT / slug / "video"
+
+
+def _resolve_asset(project: Project, asset_id: str) -> Path:
+    """Resolve a manifest asset id to a licensed file on disk."""
+
+    relative = project.assets.get(asset_id)
+    if not relative:
+        raise VideoError(f"asset id {asset_id!r} is not declared under assets: in project.yaml")
+    path = project.root / relative
+    if not path.is_file():
+        raise VideoError(f"asset {asset_id!r} is not staged at {relative}")
+    sidecar = read_sidecar(path)
+    if not sidecar:
+        raise VideoError(
+            f"asset {asset_id!r} ({relative}) has no .license sidecar; stage it through "
+            "`ms assets stage` before rendering"
+        )
+    if sidecar.get("SPDX-License-Identifier", UNKNOWN_SPDX) == UNKNOWN_SPDX:
+        raise VideoError(
+            f"asset {asset_id!r} ({relative}) is quarantined with an unknown licence and may not "
+            "appear in a deliverable"
+        )
+    return path
+
+
+def _shot_duration(project: Project, asset_id: str, declared: float | None) -> float:
+    if declared:
+        return declared
+    return round(media.probe(_resolve_asset(project, asset_id)).duration, 3) or DEFAULT_SHOT_SECONDS
+
+
+def _audio_plan(
+    project: Project, cue: AudioCue | None, ducking: tuple[tuple[float, float], ...] = ()
+) -> AudioPlan | None:
+    if cue is None:
+        return None
+    path = _resolve_asset(project, cue.asset)
+    return AudioPlan(
+        resource=path,
+        in_point=cue.in_point,
+        gain=cue.gain,
+        fade_in=cue.fade_in,
+        fade_out=cue.fade_out,
+        ducking=ducking if cue.duck else (),
+    )
+
+
+def build_timeline(
+    project: Project, deliverable: Deliverable
+) -> tuple[Timeline, dict[str, object]]:
+    """Turn the manifest's video plan into a timeline plus the evidence for its ducking."""
+
+    plan: VideoPlan | None = project.video
+    if plan is None or not plan.shots:
+        raise VideoError(
+            "project.yaml has no video.shots; add a video section naming the assets to cut together"
+        )
+    clips = tuple(
+        Clip(
+            resource=_resolve_asset(project, shot.asset),
+            duration=_shot_duration(project, shot.asset, shot.duration),
+            in_point=shot.in_point,
+        )
+        for shot in plan.shots
+    )
+
+    width, height, fps = _geometry(deliverable)
+    duration = round(sum(clip.duration for clip in clips), 6)
+
+    ducking: tuple[tuple[float, float], ...] = ()
+    ducking_evidence: dict[str, object] = {"intervals": [], "source": "none"}
+    voice_plan: AudioPlan | None = None
+    if plan.voice is not None:
+        voice_path = _resolve_asset(project, plan.voice.asset)
+        speech = media.speech_segments(voice_path)
+        ducking = ducking_from_speech(speech, duration)
+        ducking_evidence = {
+            "intervals": [list(interval) for interval in ducking],
+            "speech_segments": [list(segment) for segment in speech],
+            "source": "silencedetect on the voice track",
+        }
+    voice_plan = _audio_plan(project, plan.voice)
+
+    timeline = Timeline(
+        width=width,
+        height=height,
+        fps=fps,
+        clips=clips,
+        music=_audio_plan(project, plan.music, ducking),
+        voice=voice_plan,
+        fade_in=plan.fade_in,
+        fade_out=plan.fade_out,
+        title=f"{project.slug} {deliverable.id}",
+    )
+    ducking_evidence["plan_intervals"] = [list(interval) for interval in ducking]
+    return timeline, ducking_evidence
+
+
+def _geometry(deliverable: Deliverable) -> tuple[int, int, float]:
+    resolution = deliverable.resolution or "1920x1080"
+    width_text, _, height_text = resolution.partition("x")
+    try:
+        width, height = int(width_text), int(height_text)
+    except ValueError as error:
+        raise VideoError(f"deliverable {deliverable.id}: bad resolution {resolution!r}") from error
+    return width, height, float(deliverable.fps or 30.0)
+
+
+def encode_with_loudness(
+    intermediate: Path,
+    destination: Path,
+    target_lufs: float,
+    *,
+    preview: bool = False,
+) -> media.Loudness:
+    """Encode to H.264/AAC, normalising loudness with the measurement loudnorm asks for."""
+
+    measured = media.measure_loudness(intermediate, target_lufs)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        media.FFMPEG,
+        "-hide_banner",
+        "-nostats",
+        "-y",
+        "-i",
+        str(intermediate),
+        "-af",
+        f"loudnorm=I={target_lufs}:TP={TRUE_PEAK_CEILING}:LRA=11:{measured.as_loudnorm_arguments()}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast" if preview else "medium",
+        "-crf",
+        "28" if preview else "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k" if preview else "192k",
+        "-ar",
+        "48000",
+        "-movflags",
+        "+faststart",
+    ]
+    if preview:
+        command.extend(["-vf", "scale=640:-2"])
+    command.append(str(destination))
+    media.run_command(command, label=f"encode {destination.name}", expect_stdout=False)
+    if not destination.is_file():
+        raise VideoError(f"ffmpeg did not write {destination}")
+    return measured
+
+
+def qc_report(
+    deliverable: Path,
+    *,
+    expected_duration: float,
+    target_lufs: float,
+    preview: bool = False,
+) -> dict[str, object]:
+    """Measure the finished file and decide, field by field, whether it passed."""
+
+    info = media.probe(deliverable)
+    loudness = media.measure_loudness(deliverable, target_lufs)
+    # A deliberate fade is short; a black hole left by a missing clip is not.
+    black = media.black_segments(deliverable, minimum=1.0)
+    frozen = media.frozen_segments(deliverable)
+    distance = loudness.distance_from(target_lufs)
+    duration_gap = abs(info.duration - expected_duration)
+    tolerance = 0.5 if preview else 0.25
+
+    checks = {
+        "has_video": info.video_codec is not None,
+        "has_audio": info.audio_codec is not None,
+        "duration_matches": duration_gap <= tolerance,
+        "loudness_within_half_lu": distance <= LOUDNESS_TOLERANCE_LU,
+        "true_peak_below_ceiling": loudness.true_peak_dbtp <= TRUE_PEAK_CEILING + 0.3,
+        "no_black_frames": not black,
+        "no_frozen_frames": not frozen,
+    }
+    return {
+        "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        "deliverable": str(deliverable),
+        "preview": preview,
+        "duration_seconds": round(info.duration, 3),
+        "expected_seconds": round(expected_duration, 3),
+        "width": info.width,
+        "height": info.height,
+        "fps": info.fps,
+        "frames": info.frames,
+        "video_codec": info.video_codec,
+        "audio_codec": info.audio_codec,
+        "audio_channels": info.audio_channels,
+        "loudness": {
+            "integrated_lufs": round(loudness.integrated_lufs, 2),
+            "target_lufs": target_lufs,
+            "distance_lu": round(distance, 2),
+            "true_peak_dbtp": round(loudness.true_peak_dbtp, 2),
+            "loudness_range_lu": round(loudness.loudness_range, 2),
+        },
+        "black_segments": [list(segment) for segment in black],
+        "frozen_segments": [list(segment) for segment in frozen],
+        "checks": checks,
+        "ok": all(checks.values()),
+    }
+
+
+def render(
+    project: Project,
+    deliverable_id: str | None = None,
+    *,
+    preview: bool = False,
+    keep_intermediate: bool = False,
+) -> RenderResult:
+    """Render one video deliverable end to end."""
+
+    deliverable = _pick_deliverable(project, deliverable_id)
+    timeline, ducking_evidence = build_timeline(project, deliverable)
+    scratch = scratch_directory(project.slug)
+    scratch.mkdir(parents=True, exist_ok=True)
+
+    mlt_path = project.root / "out" / f"{deliverable.id}.mlt"
+    mlt_path.parent.mkdir(parents=True, exist_ok=True)
+    mlt_path.write_text(timeline.to_xml(project.root), encoding="utf-8")
+
+    intermediate = scratch / f"{deliverable.id}-render.mkv"
+    media.render_timeline(mlt_path, intermediate)
+
+    extension = deliverable.container or "mp4"
+    destination = project.root / "out" / "video" / f"{deliverable.id}.{extension}"
+    encode_with_loudness(intermediate, destination, project.loudness_lufs, preview=preview)
+
+    report = qc_report(
+        destination,
+        expected_duration=timeline.duration,
+        target_lufs=project.loudness_lufs,
+        preview=preview,
+    )
+    report["ducking"] = ducking_evidence
+    report["timeline"] = {
+        "shots": [str(clip.resource.name) for clip in timeline.clips],
+        "mlt": str(mlt_path.relative_to(project.root)),
+        "profile": f"{timeline.width}x{timeline.height}@{timeline.fps:g}",
+    }
+    report_path = project.root / "out" / "reports" / f"{deliverable.id}-qc.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    sheet = media.contact_sheet(
+        destination, project.root / "out" / "video" / f"{deliverable.id}-sheet.png"
+    )
+
+    kept: Path | None = None
+    if keep_intermediate:
+        kept = intermediate
+    else:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    return RenderResult(
+        deliverable=destination,
+        mlt_path=mlt_path,
+        report_path=report_path,
+        contact_sheet=sheet,
+        intermediate=kept,
+        report=report,
+    )
+
+
+def _pick_deliverable(project: Project, deliverable_id: str | None) -> Deliverable:
+    if deliverable_id:
+        for deliverable in project.deliverables:
+            if deliverable.id == deliverable_id:
+                if deliverable.kind != "video":
+                    raise VideoError(
+                        f"deliverable {deliverable_id} is a {deliverable.kind}, not video"
+                    )
+                return deliverable
+        raise VideoError(f"no deliverable {deliverable_id!r} in project.yaml")
+    for deliverable in project.deliverables:
+        if deliverable.kind == "video":
+            return deliverable
+    raise VideoError("project.yaml declares no video deliverable")
