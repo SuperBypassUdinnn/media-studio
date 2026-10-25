@@ -136,7 +136,7 @@ A media project is a directory created from the template, addressed by a slug.
   .gitignore
   sources/                raw footage and recordings, never overwritten
   assets/
-    3d/                   models, plus library/<source>/<slug>/ for PBR sets and HDRIs
+    3d/                   models, PBR texture maps, and HDRIs, flat, one sidecar each
     video/                stock clips
     audio/                voice-over, sound effects
     music/                background music
@@ -276,6 +276,30 @@ contact sheet, and compares against a recorded baseline by luminance with a stat
 (frame hashes are kept, but EEVEE's temporal jitter makes them differ between identical runs). This
 build ships EEVEE only; Cycles is not available.
 
+As built (2026-10-25): `media_studio/materials.py` closes the material half of this path. Poly Haven's
+public files API needs no key and serves CC0, so `ms 3d material <model> --project P --material ID
+[--hdri ID]` fetches every texture map plus an optional environment, stages each one through the
+ledger with its REUSE sidecar, refreshes `assets/index.json` and `assets/CREDITS.md` (CC0 requires no
+attribution, so CREDITS correctly records none while the index and sidecars keep the provenance),
+binds the maps in Blender, and optionally renders a proof frame. Source role names are translated to
+shader slots — `Diffuse` to base colour with an sRGB colour space, `Rough`, `nor_gl`, and `AO` as
+non-colour data — and roles with no slot (`Displacement`, the packed `arm` map, `nor_dx`) are reported
+as ignored instead of being silently dropped. A namespaced id from the aggregator
+(`polyhaven:mossy_rock`) is accepted directly, so a search there feeds the fetch. Ambient occlusion
+multiplies the base colour through a `ShaderNodeMixRGB` with named sockets, or is reported as unwired
+when there is no base colour for it to modulate; the world is an environment texture on the HDRI; and
+the proof camera aims at the mesh centre so the frame shows the whole object. Recording a deviation:
+candidate search runs through `assets-3d`, but the file list and the download use Poly Haven's own
+keyless API, because the aggregator exposes downloading only over MCP, which was not reachable from
+this session; its CLI returns search results alone. Both legs are keyless and CC0. Verified live on 2026-10-25 with
+`mossy_rock` plus `belfast_sunset_puresky` at 1k: 8 assets staged and indexed as CC0-1.0, four slots
+bound, a 3.6 MB GLB with embedded textures, and a proof frame at 138.9 mean luma showing the
+normal-mapped rock lit by the HDRI. That run also found two real defects the offline tests could not:
+staging downloaded into `/tmp` and renamed into the project, which fails with `EXDEV` when the system
+temp is a different filesystem, and the command passing Poly Haven role names to a shader script that
+expects slot names, which bound nothing while still exiting zero. Both are fixed and covered by
+regression tests.
+
 1. Import or convert the input (glTF, GLB, OBJ, FBX, USD, or STL) through Blender;
    `gltf-transform` handles web-ready validation, Draco and meshopt compression, and
    texture dedupe.
@@ -283,7 +307,7 @@ build ships EEVEE only; Cycles is not available.
    normalize pivot and scale, and optionally decimate or remesh through `assimp` or the
    `trimesh` and `pymeshlab` venv.
 3. Populate materials and environment: PBR sets and HDRIs fetched by the asset aggregator,
-   staged under `assets/3d/library/<source>/<slug>/`.
+   staged flat under `assets/3d/` beside the models, one REUSE sidecar per file.
 4. Author animation: keyframed turntable, camera moves, and transform animation through
    Blender Python.
 5. Render headless on the discrete GPU (section 8), at preview resolution first.
@@ -530,7 +554,7 @@ MCP path does not need it.
 | --- | --- |
 | `/assets` | A single query returns ranked, licensed candidates from at least three keyless 3D sources; download writes the file plus a complete sidecar; the index and `CREDITS.md` regenerate; duplicates collapse by hash; quota violations abort with a clear message |
 | `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive. Met for everything except the Kdenlive open, which is still unverified on this machine |
-| `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB. OBJ, STL, and GLB conversion, normalisation, and the headless turntable with metrics and a contact sheet are met and tested; material and HDRI binding through `assets-3d` is still open |
+| `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB. Met for all of it: OBJ, STL, and GLB conversion and normalisation, the headless turntable with metrics and a contact sheet, and material and HDRI binding, which was proved live on 2026-10-25 with `mossy_rock` and `belfast_sunset_puresky` at 1k (four shader slots bound, eight CC0 assets staged and indexed, a GLB with embedded textures, and a proof frame at 138.9 mean luma) |
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
 | Preset library | Every registered preset applies to a fixture timeline or scene and renders without manual adjustment, with a snapshot test inside tolerance; a pack downloaded from a free source lands with a complete license sidecar and appears in `CREDITS.md`. Met for the in-house recipes: each is applied through `effects:` and the video-effect and transition kinds are verified by measuring a rendered frame; the downloaded-pack half still belongs to the asset ledger |
@@ -546,10 +570,14 @@ Internet Archive), the download writes a complete sidecar, the index and `CREDIT
 duplicates collapse by hash, and quota violations abort with a message. Keyed clients are in as well: Pixabay
 for photos and videos and Freesound for sound effects answer live, while a keyed provider without a
 key is reported as skipped rather than failed. The video path is in and measured: manifest to MLT, `melt` render, two-pass
-loudness normalisation, ducking driven by `silencedetect` on the voice track, a QC report with seven
-checks, and a contact sheet. Still open: the 3D and design paths, footage triage, the preset
-library, CSL titles, and A/B cross-fades between shots; Jamendo coverage waits on its credential.
-The selftest runs a ledger roundtrip end to end, and 167 pytest cases pass.
+loudness normalisation, ducking driven by `silencedetect` on the voice track, title overlays, fades
+and A/B dissolves, a QC report with seven checks, and a contact sheet. Everything else in the table
+above landed on 2026-10-25: footage triage, the preset registry, the design path, the 3D path, and
+material and HDRI binding. Still open in phase 1: opening a generated `.mlt` in Kdenlive, which needs
+a person at the display; Jamendo coverage, which waits on its credential; a downloaded preset pack
+staged through the ledger; and the phase 3 `scr2026` baseline reproduction, which the acceptance
+matrix still lists as pending. The selftest runs a ledger roundtrip end to end, reports every phase 0
+check and every phase 1 check except that baseline row as implemented, and 260 pytest cases pass.
 
 ### Phase 2 - Canva
 

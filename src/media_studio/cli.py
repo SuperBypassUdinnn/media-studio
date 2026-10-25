@@ -35,7 +35,14 @@ from .ledger import (
     stage_asset,
     write_index_and_credits,
 )
-from .manifest import ManifestError, load_project, validate_project
+from .manifest import ManifestError, Project, load_project, validate_project
+from .materials import (
+    MaterialError,
+    bind,
+    fetch_hdri,
+    fetch_material,
+    proof_frame_luminance,
+)
 from .media import MediaError
 from .presets import (
     KINDS as PRESET_KINDS,
@@ -217,6 +224,17 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--out", type=Path, default=None, help="output directory")
     convert.add_argument("--decimate", type=float, default=0.0, help="ratio below 1.0 to simplify")
     convert.set_defaults(func=cmd_3d_convert)
+    material = three_d_sub.add_parser("material", help="fetch and bind a PBR material")
+    material.add_argument("model", type=Path)
+    material.add_argument("--project", required=True, help="project to stage the maps into")
+    material.add_argument("--material", required=True, help="asset id, for example mossy_rock")
+    material.add_argument("--hdri", default=None, help="HDRI asset id for the world lighting")
+    material.add_argument("--resolution", default="1k", help="texture resolution, default 1k")
+    material.add_argument("--out", type=Path, default=None, help="where to write the bound model")
+    material.add_argument("--render", action="store_true", help="also render a proof frame")
+    material.add_argument("--proof-resolution", default="640x360")
+    material.set_defaults(func=cmd_3d_material)
+
     spin = three_d_sub.add_parser("turntable", help="render a turntable headlessly")
     spin.add_argument("model", type=Path)
     spin.add_argument("--project", default=None, help="project to write outputs and reports into")
@@ -343,6 +361,57 @@ def cmd_3d_convert(args: argparse.Namespace) -> int:
     print(f"  triangles: {before.triangles} -> {conversion.triangles}")
     print(f"  problems:  {', '.join(conversion.problems) or 'none'}")
     return EXIT_OK if not conversion.problems else EXIT_FAILURE
+
+
+def cmd_3d_material(args: argparse.Namespace) -> int:
+    """Fetch a keyless PBR material, bind it to a model, and prove it rendered."""
+
+    try:
+        project = load_project(args.project)
+        material = fetch_material(project, args.material, resolution=args.resolution)
+        staged_hdri = (
+            fetch_hdri(project, args.hdri, resolution=args.resolution) if args.hdri else None
+        )
+        destination = args.out or annotate_output(project, args.model, "-pbr.glb")
+        proof = annotate_output(project, args.model, "-proof.png") if args.render else None
+        resolution = _resolution(args.proof_resolution)
+        result = bind(
+            args.model,
+            material.maps,
+            destination=destination,
+            hdri=staged_hdri.path if staged_hdri else None,
+            render=proof,
+            resolution=resolution,
+        )
+    except (ManifestError, BlenderError, MaterialError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"{args.material}: bound {', '.join(result.bound_roles)}")
+    if material.ignored_roles:
+        print(f"  ignored:    {', '.join(material.ignored_roles)} (not wired into the shader)")
+    print(f"  staged:     {len(material.staged)} map(s) with sidecars")
+    print("  credits:    assets/CREDITS.md and assets/index.json refreshed")
+    if result.unwired_slots:
+        print(f"  unwired:    {', '.join(result.unwired_slots)} (no slot to use them in)")
+    if staged_hdri is not None:
+        print(f"  hdri:       {staged_hdri.relative}")
+    if destination is not None:
+        print(f"  model:      {destination.relative_to(project.root)}")
+    if proof is not None and proof.is_file():
+        luma = proof_frame_luminance(proof)
+        print(f"  proof:      {proof.relative_to(project.root)} (luma {luma:.1f})")
+    problems = result.problems
+    report = {**result.facts, "material": args.material, "licence": "CC0", "problems": problems}
+    write_report(project, report, f"{args.model.stem}-material-qc.json")
+    print("verdict: " + ("pass" if not problems else "FAIL " + "; ".join(problems)))
+    return EXIT_OK if not problems else EXIT_FAILURE
+
+
+def annotate_output(project: Project, model: Path, suffix: str) -> Path:
+    """A file name inside a project's 3D output, derived from the model's name."""
+
+    return project_output(project, f"{model.stem}{suffix}")
 
 
 def cmd_3d_turntable(args: argparse.Namespace) -> int:

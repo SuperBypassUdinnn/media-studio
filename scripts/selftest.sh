@@ -75,8 +75,9 @@ Acceptance matrix
   phase 1  asset ledger: stage, index, CREDITS           implemented
   phase 1  asset search: keyless plus keyed sources      implemented (offline tests; live run 2026-10-24)
   phase 1  video render: MLT, melt, loudness, ducking    implemented (offline tests; live render 2026-10-24)
-  phase 1  3D render through Blender CLI                 pending
-  phase 1  design render through Inkscape                pending
+  phase 1  3D render through Blender CLI                 implemented (offline tests; live render 2026-10-25)
+  phase 1  material and HDRI binding                     implemented (offline tests; live bind 2026-10-25)
+  phase 1  design render through Inkscape                implemented (offline tests; live render 2026-10-25)
   phase 1  scr2026 baseline reproduction                 pending
 MATRIX
 }
