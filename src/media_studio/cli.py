@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -351,6 +352,8 @@ def print_staged(staged: StagedAsset) -> None:
     print(f"  licence:  {staged.spdx} ({staged.license_label})")
     print(f"  sha256:   {staged.sha256}")
     print(f"  bytes:    {staged.size_bytes}")
+    print(f"  declare:  {suggested_asset_id(staged.relative)}: {staged.relative}")
+    print("            (paste that line under `assets:` in project.yaml to use it)")
     if staged.quarantined:
         print(
             "  warning:  licence unknown, quarantined under assets/unverified/; "
@@ -362,6 +365,14 @@ def print_staged(staged: StagedAsset) -> None:
             "  warning:  this licence requires attribution and no credit line was recorded",
             file=sys.stderr,
         )
+
+
+def suggested_asset_id(relative: str) -> str:
+    """A paste-ready manifest key derived from the file name."""
+
+    stem = Path(relative).stem.lower()
+    cleaned = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
+    return (cleaned or "asset")[:32]
 
 
 def cmd_assets_search(args: argparse.Namespace) -> int:

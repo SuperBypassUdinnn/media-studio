@@ -30,14 +30,72 @@ def frames(seconds: float, fps: float) -> int:
 
 @dataclass(frozen=True)
 class Clip:
-    """One shot on the video track."""
+    """One shot. `transition` describes how it enters, relative to the shot before it."""
 
     resource: Path
     duration: float
     in_point: float = 0.0
+    transition: str = "cut"
+    crossfade: float | None = None  # overrides the timeline default for this clip
 
     def out_point(self) -> float:
         return self.in_point + self.duration
+
+
+@dataclass(frozen=True)
+class ClipPlacement:
+    """Where one shot lands when cross-fades overlap the shots around it."""
+
+    index: int
+    track: int
+    start: float
+    duration: float
+    in_point: float
+    crossfade: float
+
+
+def place_clips(clips: tuple[Clip, ...], crossfade: float) -> list[ClipPlacement]:
+    """Lay shots on two alternating tracks, pulling each cross-faded shot earlier.
+
+    A cross-fade overlaps two shots, so the timeline shortens by that overlap; the outgoing shot
+    keeps playing on its own track under the incoming one, which is what a `mix` transition needs.
+    """
+
+    placements: list[ClipPlacement] = []
+    for index, clip in enumerate(clips):
+        if not placements:
+            placements.append(ClipPlacement(index, 0, 0.0, clip.duration, clip.in_point, 0.0))
+            continue
+        previous = placements[-1]
+        wanted = clip.crossfade if clip.crossfade is not None else crossfade
+        overlap = (
+            min(wanted, previous.duration, clip.duration)
+            if clip.transition == "crossfade" or clip.crossfade
+            else 0.0
+        )
+        # Only a cross-fade needs the other track; a cut continues on the current one, which keeps
+        # an all-cuts edit a single playlist a person can still read in Kdenlive.
+        placements.append(
+            ClipPlacement(
+                index=index,
+                track=1 - previous.track if overlap else previous.track,
+                start=previous.start + previous.duration - overlap,
+                duration=clip.duration,
+                in_point=clip.in_point,
+                crossfade=overlap,
+            )
+        )
+    return placements
+
+
+def timeline_seconds(clips: tuple[Clip, ...], crossfade: float) -> float:
+    """Length of the edit once cross-fades have pulled the shots together."""
+
+    placements = place_clips(clips, crossfade)
+    if not placements:
+        return 0.0
+    last = placements[-1]
+    return round(last.start + last.duration, 6)
 
 
 @dataclass(frozen=True)
@@ -55,6 +113,20 @@ class AudioPlan:
 
 
 @dataclass(frozen=True)
+class Title:
+    """Text overlaid on the picture, composited with `qtblend`."""
+
+    text: str
+    start: float
+    duration: float
+    size: int = 64
+    colour: str = "#ffffffff"
+    outline: str = "#ff000000"
+    family: str = "Sans"
+    geometry: str = "+0+0"
+
+
+@dataclass(frozen=True)
 class Timeline:
     """A complete edit: shots, an optional music bed, and an optional voice track."""
 
@@ -64,14 +136,14 @@ class Timeline:
     clips: tuple[Clip, ...]
     music: AudioPlan | None = None
     voice: AudioPlan | None = None
-    fade_in: float = DEFAULT_TRANSITION
-    fade_out: float = DEFAULT_TRANSITION
     title: str = "media-studio timeline"
+    titles: tuple[Title, ...] = field(default=())
+    transition_duration: float = DEFAULT_TRANSITION
     extra_audio: tuple[AudioPlan, ...] = field(default=())
 
     @property
     def duration(self) -> float:
-        return round(sum(clip.duration for clip in self.clips), 6)
+        return timeline_seconds(self.clips, self.transition_duration)
 
     def to_xml(self, root: Path | None = None) -> str:
         """Serialise the timeline as MLT XML."""
@@ -109,52 +181,159 @@ class Timeline:
             )
         )
 
-        video = ElementTree.SubElement(header, "playlist", {"id": "video"})
+        # Producers come before the playlists that reference them: `melt` resolves an entry's
+        # producer while parsing the playlist, so a producer defined later is invisible and the
+        # entry renders nothing.
         for index, clip in enumerate(self.clips):
-            producer_id = f"clip{index}"
             producer = ElementTree.SubElement(
                 header,
                 "producer",
                 {
-                    "id": producer_id,
+                    "id": f"clip{index}",
                     "in": str(frames(clip.in_point, fps)),
                     "out": str(max(frames(clip.out_point(), fps) - 1, 0)),
                 },
             )
             _property(producer, "resource", str(clip.resource))
+
+        if self.titles:
+            self._title_producers(header)
+        audio_tracks = self.audio_tracks()
+        for name, plan in audio_tracks:
+            producer = ElementTree.SubElement(
+                header,
+                "producer",
+                {"id": f"{name}_producer", "in": "0", "out": str(max(total - 1, 0))},
+            )
+            _property(producer, "resource", str(plan.resource))
+
+        placements = place_clips(self.clips, self.transition_duration)
+        # A cross-fade needs two tracks: the outgoing shot keeps playing under the incoming one
+        # while a `mix` transition dissolves between them.
+        track_count = max(item.track for item in placements) + 1
+        video_tracks = [
+            ElementTree.SubElement(header, "playlist", {"id": f"video{track}"})
+            for track in range(track_count)
+        ]
+        cursors = [0] * track_count
+        for placement in placements:
+            playlist = video_tracks[placement.track]
+            start_frame = frames(placement.start, fps)
+            gap = start_frame - cursors[placement.track]
+            if gap > 0:
+                ElementTree.SubElement(playlist, "blank", {"length": str(gap)})
             ElementTree.SubElement(
-                video,
+                playlist,
                 "entry",
                 {
-                    "producer": producer_id,
-                    "in": str(frames(clip.in_point, fps)),
-                    "out": str(max(frames(clip.out_point(), fps) - 1, 0)),
+                    "producer": f"clip{placement.index}",
+                    "in": str(frames(placement.in_point, fps)),
+                    "out": str(max(frames(placement.in_point + placement.duration, fps) - 1, 0)),
                 },
             )
+            cursors[placement.track] = start_frame + frames(placement.duration, fps)
+        for track, playlist in enumerate(video_tracks):
+            tail = total - cursors[track]
+            if tail > 0:
+                ElementTree.SubElement(playlist, "blank", {"length": str(tail)})
 
-        tracks = [("video", video, None)]
-        for name, plan in self.audio_tracks():
-            playlist, _producer = self._audio_block(header, name, plan, total)
-            tracks.append((name, playlist, plan))
-
-        # A fade from and to black is a pair of `mix` transitions on the tractor.
-        tractor = ElementTree.SubElement(
-            header, "tractor", {"id": "main", "in": "0", "out": str(total - 1)}
-        )
-        for _name, playlist, _plan in tracks:
-            ElementTree.SubElement(tractor, "track", {"producer": playlist.get("id", "")})
-        for index, (start, end) in enumerate(self._fades(fps)):
-            transition = ElementTree.SubElement(
-                tractor,
-                "transition",
-                {"id": f"fade{index}"},
+        if track_count == 1:
+            video_element = video_tracks[0]
+        else:
+            video_element = ElementTree.SubElement(
+                header, "tractor", {"id": "video_ab", "in": "0", "out": str(max(total - 1, 0))}
             )
-            _property(transition, "mlt_service", "mix")
-            _property(transition, "a_track", "0")
-            _property(transition, "b_track", "0")
-            _property(transition, "start", str(start))
-            _property(transition, "end", str(end))
+            for playlist in video_tracks:
+                ElementTree.SubElement(video_element, "track", {"producer": playlist.get("id", "")})
+            for placement in placements:
+                if not placement.crossfade:
+                    continue
+                start = frames(placement.start, fps)
+                stop = max(frames(placement.start + placement.crossfade, fps) - 1, start)
+                _dissolve(
+                    video_element,
+                    f"cross{placement.index}",
+                    start,
+                    stop,
+                    a_track=1 - placement.track,
+                    b_track=placement.track,
+                )
+
+        if self.titles:
+            # A title needs its own track and an alpha composite over the shots below it.
+            title_playlist = self._title_playlist(header, total)
+            video_track = ElementTree.SubElement(
+                header,
+                "tractor",
+                {"id": "video_track", "in": "0", "out": str(max(total - 1, 0))},
+            )
+            ElementTree.SubElement(video_track, "track", {"producer": video_element.get("id", "")})
+            ElementTree.SubElement(video_track, "track", {"producer": title_playlist.get("id", "")})
+            blend = ElementTree.SubElement(video_track, "transition", {"id": "title_blend"})
+            _property(blend, "mlt_service", "qtblend")
+            _property(blend, "a_track", "0")
+            _property(blend, "b_track", "1")
+            _property(blend, "always_active", "1")
+            # Without an explicit composition mode qtblend freezes the whole frame behind the
+            # title, so the picture underneath stops moving; verified by rendering both ways.
+            _property(blend, "compositing", "1")
+            video_element = video_track
+
+        tracks = [("video", video_element)]
+        for name, plan in audio_tracks:
+            tracks.append((name, self._audio_playlist(header, name, plan, total)))
+
+        # A fade from and to black is a pair of `mix` transitions on the composite video.
+        tractor = ElementTree.SubElement(
+            header, "tractor", {"id": "main", "in": "0", "out": str(max(total - 1, 0))}
+        )
+        for _name, element in tracks:
+            ElementTree.SubElement(tractor, "track", {"producer": element.get("id", "")})
         return _serialise(header)
+
+    def _title_producers(self, header: ElementTree.Element) -> None:
+        """One `qtext` producer per title."""
+
+        for index, title in enumerate(self.titles):
+            producer = ElementTree.SubElement(
+                header,
+                "producer",
+                {
+                    "id": f"title{index}",
+                    "in": "0",
+                    "out": str(max(frames(title.duration, self.fps) - 1, 0)),
+                },
+            )
+            _property(producer, "mlt_service", "qtext")
+            _property(producer, "argument", title.text)
+            _property(producer, "length", str(max(frames(title.duration, self.fps), 1)))
+            _property(producer, "geometry", title.geometry)
+            _property(producer, "family", title.family)
+            _property(producer, "size", str(title.size))
+            _property(producer, "fgcolour", title.colour)
+            _property(producer, "olcolour", title.outline)
+            _property(producer, "bgcolour", "#00000000")
+
+    def _title_playlist(self, header: ElementTree.Element, total: int) -> ElementTree.Element:
+        """Titles padded with transparent blanks so each one lands on time."""
+
+        fps = self.fps
+        playlist = ElementTree.SubElement(header, "playlist", {"id": "titles"})
+        cursor = 0
+        for index, title in enumerate(self.titles):
+            start = min(frames(title.start, fps), max(total - 1, 0))
+            length = max(min(frames(title.duration, fps), max(total - start, 1)), 1)
+            if start > cursor:
+                ElementTree.SubElement(playlist, "blank", {"length": str(start - cursor)})
+            ElementTree.SubElement(
+                playlist,
+                "entry",
+                {"producer": f"title{index}", "in": "0", "out": str(length - 1)},
+            )
+            cursor = start + length
+        if total > cursor:
+            ElementTree.SubElement(playlist, "blank", {"length": str(total - cursor)})
+        return playlist
 
     def audio_tracks(self) -> list[tuple[str, AudioPlan]]:
         """Named audio tracks in playback order."""
@@ -167,17 +346,11 @@ class Timeline:
         tracks.extend((f"audio{index}", plan) for index, plan in enumerate(self.extra_audio))
         return tracks
 
-    def _audio_block(
+    def _audio_playlist(
         self, header: ElementTree.Element, name: str, plan: AudioPlan, total: int
     ) -> tuple[ElementTree.Element, ElementTree.Element]:
         fps = self.fps
         offset = frames(plan.in_point, fps)
-        producer = ElementTree.SubElement(
-            header,
-            "producer",
-            {"id": f"{name}_producer", "in": "0", "out": str(max(total - 1, 0))},
-        )
-        _property(producer, "resource", str(plan.resource))
         playlist = ElementTree.SubElement(header, "playlist", {"id": f"{name}_playlist"})
 
         # One entry per constant-level span: an XML filter cannot animate, but it can hold a
@@ -198,24 +371,10 @@ class Timeline:
                 )
                 _property(audio_filter, "mlt_service", "volume")
                 _property(audio_filter, "level", f"{segment.level_db:.2f}")
-        return playlist, producer
-
-    def _fades(self, fps: float) -> list[tuple[int, int]]:
-        """Frame ranges for the opening and closing fade."""
-
-        total = frames(self.duration, fps)
-        fades: list[tuple[int, int]] = []
-        if self.fade_in > 0:
-            fades.append((0, min(frames(self.fade_in, fps), total - 1)))
-        if self.fade_out > 0:
-            start = max(total - frames(self.fade_out, fps), 1)
-            fades.append((start, total - 1))
-        return fades
+        return playlist
 
 
-# MLT's `volume` filter documents its animated `level` property as gain in dB
-# (`melt -query filter=volume`: type float, unit dB, animation yes). It is not a linear factor,
-# which is an easy and silent mistake: sending 0.3 as a factor ducks by 0.3 dB, not by 10 dB.
+# MLT's `volume` filter documents its animated `level` property as gain in dB, not a factor.
 SILENCE_DB = -120.0
 
 
@@ -376,6 +535,30 @@ def ducking_from_speech(
         else:
             merged.append([begin, finish])
     return tuple((round(begin, 3), round(finish, 3)) for begin, finish in merged)
+
+
+def _dissolve(
+    parent: ElementTree.Element,
+    identifier: str,
+    start: int,
+    stop: int,
+    *,
+    a_track: int,
+    b_track: int,
+) -> ElementTree.Element:
+    """A video dissolve over a frame window, expressed the way `melt` honours it.
+
+    The window belongs on the element: `mix` is an audio-only transition, and the `start`/`end`
+    properties of a transition are levels, not a time range.
+    """
+
+    transition = ElementTree.SubElement(
+        parent, "transition", {"id": identifier, "in": str(start), "out": str(stop)}
+    )
+    _property(transition, "mlt_service", "luma")
+    _property(transition, "a_track", str(a_track))
+    _property(transition, "b_track", str(b_track))
+    return transition
 
 
 def _property(parent: ElementTree.Element, name: str, value: str) -> ElementTree.Element:

@@ -139,6 +139,27 @@ def test_black_and_frozen_detection_agree_with_the_content(
     assert media.frozen_segments(video_file, minimum=1.0) == []
 
 
+def test_freeze_detection_catches_a_stuck_shot(workdir: Path) -> None:
+    """A held shot is seconds long, so the one-second threshold still catches it."""
+
+    stuck = generate(
+        workdir / "stuck.mp4",
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=yellow:size=320x180:rate=24:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+        ],
+    )
+
+    assert media.frozen_segments(stuck, minimum=1.0)
+
+
 def test_contact_sheet_is_written(tmp_path: Path, video_file: Path) -> None:
     sheet = media.contact_sheet(video_file, tmp_path / "sheet.png", columns=2, rows=1, width=160)
 

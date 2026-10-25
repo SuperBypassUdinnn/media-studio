@@ -64,6 +64,29 @@ def test_stage_then_index_reports_licence_and_credit(
     assert "Example Author" in credits
 
 
+def test_stage_prints_a_paste_ready_manifest_line(
+    project_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = main(
+        [
+            "assets",
+            "stage",
+            str(project_root),
+            "--class",
+            "3d",
+            "--file",
+            str(source_file),
+            "--license",
+            "CC0",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "declare:  rock: assets/3d/rock.hdr" in output
+    assert "under `assets:` in project.yaml" in output
+
+
 def test_stage_duplicate_reports_the_original(
     project_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

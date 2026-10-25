@@ -264,12 +264,24 @@ def _segments(
     )
     text = completed.stderr or ""
     starts = [float(value) for value in re.findall(start_pattern, text)]
+    if not starts:
+        return []
     ends = [float(value) for value in re.findall(end_pattern, text)]
-    return [(start, ends[index]) for index, start in enumerate(starts) if index < len(ends)]
+    # `freezedetect` prints a start but no end when the picture stays frozen until the file ends,
+    # which is the worst case; closing the run at the media duration keeps it visible.
+    duration = probe(path).duration
+    return [
+        (start, ends[index] if index < len(ends) else duration)
+        for index, start in enumerate(starts)
+    ]
 
 
-def mean_luminance_at(path: Path, at: float) -> float:
-    """Average luma of a single frame, used to prove a fade actually reached black."""
+def mean_luminance_at(path: Path, at: float, crop: str | None = None) -> float:
+    """Average luma of a single frame, optionally of one region.
+
+    `crop` is `W:H:X:Y`, which is how a small feature such as a title can be measured without
+    drowning it in the rest of the picture.
+    """
 
     completed = run_command(
         [
@@ -283,7 +295,7 @@ def mean_luminance_at(path: Path, at: float) -> float:
             "-frames:v",
             "1",
             "-vf",
-            "signalstats,metadata=print:file=-",
+            (f"crop={crop}," if crop else "") + "signalstats,metadata=print:file=-",
             "-f",
             "null",
             "-",

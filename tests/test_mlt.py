@@ -12,9 +12,12 @@ from media_studio.mlt import (
     AudioPlan,
     Clip,
     Timeline,
+    Title,
     ducking_from_speech,
     frames,
     level_segments,
+    place_clips,
+    timeline_seconds,
 )
 
 
@@ -45,7 +48,7 @@ def test_xml_has_one_producer_and_entry_per_clip() -> None:
     producers = [element for element in root.findall("producer")]
     entries = root.find("playlist").findall("entry")
 
-    assert len(producers) == 2
+    assert [element.get("id") for element in producers] == ["clip0", "clip1"]
     assert len(entries) == 2
     assert entries[0].get("producer") == "clip0"
     assert entries[1].get("in") == "24"  # 1.0s at 24fps
@@ -64,24 +67,21 @@ def test_duration_is_the_sum_of_the_shots() -> None:
     assert timeline().duration == 4.0
 
 
-def test_fades_become_tractor_transitions() -> None:
-    root = ElementTree.fromstring(timeline(fade_in=0.5, fade_out=0.5).to_xml())
+def test_a_clip_can_override_the_cross_fade_length() -> None:
+    """A fade is a cross-fade against a black clip, so it needs its own length."""
 
-    transitions = root.find("tractor").findall("transition")
+    clips = (
+        Clip(resource=Path("/tmp/black.mp4"), duration=0.4),
+        Clip(resource=Path("/tmp/a.mp4"), duration=2.0, transition="crossfade", crossfade=0.4),
+        Clip(resource=Path("/tmp/b.mp4"), duration=2.0),
+        Clip(resource=Path("/tmp/black.mp4"), duration=0.6, transition="crossfade", crossfade=0.6),
+    )
 
-    assert len(transitions) == 2
-    services = [
-        element
-        for element in transitions[0].findall("property")
-        if element.get("name") == "mlt_service"
-    ]
-    assert services[0].text == "mix"
-    starts = [
-        element.text
-        for element in transitions[1].findall("property")
-        if element.get("name") == "start"
-    ]
-    assert starts == ["84"]  # 4.0s - 0.5s = 3.5s at 24fps
+    placements = place_clips(clips, 0.5)
+
+    assert [item.start for item in placements] == [0.0, 0.0, 2.0, 3.4]
+    assert [item.crossfade for item in placements] == [0.0, 0.4, 0.0, 0.6]
+    assert timeline_seconds(clips, 0.5) == 4.0  # the fades replace their own overlap
 
 
 def to_db(amplitude: float) -> float:
@@ -148,7 +148,7 @@ def test_audio_tracks_use_static_entry_filters() -> None:
 
     root = ElementTree.fromstring(xml)
     playlists = {element.get("id"): element for element in root.findall("playlist")}
-    assert set(playlists) == {"video", "music_playlist", "voice_playlist"}
+    assert set(playlists) == {"video0", "music_playlist", "voice_playlist"}
 
     entries = playlists["music_playlist"].findall("entry")
     assert len(entries) > 1  # a duck is a chain of spans, not one animated property
@@ -176,6 +176,95 @@ def test_audio_tracks_use_static_entry_filters() -> None:
         for element in voice_entries[0].find("filter").findall("property")
         if element.get("name") == "level"
     )
+
+
+def test_cross_fades_pull_the_shot_earlier_and_use_the_other_track() -> None:
+    clips = (
+        Clip(resource=Path("/tmp/a.mp4"), duration=2.0),
+        Clip(resource=Path("/tmp/b.mp4"), duration=2.0),
+        Clip(resource=Path("/tmp/c.mp4"), duration=2.0, transition="crossfade"),
+    )
+
+    placements = place_clips(clips, 0.5)
+
+    assert [item.track for item in placements] == [0, 0, 1]
+    assert [item.start for item in placements] == [0.0, 2.0, 3.5]
+    assert placements[2].crossfade == 0.5
+    assert timeline_seconds(clips, 0.5) == 5.5  # one overlap shortens the edit
+
+
+def test_a_cross_fade_shorter_than_its_shots_is_clamped() -> None:
+    clips = (
+        Clip(resource=Path("/tmp/a.mp4"), duration=1.0),
+        Clip(resource=Path("/tmp/b.mp4"), duration=0.2, transition="crossfade"),
+    )
+
+    placements = place_clips(clips, 0.5)
+
+    assert placements[1].crossfade == 0.2  # never longer than the shortest shot involved
+    assert timeline_seconds(clips, 0.5) == 1.0
+
+
+def test_xml_emits_two_tracks_and_a_dissolve_for_a_cross_fade() -> None:
+    xml = timeline(
+        clips=(
+            Clip(resource=Path("/tmp/a.mp4"), duration=2.0),
+            Clip(resource=Path("/tmp/b.mp4"), duration=2.0, transition="crossfade"),
+        ),
+        transition_duration=0.5,
+    ).to_xml()
+
+    root = ElementTree.fromstring(xml)
+    playlists = [element.get("id") for element in root.findall("playlist")]
+    assert playlists == ["video0", "video1"]
+
+    ab = next(element for element in root.findall("tractor") if element.get("id") == "video_ab")
+    assert [track.get("producer") for track in ab.findall("track")] == ["video0", "video1"]
+    transition = ab.find("transition")
+    properties = {element.get("name"): element.text for element in transition.findall("property")}
+    assert properties["mlt_service"] == "luma"
+    assert properties["a_track"] == "0"
+    assert properties["b_track"] == "1"
+    # The window belongs on the element: `start`/`end` properties are mix levels, not a range.
+    assert transition.get("in") == "36"  # 1.5s at 24fps
+    assert transition.get("out") == "47"
+    # The outgoing shot is padded so it keeps playing underneath the incoming one.
+    assert playlists and root.find("playlist/blank") is not None
+
+
+def test_titles_get_their_own_track_and_a_blend() -> None:
+    xml = timeline(
+        clips=(Clip(resource=Path("/tmp/a.mp4"), duration=4.0),),
+        titles=(Title(text="Opening", start=1.0, duration=1.0, size=48),),
+    ).to_xml()
+
+    root = ElementTree.fromstring(xml)
+    playlists = {element.get("id"): element for element in root.findall("playlist")}
+    assert "titles" in playlists
+
+    blanks = playlists["titles"].findall("blank")
+    assert [blank.get("length") for blank in blanks] == ["24", "48"]  # in at 1s, out at 2s
+
+    title_producer = next(
+        element for element in root.findall("producer") if element.get("id") == "title0"
+    )
+    properties = {
+        element.get("name"): element.text for element in title_producer.findall("property")
+    }
+    assert properties["mlt_service"] == "qtext"
+    assert properties["argument"] == "Opening"
+    assert properties["size"] == "48"
+    assert properties["bgcolour"] == "#00000000"  # transparent, so the shot shows through
+
+    video_track = next(
+        element for element in root.findall("tractor") if element.get("id") == "video_track"
+    )
+    blend = {
+        element.get("name"): element.text
+        for element in video_track.find("transition").findall("property")
+    }
+    assert blend["mlt_service"] == "qtblend"
+    assert blend["always_active"] == "1"
 
 
 def test_ducking_from_speech_adds_lead_and_tail_and_merges_short_gaps() -> None:

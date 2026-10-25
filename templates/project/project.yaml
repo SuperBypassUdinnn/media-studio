@@ -35,11 +35,14 @@ assets: {}
 # video:
 #   shots:
 #     - { asset: shot-open, in: 0.5, duration: 2.7 }
-#     - { asset: shot-detail }        # duration omitted means "the whole clip"
+#     - { asset: shot-detail, transition: crossfade }   # duration omitted means "the whole clip"
 #   voice: { asset: vo-main }
 #   music: { asset: music-bed, gain: 0.6, fade_in: 1.0, fade_out: 1.5, duck: true }
 #   fade_in: 0.5
 #   fade_out: 0.8
+#   crossfade: 0.5                   # length of a shot whose transition is crossfade
+#   titles:
+#     - { text: "Opening title", start: 1.0, duration: 2.0, size: 64, position: "+0+120" }
 
 budget:
   max_asset_bytes: 209715200

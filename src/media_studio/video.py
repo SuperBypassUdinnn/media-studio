@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from . import media
 from .ledger import read_sidecar
 from .manifest import AudioCue, Deliverable, Project, VideoPlan
-from .mlt import AudioPlan, Clip, Timeline, ducking_from_speech
+from .mlt import AudioPlan, Clip, Timeline, Title, ducking_from_speech, timeline_seconds
 from .sidecar import UNKNOWN_SPDX
 
 SCRATCH_ROOT = Path("/tmp/opencode")
@@ -116,12 +116,15 @@ def build_timeline(
             resource=_resolve_asset(project, shot.asset),
             duration=_shot_duration(project, shot.asset, shot.duration),
             in_point=shot.in_point,
+            transition=shot.transition,
         )
         for shot in plan.shots
     )
 
     width, height, fps = _geometry(deliverable)
-    duration = round(sum(clip.duration for clip in clips), 6)
+    scratch = scratch_directory(project.slug)
+    clips = _with_fades(clips, plan, scratch, width, height, fps)
+    duration = timeline_seconds(clips, plan.crossfade)
 
     ducking: tuple[tuple[float, float], ...] = ()
     ducking_evidence: dict[str, object] = {"intervals": [], "source": "none"}
@@ -144,12 +147,86 @@ def build_timeline(
         clips=clips,
         music=_audio_plan(project, plan.music, ducking),
         voice=voice_plan,
-        fade_in=plan.fade_in,
-        fade_out=plan.fade_out,
+        titles=tuple(
+            Title(
+                text=title.text,
+                start=title.start,
+                duration=title.duration,
+                size=title.size,
+                colour=title.colour,
+                geometry=title.position,
+            )
+            for title in plan.titles
+        ),
+        transition_duration=plan.crossfade,
         title=f"{project.slug} {deliverable.id}",
     )
     ducking_evidence["plan_intervals"] = [list(interval) for interval in ducking]
     return timeline, ducking_evidence
+
+
+def _with_fades(
+    clips: tuple[Clip, ...],
+    plan: VideoPlan,
+    scratch: Path,
+    width: int,
+    height: int,
+    fps: float,
+) -> tuple[Clip, ...]:
+    """Turn a requested fade into a cross-fade against a black clip.
+
+    MLT's `mix` transition is audio-only and a colour producer does not composite, so the one
+    mechanism that works in this build is a dissolve against a black file.
+    """
+
+    if plan.fade_in <= 0 and plan.fade_out <= 0:
+        return clips
+    black = _black_clip(scratch, width, height, fps, max(plan.fade_in, plan.fade_out))
+    result = list(clips)
+    if plan.fade_in > 0:
+        result.insert(0, Clip(resource=black, duration=plan.fade_in))
+        result[1] = replace(result[1], transition="crossfade", crossfade=plan.fade_in)
+    if plan.fade_out > 0:
+        result.append(
+            Clip(
+                resource=black,
+                duration=plan.fade_out,
+                transition="crossfade",
+                crossfade=plan.fade_out,
+            )
+        )
+    return tuple(result)
+
+
+def _black_clip(scratch: Path, width: int, height: int, fps: float, seconds: float) -> Path:
+    """A generated black clip, cached in the scratch directory."""
+
+    scratch.mkdir(parents=True, exist_ok=True)
+    destination = scratch / f"black-{width}x{height}-{fps:g}.mp4"
+    if destination.is_file():
+        return destination
+    media.run_command(
+        [
+            media.FFMPEG,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=black:size={width}x{height}:rate={fps:g}:duration={max(seconds, 0.1):.3f}",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            str(destination),
+        ],
+        label="generate a black clip for the fades",
+        expect_stdout=False,
+    )
+    return destination
 
 
 def _geometry(deliverable: Deliverable) -> tuple[int, int, float]:
@@ -220,8 +297,10 @@ def qc_report(
     info = media.probe(deliverable)
     loudness = media.measure_loudness(deliverable, target_lufs)
     # A deliberate fade is short; a black hole left by a missing clip is not.
+    # Both thresholds are a deliberate one second: a short run of duplicated frames is a
+    # compression artefact (a preview encode produces them), while a stuck shot lasts seconds.
     black = media.black_segments(deliverable, minimum=1.0)
-    frozen = media.frozen_segments(deliverable)
+    frozen = media.frozen_segments(deliverable, minimum=1.0)
     distance = loudness.distance_from(target_lufs)
     duration_gap = abs(info.duration - expected_duration)
     tolerance = 0.5 if preview else 0.25
@@ -296,6 +375,10 @@ def render(
     report["ducking"] = ducking_evidence
     report["timeline"] = {
         "shots": [str(clip.resource.name) for clip in timeline.clips],
+        "titles": [
+            {"text": title.text, "start": title.start, "duration": title.duration}
+            for title in timeline.titles
+        ],
         "mlt": str(mlt_path.relative_to(project.root)),
         "profile": f"{timeline.width}x{timeline.height}@{timeline.fps:g}",
     }

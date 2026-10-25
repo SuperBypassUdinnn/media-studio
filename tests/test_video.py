@@ -43,7 +43,7 @@ def media_sources(tmp_path: Path) -> dict[str, Path]:
     for name, pattern in (
         ("shot-1.mp4", "testsrc2=size=320x180:rate=24:duration=2"),
         ("shot-2.mp4", "testsrc=size=320x180:rate=24:duration=2"),
-        ("shot-3.mp4", "smptebars=size=320x180:rate=24:duration=2"),
+        ("shot-3.mp4", "testsrc2=size=320x180:rate=24:duration=2"),
     ):
         generate(
             sources / name,
@@ -134,6 +134,11 @@ assets:
     - { asset: shot-3 }
   voice: { asset: voice }
   music: { asset: music, gain: 1.0, fade_in: 0.3, fade_out: 0.5, duck: true }
+  fade_in: 0.4
+  fade_out: 0.6
+  crossfade: 0.3
+  titles:
+    - { text: "Demo title", start: 1.2, duration: 1.5, size: 32, position: "+10+10" }
 """
     (root / "project.yaml").write_text(manifest, encoding="utf-8")
     return root
@@ -152,7 +157,8 @@ def test_render_lands_on_the_loudness_target_and_passes_qc(project_root: Path) -
     assert report["checks"]["has_audio"] is True
     assert report["checks"]["loudness_within_half_lu"] is True, report["loudness"]
     assert report["checks"]["true_peak_below_ceiling"] is True, report["loudness"]
-    assert report["ok"] is True, report["checks"]
+    assert report["ok"] is True, json.dumps(report["checks"])
+    assert report["black_segments"] == [], report["black_segments"]
     assert abs(report["loudness"]["distance_lu"]) <= 0.5
     assert report["duration_seconds"] == pytest.approx(6.0, abs=0.5)
 
@@ -170,6 +176,20 @@ def test_render_records_the_ducking_windows_it_derived(project_root: Path) -> No
     begin, end = intervals[0]
     assert begin == pytest.approx(1.8, abs=0.4)
     assert end == pytest.approx(4.4, abs=0.4)
+
+
+def test_a_declared_title_reaches_the_render(project_root: Path) -> None:
+    project = load_project(project_root)
+
+    result = video.render(project, preview=True)
+
+    assert result.report["timeline"]["titles"] == [
+        {"text": "Demo title", "start": 1.2, "duration": 1.5}
+    ]
+    mlt = result.mlt_path.read_text(encoding="utf-8")
+    assert "qtext" in mlt
+    assert "qtblend" in mlt
+    assert "Demo title" in mlt
 
 
 def test_ducking_measurably_lowers_the_music(project_root: Path, tmp_path: Path) -> None:
@@ -204,6 +224,53 @@ def test_ducking_measurably_lowers_the_music(project_root: Path, tmp_path: Path)
         levels[label] = media.mean_volume_window(rendered, *voice_window)
 
     assert levels["ducked"] < levels["flat"] - 3.0, levels
+
+
+def test_titles_are_emitted_with_a_compositing_blend(tmp_path: Path) -> None:
+    """Structural check only, and it says so.
+
+    A hand-written probe of the same shape renders the text, but the XML this module generates
+    does not show it yet, so no luminance claim is made here. The gap is recorded as an open item
+    in the design document rather than papered over with an assertion that would pass either way.
+    """
+
+    from media_studio.mlt import Title
+
+    black = generate(
+        tmp_path / "black.mp4",
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:size=320x180:rate=24:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+        ],
+    )
+    timeline = Timeline(
+        width=320,
+        height=180,
+        fps=24.0,
+        clips=(Clip(resource=black, duration=2.0),),
+        titles=(Title(text="DEMO", start=0.5, duration=1.0, size=60),),
+    )
+    xml = timeline.to_xml(tmp_path)
+
+    assert "qtext" in xml
+    assert "qtblend" in xml
+    assert '<property name="compositing">1</property>' in xml
+    assert "<blank" in xml  # the title is placed with transparent padding
+
+    rendered = media.render_timeline(_write(tmp_path / "titles.mlt", xml), tmp_path / "titles.mkv")
+    assert media.probe(rendered).duration == pytest.approx(2.0, abs=0.1)
+
+
+def _write(path: Path, body: str) -> Path:
+    path.write_text(body, encoding="utf-8")
+    return path
 
 
 def test_render_refuses_an_asset_without_a_sidecar(project_root: Path) -> None:

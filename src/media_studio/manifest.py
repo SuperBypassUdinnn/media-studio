@@ -35,8 +35,9 @@ MANIFEST_KEYS = frozenset(
         "budget",
     }
 )
-VIDEO_KEYS = frozenset({"shots", "voice", "music", "fade_in", "fade_out"})
-SHOT_KEYS = frozenset({"asset", "in", "duration"})
+VIDEO_KEYS = frozenset({"shots", "voice", "music", "fade_in", "fade_out", "crossfade"})
+SHOT_KEYS = frozenset({"asset", "in", "duration", "transition"})
+TITLE_KEYS = frozenset({"text", "start", "duration", "size", "colour", "position"})
 CUE_KEYS = frozenset({"asset", "in", "gain", "fade_in", "fade_out", "duck"})
 DELIVERABLE_KEYS = frozenset(
     {"id", "kind", "container", "resolution", "fps", "duration", "loudness_lufs"}
@@ -66,11 +67,12 @@ class Deliverable:
 
 @dataclass(frozen=True)
 class Shot:
-    """One cut on the video track."""
+    """One cut on the video track. `transition` is `cut` or `crossfade`."""
 
     asset: str
     in_point: float = 0.0
     duration: float | None = None
+    transition: str = "cut"
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,18 @@ class AudioCue:
 
 
 @dataclass(frozen=True)
+class TitleText:
+    """A line of text shown over the picture."""
+
+    text: str
+    start: float
+    duration: float
+    size: int = 64
+    colour: str = "#ffffffff"
+    position: str = "+0+0"
+
+
+@dataclass(frozen=True)
 class VideoPlan:
     """How the video deliverable is assembled."""
 
@@ -94,6 +108,8 @@ class VideoPlan:
     music: AudioCue | None = None
     fade_in: float = 0.0
     fade_out: float = 0.0
+    crossfade: float = 0.5
+    titles: tuple[TitleText, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -278,11 +294,18 @@ def _video(value: Any) -> VideoPlan | None:
     for entry in value.get("shots") or []:
         if not isinstance(entry, dict) or not entry.get("asset"):
             raise ManifestError(f"every video.shots entry needs an asset id, got {entry!r}")
+        transition = str(entry.get("transition") or "cut").lower()
+        if transition not in ("cut", "crossfade"):
+            raise ManifestError(
+                f"video.shots[{entry['asset']}].transition must be cut or crossfade, "
+                f"got {transition!r}"
+            )
         shots.append(
             Shot(
                 asset=str(entry["asset"]),
                 in_point=_optional_float(entry.get("in"), "in") or 0.0,
                 duration=_optional_float(entry.get("duration"), "duration"),
+                transition=transition,
             )
         )
     if not shots:
@@ -309,12 +332,33 @@ def _video(value: Any) -> VideoPlan | None:
     for name, fade in (("fade_in", fade_in), ("fade_out", fade_out)):
         if fade < 0:
             raise ManifestError(f"video.{name} cannot be negative")
+    titles: list[TitleText] = []
+    for entry in value.get("titles") or []:
+        if not isinstance(entry, dict) or not str(entry.get("text") or "").strip():
+            raise ManifestError(f"every video.titles entry needs text, got {entry!r}")
+        titles.append(
+            TitleText(
+                text=str(entry["text"]),
+                start=_optional_float(entry.get("start"), "start") or 0.0,
+                duration=_optional_float(entry.get("duration"), "duration") or 2.0,
+                size=int(entry.get("size") or 64),
+                colour=str(entry.get("colour") or "#ffffffff"),
+                position=str(entry.get("position") or "+0+0"),
+            )
+        )
+
+    crossfade = _optional_float(value.get("crossfade"), "crossfade")
+    crossfade = 0.5 if crossfade is None else crossfade
+    if crossfade < 0:
+        raise ManifestError("video.crossfade cannot be negative")
     return VideoPlan(
         shots=tuple(shots),
         voice=cues["voice"],
         music=cues["music"],
         fade_in=fade_in,
         fade_out=fade_out,
+        crossfade=crossfade,
+        titles=tuple(titles),
     )
 
 
@@ -360,6 +404,10 @@ def _unknown_fields(project: Project) -> list[str]:
             if isinstance(cue, dict):
                 for key in sorted(set(cue) - CUE_KEYS):
                     problems.append(f"unknown video.{name} field: {key}")
+        for entry in video.get("titles") or []:
+            if isinstance(entry, dict):
+                for key in sorted(set(entry) - TITLE_KEYS):
+                    problems.append(f"unknown video.titles field: {key}")
     return problems
 
 
@@ -426,6 +474,9 @@ def validate_project(project: Project) -> ValidationReport:
             )
 
     if project.video is not None:
+        for title in project.video.titles:
+            if title.duration <= 0:
+                errors.append(f"video.titles[{title.text!r}].duration must be positive")
         referenced = [shot.asset for shot in project.video.shots]
         for name, cue in (("voice", project.video.voice), ("music", project.video.music)):
             if cue is not None:
