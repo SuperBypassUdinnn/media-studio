@@ -7,12 +7,15 @@ mocking it. Resolution is deliberately tiny to keep the suite fast.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from dataclasses import replace
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
-from media_studio import media, video
+from media_studio import media, mlt, video
 from media_studio.ledger import stage_asset
 from media_studio.manifest import Project, load_project
 from media_studio.mlt import AudioPlan, Clip, Timeline
@@ -321,3 +324,152 @@ def _quiet_timeline(project: Project, tmp_path: Path) -> Path:
     path = tmp_path / "quiet.mlt"
     path.write_text(timeline.to_xml(project.root), encoding="utf-8")
     return path
+
+
+# Kdenlive handoff --------------------------------------------------------------------------
+
+
+def test_the_handoff_carries_the_envelope_kdenlive_looks_for(project_root: Path) -> None:
+    """Kdenlive refuses a document whose version it cannot read, so the envelope is the contract."""
+
+    result = video.handoff(load_project(project_root))
+
+    assert result.path.is_file()
+    assert result.path.suffix == ".kdenlive"
+    root = ElementTree.fromstring(result.path.read_text(encoding="utf-8"))
+    assert root.get("producer") == "main_bin"
+
+    def properties(element: ElementTree.Element) -> dict[str, str]:
+        return {item.get("name", ""): item.text or "" for item in element.findall("property")}
+
+    bin_playlist = root.find("playlist[@id='main_bin']")
+    assert bin_playlist is not None
+    assert (
+        properties(bin_playlist)["kdenlive:docproperties.version"] == mlt.KDENLIVE_DOCUMENT_VERSION
+    )
+
+    sequence = root.find("tractor[@id='main']")
+    assert sequence is not None
+    assert properties(sequence)["kdenlive:sequenceproperties.tracksCount"] == str(
+        len(sequence.findall("track"))
+    )
+    assert properties(sequence)["kdenlive:trackheight"] == mlt.KDENLIVE_TRACK_HEIGHT
+
+    project = root.find("tractor[@id='kdenlive_project']")
+    assert project is not None
+    assert properties(project)["kdenlive:projectTractor"] == "1"
+    assert [track.get("producer") for track in project.findall("track")] == ["main"]
+    assert result.problems == [], result.problems
+
+
+def test_the_handoff_targets_the_installed_kdenlive(project_root: Path) -> None:
+    result = video.handoff(load_project(project_root))
+
+    assert result.kdenlive_version == video.installed_kdenlive_version()
+    assert "kdenlive:docproperties.kdenliveversion" in result.path.read_text(encoding="utf-8")
+
+
+def test_the_handoff_is_reproducible(project_root: Path) -> None:
+    """The document carries no timestamp, so the same project yields the same bytes."""
+
+    first = video.handoff(load_project(project_root)).path.read_text(encoding="utf-8")
+    second = video.handoff(load_project(project_root)).path.read_text(encoding="utf-8")
+
+    assert first == second
+
+
+def test_the_handoff_names_a_font_kdenlive_would_substitute(project_root: Path) -> None:
+    """The fixture asks for `Sans`, which fontconfig resolves to another family on this machine."""
+
+    result = video.handoff(load_project(project_root))
+
+    assert result.notes, "expected the title's family to be reported"
+    assert "will be used instead" in result.notes[0]
+    # A cosmetic substitution is named but does not fail the handoff.
+    assert result.problems == []
+
+
+def test_the_handoff_references_only_files_inside_the_project(project_root: Path) -> None:
+    """Scratch under /tmp/opencode is purged, so the generated filler has to live in the project."""
+
+    project = load_project(project_root)
+
+    result = video.handoff(project)
+
+    assert result.missing_references == ()
+    resources = re.findall(
+        r'<property name="resource">([^<]+)</property>', result.path.read_text(encoding="utf-8")
+    )
+    assert resources
+    for resource in resources:
+        path = Path(resource)
+        assert path.is_file(), resource
+        assert path.is_relative_to(project.root), resource
+    # The fades are cross-fades against a generated black clip, which has to be project-owned.
+    filler = [Path(item) for item in resources if "black-" in item]
+    assert filler, resources
+    for path in filler:
+        assert path.is_relative_to(project.root / "out" / "frames"), path
+
+
+def test_the_handoff_reports_a_reference_that_is_not_on_disk(
+    project_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """build_timeline validates the shot sources, so this guards the document's own references."""
+
+    project = load_project(project_root)
+    real = video.build_timeline
+
+    def without_a_source(*args: object, **kwargs: object) -> tuple[Timeline, dict]:
+        timeline, evidence = real(*args, **kwargs)
+        return (
+            replace(
+                timeline, clips=(replace(timeline.clips[0], resource=project.root / "gone.mp4"),)
+            ),
+            evidence,
+        )
+
+    monkeypatch.setattr(video, "build_timeline", without_a_source)
+
+    result = video.handoff(project)
+
+    assert result.missing_references == (project.root / "gone.mp4",)
+    assert any("not there" in problem for problem in result.problems)
+
+
+def test_the_handoff_document_still_renders(project_root: Path) -> None:
+    """The envelope must not change the edit, so `melt` has to render it like the render input."""
+
+    project = load_project(project_root)
+    result = video.handoff(project)
+    render_input = project.root / "out" / "master.mlt"
+    render_input.write_text(result.timeline.to_xml(project.root), encoding="utf-8")
+
+    from_handoff = media.render_timeline(
+        result.path, project.root / "out" / "frames" / "handoff.mkv"
+    )
+    from_input = media.render_timeline(render_input, project.root / "out" / "frames" / "input.mkv")
+
+    assert media.probe(from_handoff).duration == pytest.approx(
+        media.probe(from_input).duration, abs=0.1
+    )
+    # The envelope must not reshape the audio either, so the two renders are compared by level.
+    assert media.mean_volume_window(from_handoff, 2.0, 2.0) == pytest.approx(
+        media.mean_volume_window(from_input, 2.0, 2.0), abs=0.5
+    )
+
+
+def test_the_cli_writes_and_reports_the_handoff(
+    project_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from media_studio.cli import main
+
+    exit_code = main(["video", "handoff", str(project_root)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.out + captured.err
+    assert "handoff out/kdenlive/master.kdenlive" in captured.out
+    assert "verdict: pass" in captured.out
+    assert (project_root / "out" / "kdenlive" / "master.kdenlive").is_file()
+    # The render input is the render path's business and must not be created here.
+    assert not (project_root / "out" / "master.mlt").exists()

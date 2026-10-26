@@ -11,13 +11,16 @@ project, and they are deleted unless the caller asks to keep them.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
+import subprocess
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import media
+from . import fonts, media
 from .ledger import read_sidecar
 from .manifest import AudioCue, Deliverable, Project, VideoPlan
 from .mlt import AudioPlan, Clip, Timeline, Title, ducking_from_speech, timeline_seconds
@@ -55,6 +58,17 @@ def scratch_directory(slug: str) -> Path:
     """Where intermediates go for one project."""
 
     return SCRATCH_ROOT / slug / "video"
+
+
+def filler_directory(project: Project) -> Path:
+    """Where generated filler goes: inside the project, unlike the scratch intermediates.
+
+    The fades are cross-fades against a generated black clip, and a handed-off timeline references
+    that file by path. Scratch under `/tmp/opencode` is purged after an encode, so a document that
+    pointed there would break the first time someone reopened it.
+    """
+
+    return project.root / "out" / "frames"
 
 
 def _resolve_asset(project: Project, asset_id: str) -> Path:
@@ -124,8 +138,7 @@ def build_timeline(
     clips, music_overrides, titles_from_presets = _apply_effects(project, plan, clips)
 
     width, height, fps = _geometry(deliverable)
-    scratch = scratch_directory(project.slug)
-    clips = _with_fades(clips, plan, scratch, width, height, fps)
+    clips = _with_fades(clips, plan, filler_directory(project), width, height, fps)
     duration = timeline_seconds(clips, plan.crossfade)
 
     ducking: tuple[tuple[float, float], ...] = ()
@@ -215,7 +228,7 @@ def _apply_effects(
                     else working[index + 1]
                 )
             else:
-                black = _black_clip(scratch_directory(project.slug), 1920, 1080, 30.0, duration)
+                black = _black_clip(filler_directory(project), 1920, 1080, 30.0, duration)
                 working.insert(
                     index + 1,
                     Clip(
@@ -295,7 +308,7 @@ def _with_fades(
 
 
 def _black_clip(scratch: Path, width: int, height: int, fps: float, seconds: float) -> Path:
-    """A generated black clip, cached in the scratch directory."""
+    """A generated black clip, cached where the caller asks for it."""
 
     scratch.mkdir(parents=True, exist_ok=True)
     destination = scratch / f"black-{width}x{height}-{fps:g}.mp4"
@@ -499,6 +512,94 @@ def render(
         contact_sheet=sheet,
         intermediate=kept,
         report=report,
+    )
+
+
+def installed_kdenlive_version() -> str:
+    """The Kdenlive version this machine has, or an empty string when it is not installed."""
+
+    try:
+        completed = subprocess.run(
+            ["kdenlive", "--version"], capture_output=True, text=True, check=False, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    match = re.search(r"(\d+\.\d+(?:\.\d+)?)", f"{completed.stdout} {completed.stderr}")
+    return match.group(1) if match else ""
+
+
+def _document_id(project: Project, deliverable: Deliverable) -> str:
+    """A stable identifier for one handoff document, so the file is reproducible."""
+
+    digest = hashlib.sha256(f"{project.slug}/{deliverable.id}".encode()).hexdigest()
+    return f"media-studio-{digest[:12]}"
+
+
+@dataclass(frozen=True)
+class HandoffResult:
+    """A Kdenlive-compatible project built from the same timeline the render uses."""
+
+    path: Path
+    kdenlive_version: str
+    document_id: str
+    # Paths the written document names that are not on disk. The shot sources are validated by
+    # build_timeline, so what this really catches is the generated filler, which is produced here.
+    missing_references: tuple[Path, ...]
+    timeline: Timeline
+
+    @property
+    def problems(self) -> list[str]:
+        if not self.missing_references:
+            return []
+        return [
+            "the document references files that are not there: "
+            + ", ".join(item.name for item in self.missing_references)
+        ]
+
+    @property
+    def notes(self) -> list[str]:
+        """What Kdenlive will change on open, named here instead of being discovered there."""
+
+        return [
+            f"title font {title.family!r} is not installed; {resolved!r} will be used instead"
+            for title in self.timeline.titles
+            if (resolved := fonts.resolved_family(title.family)) and resolved != title.family
+        ]
+
+
+def handoff(project: Project, deliverable_id: str | None = None) -> HandoffResult:
+    """Write a Kdenlive-compatible project beside the render input, without touching it.
+
+    The render reads `out/<id>.mlt`; Kdenlive needs an envelope around the same edit and refuses the
+    bare document, so the two are kept apart on purpose: a bad envelope can never break a render,
+    and the render input stays minimal.
+    """
+
+    deliverable = _pick_deliverable(project, deliverable_id)
+    timeline, _evidence = build_timeline(project, deliverable)
+    directory = project.root / "out" / "kdenlive"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{deliverable.id}.kdenlive"
+    # Probed once: the report must name the version the document itself was stamped with.
+    version = installed_kdenlive_version()
+    document_id = _document_id(project, deliverable)
+    path.write_text(
+        timeline.to_kdenlive_xml(
+            project.root,
+            kdenlive_version=version,
+            document_id=document_id,
+        ),
+        encoding="utf-8",
+    )
+    references = tuple(
+        sorted({clip.resource for clip in timeline.clips if not clip.resource.is_file()})
+    )
+    return HandoffResult(
+        path=path,
+        kdenlive_version=version,
+        document_id=document_id,
+        missing_references=references,
+        timeline=timeline,
     )
 
 

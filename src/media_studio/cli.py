@@ -75,6 +75,7 @@ from .triage import (
     write_index,
 )
 from .video import VideoError, qc_report
+from .video import handoff as video_handoff
 from .video import render as render_video
 
 # A search class is not always the staging class: a stock photo belongs in the design set.
@@ -206,6 +207,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep the lossless render under /tmp/opencode for inspection",
     )
     render.set_defaults(func=cmd_video_render)
+
+    handoff = video_sub.add_parser(
+        "handoff", help="write a Kdenlive-compatible project beside the render input"
+    )
+    handoff.add_argument("project", help="project path or slug")
+    handoff.add_argument("--deliverable", default=None, help="deliverable id from project.yaml")
+    handoff.set_defaults(func=cmd_video_handoff)
 
     qc = video_sub.add_parser("qc", help="measure an existing file and write a report")
     qc.add_argument("project", help="project path or slug")
@@ -764,6 +772,33 @@ def cmd_video_render(args: argparse.Namespace) -> int:
     print(f"  report:   {result.report_path.relative_to(project.root)}")
     print(f"  sheet:    {result.contact_sheet.relative_to(project.root)}")
     return _report_video_qc(result.report)
+
+
+def cmd_video_handoff(args: argparse.Namespace) -> int:
+    """Write a Kdenlive-compatible project and say what it targets and what it references."""
+
+    try:
+        project = load_project(args.project)
+        result = video_handoff(project, args.deliverable)
+    except (ManifestError, VideoError, MediaError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    target = result.kdenlive_version or "unknown (kdenlive is not on PATH)"
+    print(f"handoff {result.path.relative_to(project.root)}")
+    print(f"  kdenlive:  {target}")
+    print(f"  envelope:  docproperties.version, documentid {result.document_id}")
+    print(
+        f"  edit:      {result.timeline.duration:.1f}s, "
+        f"{len(result.timeline.clips)} clip(s), {len(result.timeline.titles)} title(s)"
+    )
+    print(f"  render:    out/{result.path.stem}.mlt is untouched; the envelope lives only here")
+    for note in result.notes:
+        print(f"  note:      {note}")
+    for problem in result.problems:
+        print(f"  problem:   {problem}")
+    print("verdict: " + ("pass" if not result.problems else "FAIL"))
+    return EXIT_OK if not result.problems else EXIT_FAILURE
 
 
 def cmd_video_qc(args: argparse.Namespace) -> int:

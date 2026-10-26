@@ -256,11 +256,11 @@ Audio inside the path: voice-over cleanup (high-pass, denoise, compression), mus
 driven by voice-over segments, fades, and final loudness. Stem separation supplies
 instrumental-only or vocal-only variants when a project needs them.
 
-Kdenlive handoff, measured on 2026-10-26 with Kdenlive 26.08.2. The `.mlt` our writer produces is a
-valid MLT document that `melt` renders, but Kdenlive will not open it as a project: File > Open
+Kdenlive handoff, measured on 2026-10-26 with Kdenlive 26.08.2. The bare `.mlt` our writer produces
+is a valid MLT document that `melt` renders, but Kdenlive will not open it as a project: File > Open
 answers "Incorrect project file — Version of the project file cannot be read", and accepting the
-following "Attempting to open nonetheless" ends on an empty project. Two causes are established.
-First, the document carries no `kdenlive:` properties at all, while a project Kdenlive writes itself
+following "Attempting to open nonetheless" ends on an empty project. Two causes were established.
+First, that document carried no `kdenlive:` properties at all, while a project Kdenlive writes itself
 carries `kdenlive:docproperties.version` (1.1), `kdenlive:docproperties.kdenliveversion`,
 `kdenlive:docproperties.documentid`, a `main_bin` **playlist** holding the bin and the document
 properties, per-track `kdenlive:trackheight` and `kdenlive:timeline_active`, a sequence tractor with
@@ -268,16 +268,26 @@ properties, per-track `kdenlive:trackheight` and `kdenlive:timeline_active`, a s
 document is kept as evidence at
 `~/.local/state/opencode-media-studio/kdenlive-evidence/kdenlive-reference-schema.mlt`, saved from an
 empty project Kdenlive created through its own dialog. Second, the fades are cross-fades against a
-generated black clip that the writer points at under `/tmp/opencode/<slug>/`, which is purged after
-encoding, so a handed-off project references a file that no longer exists; Kdenlive reports exactly
-that as a clip problem and the title's `Sans` family as a placeholder. Screenshots of both dialogs sit
+generated black clip that the writer pointed at under `/tmp/opencode/<slug>/`, which is purged after
+encoding, so a handed-off project referenced a file that no longer exists; Kdenlive reported exactly
+that as a clip problem and the title's `Sans` family as a placeholder. Both are fixed — `ms video
+handoff` writes the envelope and keeps generated filler in the project's `out/frames/`, and it now
+predicts the font substitution instead of leaving it to be discovered. Screenshots of both dialogs sit
 beside the reference. Two method notes, because they cost real time: launching `kdenlive <file>` does
 not open a project on this build, it imports the file into the bin as a clip — it does the same to a
 project Kdenlive saved itself, so that path proves nothing about a document's validity; and the Open
 dialog filters on the `.kdenlive` extension, so a `.mlt` is invisible in its file list until the
 file-type filter is changed or the name is typed into the field. A fix therefore means a
 Kdenlive-compatible handoff document, and a filler clip that lives inside the project rather than in
-`/tmp`.
+`/tmp`. Both are now written by `ms video handoff` (see `docs/plans/kdenlive-handoff.md`), and the
+measured result is progress rather than success: Kdenlive accepts the document — the version refusal
+is gone, the load reaches the Clip Problems dialog, the file lands in Open Recent — and then crashes
+while loading it, which Kdenlive itself confirmed with "Kdenlive crashed on last start" on its next
+launch. The remaining gap is structural: Kdenlive's own timeline is a black track plus one tractor
+per track holding two playlists with `hide` attributes, referenced by a sequence tractor with a JSON
+track description, where ours puts playlists straight on `main` and nests its own A/B and title
+tractors. Evidence, including the document and both screenshots, is in
+`~/.local/state/opencode-media-studio/kdenlive-evidence/`.
 
 ### 5.2 3D
 
@@ -597,7 +607,7 @@ MCP path does not need it.
 | Path | Acceptance criteria |
 | --- | --- |
 | `/assets` | A single query returns ranked, licensed candidates from at least three keyless 3D sources; download writes the file plus a complete sidecar; the index and `CREDITS.md` regenerate; duplicates collapse by hash; quota violations abort with a clear message |
-| `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive. Met for everything except the Kdenlive open, which was verified on 2026-10-26 and **failed**: Kdenlive recognises the file as a project but answers "Incorrect project file — Version of the project file cannot be read", and acknowledging that ends on an empty project. The two causes and the reference schema for the fix are recorded in section 5.1 |
+| `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive. Met for everything except the Kdenlive open, which is still **not met** after two measurement rounds on 2026-10-26: Kdenlive first refused the bare `.mlt`, and now accepts the handoff document `ms video handoff` writes — no version complaint, the load reaches the Clip Problems dialog, the file is recorded in Open Recent — but crashes while loading it. Section 5.1 records the schema, the remaining structural difference, and the evidence |
 | `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB. Met for all of it: OBJ, STL, and GLB conversion and normalisation, the headless turntable with metrics and a contact sheet, and material and HDRI binding, which was proved live on 2026-10-25 with `mossy_rock` and `belfast_sunset_puresky` at 1k (four shader slots bound, eight CC0 assets staged and indexed, a GLB with embedded textures, and a proof frame at 138.9 mean luma) |
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |

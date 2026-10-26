@@ -164,6 +164,25 @@ def embedding_permission(path: Path) -> tuple[bool, str]:
     return True, f"fsType {value:#06x} allows embedding"
 
 
+def resolved_family(family: str, environment: dict[str, str] | None = None) -> str:
+    """The family fontconfig would actually use for a request, or "" when it cannot be asked.
+
+    Text producers take a family name and silently substitute one when it is absent, which is what
+    a handed-off project shows as a clip problem. Asking fontconfig turns that into a prediction.
+    """
+
+    completed = subprocess.run(
+        ["fc-match", "--format", "%{family[0]}", family],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
 def family_of(path: Path, environment: dict[str, str] | None = None) -> str:
     """The family name a renderer should ask for."""
 

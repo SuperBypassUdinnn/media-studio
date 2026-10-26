@@ -1,4 +1,4 @@
-"""Authoring plain MLT XML for `melt`.
+"""Authoring plain MLT XML: what `melt` renders, and the envelope Kdenlive needs to open it.
 
 Everything here is a pure function of a plan, so the XML and the audio curves can be checked
 without running a renderer. Times cross into MLT as frame numbers, which keeps a 60 fps timeline
@@ -18,6 +18,13 @@ from xml.etree import ElementTree
 
 MLT_VERSION = "7.42.0"
 DEFAULT_TRANSITION = 0.5
+# Kdenlive refuses a project file whose document version it cannot read, and reads that version from
+# `kdenlive:docproperties.version`. The value below is what Kdenlive 26.08.2 writes itself; the
+# surrounding envelope in `to_kdenlive_xml` mirrors a project saved by that version.
+KDENLIVE_DOCUMENT_VERSION = "1.1"
+# Track height in pixels, also taken from a project Kdenlive wrote itself; it only affects how the
+# timeline looks when the document is first opened.
+KDENLIVE_TRACK_HEIGHT = "62"
 # A ducked bed sits well under the voice without disappearing.
 DEFAULT_DUCK_LEVEL = 0.3
 
@@ -148,6 +155,86 @@ class Timeline:
 
     def to_xml(self, root: Path | None = None) -> str:
         """Serialise the timeline as MLT XML."""
+
+        return _serialise(self._tree(root))
+
+    def to_kdenlive_xml(
+        self,
+        root: Path | None = None,
+        *,
+        kdenlive_version: str = "",
+        document_id: str = "",
+    ) -> str:
+        """Serialise the timeline inside the envelope Kdenlive needs to open it as a project.
+
+        The edit itself is identical to `to_xml`; what is added is what Kdenlive looks for before it
+        will read a document: a `main_bin` playlist carrying the document properties (including the
+        format version it refuses to guess), track properties on the sequence, and a final tractor
+        marked as the project tractor.
+        """
+
+        header = self._tree(root)
+        header.set("producer", "main_bin")
+
+        bin_playlist = ElementTree.Element("playlist", {"id": "main_bin"})
+        _properties(
+            bin_playlist,
+            (
+                ("kdenlive:docproperties.version", KDENLIVE_DOCUMENT_VERSION),
+                ("kdenlive:docproperties.kdenliveversion", kdenlive_version),
+                ("kdenlive:docproperties.documentid", document_id),
+                ("kdenlive:docproperties.audioChannels", "2"),
+                ("kdenlive:docproperties.decimalPoint", "."),
+                ("kdenlive:docproperties.enableproxy", "0"),
+                ("kdenlive:docproperties.generateproxy", "0"),
+                ("kdenlive:docproperties.generateimageproxy", "0"),
+            ),
+        )
+        header.insert(1, bin_playlist)
+
+        sequence = header.find("tractor[@id='main']")
+        if sequence is None:
+            raise ValueError("the timeline has no main tractor to mark as the sequence")
+        tracks = list(sequence.findall("track"))
+        audio_ids = {f"{name}_playlist" for name, _plan in self.audio_tracks()}
+        _properties(
+            sequence,
+            (
+                ("kdenlive:sequenceproperties.tracksCount", str(len(tracks))),
+                ("kdenlive:sequenceproperties.hasVideo", "1"),
+                ("kdenlive:sequenceproperties.hasAudio", "1" if self.audio_tracks() else "0"),
+                ("kdenlive:sequenceproperties.documentuuid", document_id),
+                ("kdenlive:sequenceproperties.zoom", "8"),
+                ("kdenlive:trackheight", KDENLIVE_TRACK_HEIGHT),
+                ("kdenlive:timeline_active", "1"),
+            ),
+        )
+        # Kdenlive reads the per-track fields from the track's own producer, so they are written
+        # there as well as on the sequence.
+        for track in tracks:
+            target = header.find(f"*[@id='{track.get('producer', '')}']")
+            if target is None:
+                continue
+            _properties(
+                target,
+                (
+                    ("kdenlive:trackheight", KDENLIVE_TRACK_HEIGHT),
+                    ("kdenlive:timeline_active", "1"),
+                    ("kdenlive:audio_track", "1" if track.get("producer") in audio_ids else ""),
+                ),
+            )
+
+        project = ElementTree.SubElement(
+            header,
+            "tractor",
+            {"id": "kdenlive_project", "in": "0", "out": sequence.get("out", "0")},
+        )
+        _property(project, "kdenlive:projectTractor", "1")
+        ElementTree.SubElement(project, "track", {"producer": "main"})
+        return _serialise(header)
+
+    def _tree(self, root: Path | None = None) -> ElementTree.Element:
+        """Build the MLT element tree for this timeline."""
 
         if not self.clips:
             raise ValueError("a timeline needs at least one clip")
@@ -299,7 +386,7 @@ class Timeline:
         )
         for _name, element in tracks:
             ElementTree.SubElement(tractor, "track", {"producer": element.get("id", "")})
-        return _serialise(header)
+        return header
 
     def _title_producers(self, header: ElementTree.Element) -> None:
         """One `qtext` producer per title."""
@@ -569,6 +656,14 @@ def _dissolve(
     _property(transition, "a_track", str(a_track))
     _property(transition, "b_track", str(b_track))
     return transition
+
+
+def _properties(parent: ElementTree.Element, pairs: tuple[tuple[str, str], ...]) -> None:
+    """Emit the pairs that carry a value, which is how every Kdenlive property block is written."""
+
+    for name, value in pairs:
+        if value:
+            _property(parent, name, value)
 
 
 def _property(parent: ElementTree.Element, name: str, value: str) -> ElementTree.Element:
