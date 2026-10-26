@@ -282,9 +282,12 @@ Kdenlive 26.08.2 segfaults at startup on this machine, so it is driven with `env
 Kdenlive-compatible handoff document, and a filler clip that lives inside the project rather than in
 `/tmp`. Both are now written by `ms video handoff` (see `docs/plans/kdenlive-handoff.md`), and the
 measured result is progress rather than success: Kdenlive accepts the document — the version refusal
-is gone, the load reaches the Clip Problems dialog, the file lands in Open Recent — and then crashes
-while loading it, which Kdenlive itself confirmed with "Kdenlive crashed on last start" on its next
-launch. The remaining gap is structural: Kdenlive's own timeline is a black track plus one tractor
+is gone, the load reaches the Clip Problems dialog, the file lands in Open Recent — and then drove into a
+crash while loading it, which Kdenlive itself confirmed with "Kdenlive crashed on last start" on its
+next launch. A core dump showed that crash as SIGFPE in an integer division by a zero field; after
+the handoff document gained the document profile name, the identity fields, and the bin entries that
+a Kdenlive-authored project carries, the silent crash is gone and the load ends on an Error dialog
+with the application still alive. The remaining gap is structural: Kdenlive's own timeline is a black track plus one tractor
 per track holding two playlists with `hide` attributes, referenced by a sequence tractor with a JSON
 track description, where ours puts playlists straight on `main` and nests its own A/B and title
 tractors. Evidence, including the document and both screenshots, is in

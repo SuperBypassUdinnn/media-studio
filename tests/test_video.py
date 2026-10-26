@@ -348,18 +348,77 @@ def test_the_handoff_carries_the_envelope_kdenlive_looks_for(project_root: Path)
         properties(bin_playlist)["kdenlive:docproperties.version"] == mlt.KDENLIVE_DOCUMENT_VERSION
     )
 
-    sequence = root.find("tractor[@id='main']")
-    assert sequence is not None
-    assert properties(sequence)["kdenlive:sequenceproperties.tracksCount"] == str(
-        len(sequence.findall("track"))
+    # The sequence is the tractor Kdenlive types as a sequence, not a name of our choosing.
+    sequence = next(
+        tractor
+        for tractor in root.findall("tractor")
+        if properties(tractor).get("kdenlive:producer_type") == mlt.KDENLIVE_SEQUENCE_TYPE
     )
-    assert properties(sequence)["kdenlive:trackheight"] == mlt.KDENLIVE_TRACK_HEIGHT
+    sequence_properties = properties(sequence)
+    count = str(len(sequence.findall("track")))
+    assert sequence_properties["kdenlive:sequenceproperties.tracksCount"] == count
+    assert sequence_properties["kdenlive:sequenceproperties.tracks"] == count
+    assert sequence_properties["kdenlive:trackheight"] == mlt.KDENLIVE_TRACK_HEIGHT
+    assert sequence_properties["kdenlive:sequenceproperties.zoneout"] != "0"
 
     project = root.find("tractor[@id='kdenlive_project']")
     assert project is not None
     assert properties(project)["kdenlive:projectTractor"] == "1"
-    assert [track.get("producer") for track in project.findall("track")] == ["main"]
+    assert [track.get("producer") for track in project.findall("track")] == [sequence.get("id")]
+
+    # The bin has to list the clips, or Kdenlive shows an empty project bin.
+    bin_entries = root.find("playlist[@id='main_bin']").findall("entry")
+    assert {entry.get("producer") for entry in bin_entries} == {
+        producer.get("id") for producer in root.findall("producer")
+    }
     assert result.problems == [], result.problems
+
+
+def test_the_profile_name_maps_only_to_presets_mlt_has() -> None:
+    """The name is what Kdenlive reads its frame rate from, so it is never invented."""
+
+    assert mlt.kdenlive_profile_name(1280, 720, 30.0) == "atsc_720p_30"
+    assert mlt.kdenlive_profile_name(1920, 1080, 25.0) == "atsc_1080p_25"
+    assert mlt.kdenlive_profile_name(320, 180, 24.0) == ""
+    assert mlt.kdenlive_profile_name(1080, 1920, 30.0) == ""
+
+
+def test_the_handoff_carries_the_document_identity(project_root: Path) -> None:
+    """The fixture renders tiny, so it has no preset name; identity is always written."""
+
+    result = video.handoff(load_project(project_root))
+
+    root = ElementTree.fromstring(result.path.read_text(encoding="utf-8"))
+    bin_playlist = root.find("playlist[@id='main_bin']")
+    document = {item.get("name", ""): item.text or "" for item in bin_playlist.findall("property")}
+
+    assert "kdenlive:docproperties.profile" not in document
+    assert document["kdenlive:docproperties.uuid"].startswith("{")
+    assert (
+        document["kdenlive:docproperties.activetimeline"] == document["kdenlive:docproperties.uuid"]
+    )
+
+    profile = root.find("profile")
+    assert profile is not None
+    # The render input omits sample aspect; the handoff declares it, because Kdenlive reads it.
+    assert profile.get("sample_aspect_num") == "1"
+    assert profile.get("sample_aspect_den") == "1"
+
+
+def test_the_handoff_leaves_the_render_input_without_sample_aspect(project_root: Path) -> None:
+    """The 1:1 sample aspect is what makes this MLT build drop qtblend titles, so it stays local."""
+
+    from media_studio.mlt import Clip, Timeline
+
+    timeline = Timeline(
+        width=1280,
+        height=720,
+        fps=30.0,
+        clips=(Clip(resource=project_root / "assets" / "video" / "shot-1.mp4", duration=1.0),),
+    )
+
+    assert "sample_aspect" not in timeline.to_xml(project_root)
+    assert "sample_aspect_num" in timeline.to_kdenlive_xml(project_root)
 
 
 def test_the_handoff_targets_the_installed_kdenlive(project_root: Path) -> None:

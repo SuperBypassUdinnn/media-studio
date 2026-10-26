@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree
@@ -25,6 +26,24 @@ KDENLIVE_DOCUMENT_VERSION = "1.1"
 # Track height in pixels, also taken from a project Kdenlive wrote itself; it only affects how the
 # timeline looks when the document is first opened.
 KDENLIVE_TRACK_HEIGHT = "62"
+# Kdenlive tags a sequence producer with this type; a document without it leaves the sequence
+# untyped, which is not what a project Kdenlive writes looks like.
+KDENLIVE_SEQUENCE_TYPE = "17"
+# Kdenlive stores the document's profile as the name of an MLT preset, which is what it later reads
+# back for the frame rate. The names below are the presets MLT ships for the sizes this toolkit
+# renders; a profile outside the table gets no name rather than an invented one.
+KDENLIVE_PROFILE_PRESETS = {
+    (1280, 720, 24.0): "atsc_720p_24",
+    (1280, 720, 25.0): "atsc_720p_25",
+    (1280, 720, 30.0): "atsc_720p_30",
+    (1280, 720, 50.0): "atsc_720p_50",
+    (1280, 720, 60.0): "atsc_720p_60",
+    (1920, 1080, 24.0): "atsc_1080p_24",
+    (1920, 1080, 25.0): "atsc_1080p_25",
+    (1920, 1080, 30.0): "atsc_1080p_30",
+    (1920, 1080, 50.0): "atsc_1080p_50",
+    (1920, 1080, 60.0): "atsc_1080p_60",
+}
 # A ducked bed sits well under the voice without disappearing.
 DEFAULT_DUCK_LEVEL = 0.3
 
@@ -175,14 +194,62 @@ class Timeline:
 
         header = self._tree(root)
         header.set("producer", "main_bin")
+        # The render input deliberately leaves sample aspect out: with it declared as 1:1 this MLT
+        # build drops qtblend title composites. Kdenlive reads the field and does integer arithmetic
+        # with it, so the handoff document declares it and only the handoff does.
+        profile = header.find("profile")
+        if profile is not None:
+            profile.set("sample_aspect_num", "1")
+            profile.set("sample_aspect_den", "1")
+        sequence_uuid = _kdenlive_uuid(document_id)
+        fps = self.fps
+        total = frames(self.duration, fps)
 
+        for index, producer in enumerate(header.findall("producer")):
+            identifier = producer.get("id", f"clip{index}")
+            _properties(
+                producer,
+                (
+                    ("kdenlive:uuid", _kdenlive_uuid(identifier)),
+                    (
+                        "kdenlive:clipname",
+                        Path(producer.findtext("property[@name='resource']") or identifier).name,
+                    ),
+                    ("kdenlive:producer_type", "2"),
+                    ("kdenlive:id", str(index)),
+                    ("kdenlive:clip_type", "0"),
+                    ("kdenlive:folderid", "0"),
+                    ("kdenlive:maxduration", str(total)),
+                ),
+            )
+
+        # Kdenlive reads the frame rate back from this name, and a document without it is what a
+        # zero divisor later in its timeline maths looks like, so it is written whenever known.
+        profile_name = kdenlive_profile_name(self.width, self.height, fps)
         bin_playlist = ElementTree.Element("playlist", {"id": "main_bin"})
+        for producer in header.findall("producer"):
+            ElementTree.SubElement(
+                bin_playlist,
+                "entry",
+                {
+                    "producer": producer.get("id", ""),
+                    "in": "0",
+                    "out": producer.get("out", str(max(total - 1, 0))),
+                },
+            )
         _properties(
             bin_playlist,
             (
                 ("kdenlive:docproperties.version", KDENLIVE_DOCUMENT_VERSION),
                 ("kdenlive:docproperties.kdenliveversion", kdenlive_version),
                 ("kdenlive:docproperties.documentid", document_id),
+                ("kdenlive:docproperties.profile", profile_name),
+                ("kdenlive:docproperties.patchversion", "1"),
+                ("kdenlive:docproperties.uuid", sequence_uuid),
+                ("kdenlive:docproperties.activetimeline", sequence_uuid),
+                ("kdenlive:docproperties.sessionid", _kdenlive_uuid(f"{document_id}/session")),
+                ("kdenlive:docproperties.enableTimelineZone", "0"),
+                ("kdenlive:docproperties.binsort", "0"),
                 ("kdenlive:docproperties.audioChannels", "2"),
                 ("kdenlive:docproperties.decimalPoint", "."),
                 ("kdenlive:docproperties.enableproxy", "0"),
@@ -197,14 +264,38 @@ class Timeline:
             raise ValueError("the timeline has no main tractor to mark as the sequence")
         tracks = list(sequence.findall("track"))
         audio_ids = {f"{name}_playlist" for name, _plan in self.audio_tracks()}
+        sequence.set("id", sequence_uuid)
         _properties(
             sequence,
             (
+                ("kdenlive:uuid", sequence_uuid),
+                ("kdenlive:clipname", "Sequence 1"),
+                ("kdenlive:control_uuid", sequence_uuid),
+                ("kdenlive:producer_type", KDENLIVE_SEQUENCE_TYPE),
+                ("kdenlive:id", "0"),
+                ("kdenlive:clip_type", "0"),
+                ("kdenlive:file_size", "0"),
+                ("kdenlive:folderid", "2"),
                 ("kdenlive:sequenceproperties.tracksCount", str(len(tracks))),
+                ("kdenlive:sequenceproperties.tracks", str(len(tracks))),
                 ("kdenlive:sequenceproperties.hasVideo", "1"),
                 ("kdenlive:sequenceproperties.hasAudio", "1" if self.audio_tracks() else "0"),
-                ("kdenlive:sequenceproperties.documentuuid", document_id),
+                ("kdenlive:sequenceproperties.documentuuid", sequence_uuid),
+                ("kdenlive:sequenceproperties.activeTrack", "1"),
+                ("kdenlive:sequenceproperties.videoTarget", "1"),
+                ("kdenlive:sequenceproperties.audioTarget", "1"),
+                ("kdenlive:sequenceproperties.position", "0"),
+                ("kdenlive:sequenceproperties.scrollPos", "0"),
+                ("kdenlive:sequenceproperties.verticalzoom", "1"),
+                ("kdenlive:sequenceproperties.disablepreview", "0"),
+                ("kdenlive:sequenceproperties.zonein", "0"),
+                ("kdenlive:sequenceproperties.zoneout", str(total)),
                 ("kdenlive:sequenceproperties.zoom", "8"),
+                ("kdenlive:duration", _timecode(total, fps)),
+                ("kdenlive:maxduration", str(total)),
+                ("kdenlive:folderid", "2"),
+                ("kdenlive:sequenceproperties.groups", "[\n]"),
+                ("kdenlive:sequenceproperties.guides", "[\n]"),
                 ("kdenlive:trackheight", KDENLIVE_TRACK_HEIGHT),
                 ("kdenlive:timeline_active", "1"),
             ),
@@ -230,7 +321,7 @@ class Timeline:
             {"id": "kdenlive_project", "in": "0", "out": sequence.get("out", "0")},
         )
         _property(project, "kdenlive:projectTractor", "1")
-        ElementTree.SubElement(project, "track", {"producer": "main"})
+        ElementTree.SubElement(project, "track", {"producer": sequence_uuid})
         return _serialise(header)
 
     def _tree(self, root: Path | None = None) -> ElementTree.Element:
@@ -656,6 +747,32 @@ def _dissolve(
     _property(transition, "a_track", str(a_track))
     _property(transition, "b_track", str(b_track))
     return transition
+
+
+def kdenlive_profile_name(width: int, height: int, fps: float) -> str:
+    """The MLT preset name for a canvas, or "" when it is not one this toolkit can name.
+
+    Kdenlive reads the document's frame rate back from this name, so a size outside the table gets
+    nothing instead of a plausible-looking invention.
+    """
+
+    return KDENLIVE_PROFILE_PRESETS.get((width, height, float(fps)), "")
+
+
+def _timecode(frames_count: int, fps: float) -> str:
+    """A timecode in the `HH:MM:SS:FF` form Kdenlive writes for a duration."""
+
+    rate = max(round(fps), 1)
+    seconds, remainder = divmod(max(frames_count, 0), rate)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{remainder:02d}"
+
+
+def _kdenlive_uuid(seed: str) -> str:
+    """A stable UUID in the braces Kdenlive writes, derived from the document instead of random."""
+
+    return "{" + str(uuid.uuid5(uuid.NAMESPACE_URL, f"media-studio/{seed}")) + "}"
 
 
 def _properties(parent: ElementTree.Element, pairs: tuple[tuple[str, str], ...]) -> None:

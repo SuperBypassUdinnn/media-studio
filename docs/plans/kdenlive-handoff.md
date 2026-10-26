@@ -26,6 +26,29 @@ Screenshots and the document itself are kept in
 same two rows before and after the envelope was added — a fresh capture would have been the same
 bytes, so the earlier one stands for both rounds.
 
+### Second round, 2026-10-26 (after the crash above)
+
+The crash was diagnosed from the core dump rather than guessed at: `coredumpctl` shows **SIGFPE /
+FPE_INTDIV**, and gdb on the dump puts the faulting instruction at an `idivl` whose divisor is the
+32-bit field at `[rbx+0x50]`, holding zero (`rax` and `rdx` are both zero, and the quotient is then
+converted to a double). No debuginfo is published for this build, so the field could not be named.
+
+Three changes followed, each from what a project Kdenlive writes itself contains and ours did not:
+`kdenlive:docproperties.profile` (the MLT preset **name** — the reference stores `atsc_1080p_25`,
+and Kdenlive reads the frame rate back from this name), the document identity fields
+(`docproperties.uuid`, `activetimeline`, `sessionid`, `patchversion`, `enableTimelineZone`,
+`binsort`, `sequenceproperties.duration`), and the bin entries that list every producer.
+
+Measured result: **the silent crash is gone.** Opening the document now reaches the Clip Problems
+dialog and then an **Error dialog** while the application stays alive, which is a different and
+better failure: there is a message to read instead of a core dump. The document also gained
+`sample_aspect_num`/`sample_aspect_den` in its profile, declared only in the handoff because the
+1:1 sample aspect is what makes this MLT build drop qtblend titles in `melt`.
+
+Still open: read that error message and act on it, then repeat the open. The best capture route is
+the person at the display, because window-relative screenshot regions and the physical pixel grid
+disagreed during this round.
+
 ### Next step, from that outcome
 
 The remaining difference is structural, not metadata. A project Kdenlive writes lays the timeline out
