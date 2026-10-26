@@ -396,13 +396,17 @@ SNAPSHOT_VIDEO_EFFECTS = sorted(
     recipe.id for recipe in load_recipes().values() if recipe.kind == "video-effect"
 )
 SNAPSHOT_TITLES = sorted(recipe.id for recipe in load_recipes().values() if recipe.kind == "title")
-# Mean absolute difference per channel on the 0-255 scale. Measured drift on this machine is 0.00
-# for every video effect and 0.34-0.39 for the two titles, where text rasterisation is the only
-# jitter, so 1.5 leaves room for that and still fails on any real change to a look.
+# Mean absolute difference per channel on the 0-255 scale, measured on this machine. A video effect
+# renders identically between runs (0.00), so 1.5 is pure headroom. A title goes through qtext and
+# qtblend, whose rasterisation drifts by about 0.8 between adjacent runs and up to 2.2 across
+# contexts, so its tolerance is looser while the guard below still fails a title that vanished.
 SNAPSHOT_TOLERANCE = 1.5
+SNAPSHOT_TITLE_TOLERANCE = 4.0
 # A snapshot has to differ from the unfiltered frame, or the recipe proves nothing. Measured against
-# the fixture below this holds for every video effect once the defaults fit the frame.
+# the fixture below: at least 1.0 for every video effect once the defaults fit the frame, and about
+# 17 for a title, which is why the title guard is the higher of the two.
 SNAPSHOT_MINIMUM_CHANGE = 1.0
+SNAPSHOT_TITLE_MINIMUM_CHANGE = 5.0
 # Some defaults describe a 1920x1080 frame, which the small fixture cannot honour, so the crop is
 # snapshotted with an override that actually removes pixels.
 SNAPSHOT_OVERRIDES: dict[str, dict] = {"video-crop-vertical": {"left": 40, "right": 40}}
@@ -456,7 +460,9 @@ def mean_absolute_difference(left: Path, right: Path) -> float:
     return float(completed.stdout.strip())
 
 
-def compare_with_snapshot(rendered: Path, recipe_id: str) -> None:
+def compare_with_snapshot(
+    rendered: Path, recipe_id: str, tolerance: float = SNAPSHOT_TOLERANCE
+) -> None:
     """Compare against the recorded frame, or record it when MS_PRESET_SNAPSHOTS=regen.
 
     The baselines encode this machine's `melt`, encoder, and font versions. Regenerating them
@@ -471,8 +477,8 @@ def compare_with_snapshot(rendered: Path, recipe_id: str) -> None:
         return
     assert baseline.is_file(), f"no snapshot at {baseline}; run with MS_PRESET_SNAPSHOTS=regen"
     difference = mean_absolute_difference(rendered, baseline)
-    assert difference <= SNAPSHOT_TOLERANCE, (
-        f"{recipe_id} differs from its snapshot by {difference:.2f} of {SNAPSHOT_TOLERANCE}"
+    assert difference <= tolerance, (
+        f"{recipe_id} differs from its snapshot by {difference:.2f} of {tolerance}"
     )
 
 
@@ -511,15 +517,27 @@ def test_every_title_recipe_matches_its_snapshot(
         colour=settings["colour"],
         geometry=settings["position"],
     )
-    timeline = Timeline(
-        width=160,
-        height=90,
-        fps=24.0,
-        clips=(Clip(resource=patterned_clip, duration=1.0),),
-        titles=(title,),
-    )
-    path = tmp_path / f"{recipe_id}.mlt"
-    path.write_text(timeline.to_xml(tmp_path), encoding="utf-8")
-    video = media.render_timeline(path, tmp_path / f"{recipe_id}.mkv")
 
-    compare_with_snapshot(frame_png(video, tmp_path / f"{recipe_id}.png"), recipe_id)
+    def timeline(titles: tuple) -> Timeline:
+        return Timeline(
+            width=160,
+            height=90,
+            fps=24.0,
+            clips=(Clip(resource=patterned_clip, duration=1.0),),
+            titles=titles,
+        )
+
+    rendered: list[Path] = []
+    for name, titles in (("plain", ()), ("titled", (title,))):
+        path = tmp_path / f"{recipe_id}-{name}.mlt"
+        path.write_text(timeline(titles).to_xml(tmp_path), encoding="utf-8")
+        video = media.render_timeline(path, tmp_path / f"{recipe_id}-{name}.mkv")
+        rendered.append(frame_png(video, tmp_path / f"{recipe_id}-{name}.png"))
+
+    plain_frame, titled_frame = rendered
+    # The recipe's default geometry describes a 1080p frame; on this fixture the text still has to
+    # land somewhere, and this is the assertion that proves it did.
+    assert mean_absolute_difference(titled_frame, plain_frame) >= SNAPSHOT_TITLE_MINIMUM_CHANGE, (
+        f"{recipe_id} drew no visible title"
+    )
+    compare_with_snapshot(titled_frame, recipe_id, SNAPSHOT_TITLE_TOLERANCE)
