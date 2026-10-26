@@ -273,11 +273,12 @@ encoding, so a handed-off project referenced a file that no longer exists; Kdenl
 that as a clip problem and the title's `Sans` family as a placeholder. Both are fixed — `ms video
 handoff` writes the envelope and keeps generated filler in the project's `out/frames/`, and it now
 predicts the font substitution instead of leaving it to be discovered. Screenshots of both dialogs sit
-beside the reference. Two method notes, because they cost real time: launching `kdenlive <file>` does
+beside the reference. Three method notes, because they cost real time: launching `kdenlive <file>` does
 not open a project on this build, it imports the file into the bin as a clip — it does the same to a
-project Kdenlive saved itself, so that path proves nothing about a document's validity; and the Open
+project Kdenlive saved itself, so that path proves nothing about a document's validity; the Open
 dialog filters on the `.kdenlive` extension, so a `.mlt` is invisible in its file list until the
-file-type filter is changed or the name is typed into the field. A fix therefore means a
+file-type filter is changed or the name is typed into the field; and with `MANGOHUD=1` exported,
+Kdenlive 26.08.2 segfaults at startup on this machine, so it is driven with `env -u MANGOHUD`. A fix therefore means a
 Kdenlive-compatible handoff document, and a filler clip that lives inside the project rather than in
 `/tmp`. Both are now written by `ms video handoff` (see `docs/plans/kdenlive-handoff.md`), and the
 measured result is progress rather than success: Kdenlive accepts the document — the version refusal
