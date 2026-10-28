@@ -298,15 +298,11 @@ def render(
         problems.append(f"no output written: {output}")
 
     report_path = output.with_suffix(".json")
-    report_path.write_text(
-        json.dumps(report, indent=2), encoding="utf-8"
-    )
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     report["ok"] = report["ok"] and not problems
     report["problems"] = problems
-    report_path.write_text(
-        json.dumps(report, indent=2), encoding="utf-8"
-    )
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     return MotionResult(
         output=output,
@@ -379,8 +375,7 @@ def motion_project(
             )
         elif seq_type == "lyrics":
             lines = [
-                (float(item[0]), float(item[1]), str(item[2]))
-                for item in seq.get("lines", [])
+                (float(item[0]), float(item[1]), str(item[2])) for item in seq.get("lines", [])
             ]
             result = lyric_overlay(
                 lines=lines,
