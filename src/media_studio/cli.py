@@ -44,6 +44,7 @@ from .materials import (
     proof_frame_luminance,
 )
 from .media import MediaError
+from .natron import NatronError, composite_project
 from .presets import (
     KINDS as PRESET_KINDS,
 )
@@ -219,6 +220,26 @@ def build_parser() -> argparse.ArgumentParser:
     qc.add_argument("project", help="project path or slug")
     qc.add_argument("--file", type=Path, required=True, help="file to measure")
     qc.set_defaults(func=cmd_video_qc)
+
+    composite = video_sub.add_parser(
+        "composite", help="composite a rendered deliverable through Natron headless"
+    )
+    composite.add_argument("project", help="project path or slug")
+    composite.add_argument("--deliverable", default=None, help="deliverable id from project.yaml")
+    composite.add_argument("--lut", type=Path, default=None, help="OCIO LUT file for the grade")
+    composite.add_argument("--gain", type=float, default=1.0, help="grade gain (default 1.0)")
+    composite.add_argument("--gamma", type=float, default=1.0, help="grade gamma (default 1.0)")
+    composite.add_argument(
+        "--saturation", type=float, default=1.0, help="grade saturation (default 1.0)"
+    )
+    composite.add_argument(
+        "--glow-size", type=float, default=0.0, help="glow size, 0 disables (default 0)"
+    )
+    composite.add_argument("--glow-mix", type=float, default=0.5, help="glow mix (default 0.5)")
+    composite.add_argument(
+        "--vignette", type=float, default=0.0, help="vignette strength, 0 disables (default 0)"
+    )
+    composite.set_defaults(func=cmd_video_composite)
 
     three_d = subparsers.add_parser("3d", help="inspect, convert, and render models")
     three_d_sub = three_d.add_subparsers(dest="three_d_command", required=True)
@@ -854,6 +875,60 @@ def _report_video_qc(report: dict[str, object]) -> int:
     ok = bool(report.get("ok"))
     print("verdict: " + ("pass" if ok else "FAIL"))
     return EXIT_OK if ok else EXIT_FAILURE
+
+
+def cmd_video_composite(args: argparse.Namespace) -> int:
+    """Composite a rendered deliverable through Natron headless."""
+
+    try:
+        project = load_project(args.project)
+        deliverable = args.deliverable
+        if deliverable is None:
+            video_deliverables = [item for item in project.deliverables if item.kind == "video"]
+            if len(video_deliverables) != 1:
+                raise VideoError("project has multiple video deliverables; pass --deliverable <id>")
+            deliverable = video_deliverables[0].id
+
+        compositing: dict = {}
+        if any(
+            v is not None
+            for v in (
+                args.lut,
+                args.gain,
+                args.gamma,
+                args.saturation,
+                args.glow_size,
+                args.glow_mix,
+                args.vignette,
+            )
+        ):
+            compositing = {
+                "grade": {
+                    "lut": str(args.lut) if args.lut else None,
+                    "gain": args.gain,
+                    "gamma": args.gamma,
+                    "saturation": args.saturation,
+                },
+                "effects": [],
+            }
+            if args.glow_size > 0:
+                compositing["effects"].append(
+                    {"glow": {"size": args.glow_size, "mix": args.glow_mix}}
+                )
+            if args.vignette > 0:
+                compositing["effects"].append({"vignette": {"strength": args.vignette}})
+
+        result = composite_project(deliverable, compositing, project_root=project.root)
+    except (ManifestError, NatronError, VideoError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"composited {deliverable}")
+    print(f"  output:  {result.output.relative_to(project.root)}")
+    print(f"  ntp:     {result.ntp_path.relative_to(project.root)}")
+    print(f"  report:  {result.report_path.relative_to(project.root)}")
+    print("verdict: " + ("pass" if result.ok else "FAIL"))
+    return EXIT_OK if result.ok else EXIT_FAILURE
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
