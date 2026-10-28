@@ -8,6 +8,8 @@ from unittest import mock
 import pytest
 
 from media_studio.triposr import (
+    TRIPO_SR_AVAILABLE,
+    TRIPOSR_BINARY,
     ImageToMeshResult,
     TripoSRError,
     check_installation,
@@ -18,11 +20,12 @@ from media_studio.triposr import (
 
 
 def test_check_installation_raises_when_triposr_missing():
-    """check_installation raises TripoSRError when triposr is not on PATH."""
+    """check_installation raises TripoSRError when triposr is not available."""
 
     with (
-        mock.patch("media_studio.triposr.TRIPOSR", None),
-        pytest.raises(TripoSRError, match="triposr is not on PATH"),
+        mock.patch("media_studio.triposr.TRIPO_SR_AVAILABLE", False),
+        mock.patch("media_studio.triposr.TRIPOSR_BINARY", None),
+        pytest.raises(TripoSRError, match="TripoSR is not available"),
     ):
         check_installation()
 
@@ -34,8 +37,9 @@ def test_image_to_mesh_raises_when_triposr_missing(tmp_path):
     img.write_text("not an image", encoding="utf-8")
 
     with (
-        mock.patch("media_studio.triposr.TRIPOSR", None),
-        pytest.raises(TripoSRError, match="triposr is not on PATH"),
+        mock.patch("media_studio.triposr.TRIPO_SR_AVAILABLE", False),
+        mock.patch("media_studio.triposr.TRIPOSR_BINARY", None),
+        pytest.raises(TripoSRError, match="TripoSR is not available"),
     ):
         image_to_mesh(img, tmp_path / "out.obj")
 
@@ -47,8 +51,9 @@ def test_image_to_mesh_project_raises_when_triposr_missing(tmp_path):
     img.write_text("not an image", encoding="utf-8")
 
     with (
-        mock.patch("media_studio.triposr.TRIPOSR", None),
-        pytest.raises(TripoSRError, match="triposr is not on PATH"),
+        mock.patch("media_studio.triposr.TRIPO_SR_AVAILABLE", False),
+        mock.patch("media_studio.triposr.TRIPOSR_BINARY", None),
+        pytest.raises(TripoSRError, match="TripoSR is not available"),
     ):
         image_to_mesh_project(img, project_root=tmp_path)
 
@@ -57,7 +62,8 @@ def test_image_to_mesh_raises_when_image_missing(tmp_path):
     """image_to_mesh raises TripoSRError when the reference image does not exist."""
 
     with (
-        mock.patch("media_studio.triposr.TRIPOSR", "/usr/bin/triposr"),
+        mock.patch("media_studio.triposr.TRIPO_SR_AVAILABLE", False),
+        mock.patch("media_studio.triposr.TRIPOSR_BINARY", "/usr/bin/triposr"),
         pytest.raises(TripoSRError, match="no such reference image"),
     ):
         image_to_mesh(tmp_path / "nonexistent.png", tmp_path / "out.obj")
@@ -107,8 +113,8 @@ def test_image_to_mesh_result_ok_property():
 
 
 @pytest.mark.skipif(
-    subprocess.run(["which", "triposr"], capture_output=True).returncode != 0,
-    reason="triposr not installed",
+    not TRIPO_SR_AVAILABLE and TRIPOSR_BINARY is None,
+    reason="triposr (tsr module or binary) not installed",
 )
 def test_integration_image_to_mesh(tmp_path):
     """Convert a small reference image; output exists and report is ok."""

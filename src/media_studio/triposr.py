@@ -5,19 +5,30 @@ draft-quality textured OBJ/GLB mesh. It runs on a GTX 1650 Max-Q 4GB via ``--chu
 (or ``--device cpu`` as a slower fallback). The output pipes into the existing Blender pipeline:
 ``ms 3d convert`` → ``ms 3d material`` → ``ms 3d turntable``.
 
-Nothing in this module runs unless explicitly called: if ``triposr`` is not available every public
+Nothing in this module runs unless explicitly called: if TripoSR is not available every public
 function raises :class:`TripoSRError` with an installation hint, so the rest of the toolkit stays
 usable without TripoSR.
 """
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-TRIPOSR = shutil.which("triposr")  # `pip install triposr`, or python -m triposr.cli
+# TripoSR ships as a Python module ``tsr`` (from github.com/VAST-AI-Research/TripoSR), not a
+# standalone CLI binary. Try importing the module first; fall back to looking for a ``triposr``
+# binary on PATH.
+try:
+    from tsr.system import TSR  # noqa: F401
+
+    TRIPO_SR_AVAILABLE = True
+    TRIPOSR_BINARY = shutil.which("triposr")
+except ImportError:
+    TRIPO_SR_AVAILABLE = False
+    TRIPOSR_BINARY = shutil.which("triposr")
 
 
 class TripoSRError(RuntimeError):
@@ -45,16 +56,20 @@ class ImageToMeshResult:
 def check_installation() -> None:
     """Raise :class:`TripoSRError` if TripoSR is not available.
 
-    The hint names ``pip install triposr`` (MIT) and notes that model weights (~3-5GB) download
-    automatically on first run, so a storage check should happen first.
+    TripoSR is installed by cloning github.com/VAST-AI-Research/TripoSR and installing its
+    requirements (PyTorch with CUDA, torchmcubes, transformers, rembg, etc.). On first run the
+    model weights (~3-5GB) download automatically from Hugging Face, so a storage check should
+    happen first.
     """
 
-    if TRIPOSR is None:
+    if not TRIPO_SR_AVAILABLE and TRIPOSR_BINARY is None:
         hint = (
-            "triposr is not on PATH. Install TripoSR so ms 3d image-to-mesh works:\n"
-            "  pip install triposr          # MIT license, offline after install\n"
-            "First run downloads model weights (~3-5GB); check disk space with storage-doctor\n"
-            "before installing. Then re-run with triposr on PATH, or skip image-to-mesh."
+            "TripoSR is not available. Install TripoSR so ms 3d image-to-mesh works:\n"
+            "  git clone https://github.com/VAST-AI-Research/TripoSR.git\n"
+            "  cd TripoSR && pip install -r requirements.txt\n"
+            "  # Also install PyTorch with CUDA support and torchmcubes\n"
+            "First run downloads model weights (~3-5GB) from Hugging Face; check disk space\n"
+            "with storage-doctor before installing. Then re-run, or skip image-to-mesh."
         )
         raise TripoSRError(hint)
 
@@ -116,8 +131,18 @@ def image_to_mesh(
         raise TripoSRError(f"no such reference image: {image_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if TRIPO_SR_AVAILABLE:
+        return _image_to_mesh_module(
+            image_path,
+            output_path,
+            chunk_size=chunk_size,
+            device=device,
+            mc_resolution=mc_resolution,
+            remove_bg=remove_bg,
+        )
+    # Fallback to the (rare) ``triposr`` CLI binary.
     cmd = [
-        TRIPOSR,
+        TRIPOSR_BINARY,
         "predict",
         str(image_path),
         "--output",
@@ -136,7 +161,7 @@ def image_to_mesh(
 
     report: dict = {
         "tool": "triposr",
-        "binary": TRIPOSR,
+        "binary": TRIPOSR_BINARY,
         "image": str(image_path),
         "output": str(output_path),
         "chunk_size": chunk_size,
@@ -159,6 +184,87 @@ def image_to_mesh(
     report_path = output_path.with_suffix(".json")
     import json
 
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    report["ok"] = report["ok"] and not problems
+    report["problems"] = problems
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    return ImageToMeshResult(
+        output=output_path,
+        report_path=report_path,
+        report=report,
+    )
+
+
+def _image_to_mesh_module(
+    image_path: Path,
+    output_path: Path,
+    *,
+    chunk_size: int,
+    device: str,
+    mc_resolution: int,
+    remove_bg: bool,
+) -> ImageToMeshResult:
+    """Run TripoSR through the ``tsr`` Python module directly (no CLI binary needed)."""
+
+    import numpy as np
+    import rembg
+    import torch
+    from PIL import Image
+    from tsr.system import TSR
+    from tsr.utils import remove_background, resize_foreground
+
+    # Load model (downloads weights from Hugging Face on first run).
+    model = TSR.from_pretrained(
+        "stabilityai/TripoSR",
+        config_name="config.yaml",
+        weight_name="model.ckpt",
+    )
+    model.renderer.set_chunk_size(chunk_size)
+    model.to(device)
+
+    # Preprocess: optional background removal, then normalize to [0, 1] float RGB.
+    if remove_bg:
+        rembg_session = rembg.new_session()
+        image = remove_background(Image.open(image_path), rembg_session)
+        image = resize_foreground(image, 0.85)
+        image = np.array(image).astype(np.float32) / 255.0
+        image = image[:, :, :3] * image[:, :, 3:4] + (1 - image[:, :, 3:4]) * 0.5
+        image = Image.fromarray((image * 255.0).astype(np.uint8))
+    else:
+        image = Image.open(image_path).convert("RGB")
+
+    # Inference: image -> scene codes -> mesh.
+    with torch.no_grad():
+        scene_codes = model([image], device=device)
+    meshes = model.extract_mesh(scene_codes, True, resolution=mc_resolution)
+
+    # Export to OBJ or GLB based on output suffix.
+    if output_path.suffix.lower() == ".glb":
+        meshes[0].export(str(output_path), file_type="glb")
+    else:
+        meshes[0].export(str(output_path))
+
+    report = {
+        "tool": "triposr",
+        "binary": "tsr (python module)",
+        "image": str(image_path),
+        "output": str(output_path),
+        "chunk_size": chunk_size,
+        "device": device,
+        "mc_resolution": mc_resolution,
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+        "ok": output_path.exists(),
+    }
+
+    problems: list[str] = []
+    if not output_path.exists():
+        problems.append(f"no output written: {output_path}")
+
+    report_path = output_path.with_suffix(".json")
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     report["ok"] = report["ok"] and not problems
