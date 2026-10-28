@@ -25,6 +25,7 @@ from .blender import (
 )
 from .design import DesignError, validate_design
 from .design import render as render_design
+from .effectcraft import EffectCraftError, lyric_overlay, motion_project, title_sequence
 from .fonts import FontError, font_environment, inventory, specimen_sheet
 from .fonts import search as search_fonts
 from .ledger import (
@@ -337,6 +338,35 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("project", help="project path or slug")
     status.add_argument("--concept", required=True)
     status.set_defaults(func=cmd_triage_status)
+
+    motion = subparsers.add_parser("motion", help="render motion graphics through EffectCraft")
+    motion_sub = motion.add_subparsers(dest="motion_command", required=True)
+
+    motion_render = motion_sub.add_parser("render", help="render all declared motion sequences")
+    motion_render.add_argument("project", help="project path or slug")
+    motion_render.set_defaults(func=cmd_motion_render)
+
+    motion_title = motion_sub.add_parser("title", help="render one animated title sequence")
+    motion_title.add_argument("project", help="project path or slug")
+    motion_title.add_argument("--text", required=True, help="title text")
+    motion_title.add_argument("--out", type=Path, required=True, help="output file path")
+    motion_title.add_argument("--duration", type=float, default=3.0, help="duration in seconds")
+    motion_title.add_argument("--animation", default="fade_in_up", help="animation preset name")
+    motion_title.add_argument("--font", default="Noto Sans", help="font family")
+    motion_title.add_argument("--font-size", type=float, default=72.0, help="font size in points")
+    motion_title.add_argument("--color", default="#FFFFFF", help="text color")
+    motion_title.add_argument("--glow", action="store_true", help="enable glow effect")
+    motion_title.add_argument("--glow-intensity", type=float, default=0.5, help="glow strength")
+    motion_title.set_defaults(func=cmd_motion_title)
+
+    motion_lyrics = motion_sub.add_parser("lyrics", help="render a lyric overlay track")
+    motion_lyrics.add_argument("project", help="project path or slug")
+    motion_lyrics.add_argument("--out", type=Path, required=True, help="output file path")
+    motion_lyrics.add_argument(
+        "--lines", required=True, help="lyrics as start,end,text|start,end,text"
+    )
+    motion_lyrics.add_argument("--style", default="default", help="text style name")
+    motion_lyrics.set_defaults(func=cmd_motion_lyrics)
 
     return parser
 
@@ -926,6 +956,89 @@ def cmd_video_composite(args: argparse.Namespace) -> int:
     print(f"composited {deliverable}")
     print(f"  output:  {result.output.relative_to(project.root)}")
     print(f"  ntp:     {result.ntp_path.relative_to(project.root)}")
+    print(f"  report:  {result.report_path.relative_to(project.root)}")
+    print("verdict: " + ("pass" if result.ok else "FAIL"))
+    return EXIT_OK if result.ok else EXIT_FAILURE
+
+
+def cmd_motion_render(args: argparse.Namespace) -> int:
+    """Render every motion-graphics sequence declared in project.yaml."""
+
+    try:
+        project = load_project(args.project)
+        sequences = list(project.raw.get("motion", {}).get("sequences", []))
+        if not sequences:
+            print("no motion sequences declared under motion: in project.yaml")
+            return EXIT_OK
+        results = motion_project(sequences, project_root=project.root)
+    except (ManifestError, EffectCraftError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    all_ok = True
+    for result in results:
+        print(f"motion {result.ecp_path.stem}")
+        print(f"  output:  {result.output.relative_to(project.root)}")
+        print(f"  ecp:     {result.ecp_path.relative_to(project.root)}")
+        print(f"  report:  {result.report_path.relative_to(project.root)}")
+        print(f"  verdict: {'pass' if result.ok else 'FAIL'}")
+        all_ok = all_ok and result.ok
+    return EXIT_OK if all_ok else EXIT_FAILURE
+
+
+def cmd_motion_title(args: argparse.Namespace) -> int:
+    """Render one animated title sequence through EffectCraft."""
+
+    try:
+        project = load_project(args.project)
+        result = title_sequence(
+            text=args.text,
+            output=args.out,
+            ecp_path=args.out.with_suffix(".ecp"),
+            duration=args.duration,
+            animation=args.animation,
+            font=args.font,
+            font_size=args.font_size,
+            color=args.color,
+            glow=args.glow,
+            glow_intensity=args.glow_intensity,
+        )
+    except (ManifestError, EffectCraftError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"title {args.text}")
+    print(f"  output:  {result.output.relative_to(project.root)}")
+    print(f"  ecp:     {result.ecp_path.relative_to(project.root)}")
+    print(f"  report:  {result.report_path.relative_to(project.root)}")
+    print("verdict: " + ("pass" if result.ok else "FAIL"))
+    return EXIT_OK if result.ok else EXIT_FAILURE
+
+
+def cmd_motion_lyrics(args: argparse.Namespace) -> int:
+    """Render a lyric overlay track through EffectCraft."""
+
+    try:
+        project = load_project(args.project)
+        lines = []
+        for item in args.lines.split("|"):
+            parts = item.split(",")
+            if len(parts) != 3:
+                raise EffectCraftError(f"invalid lyric entry {item!r}: expected start,end,text")
+            lines.append((float(parts[0]), float(parts[1]), parts[2]))
+        result = lyric_overlay(
+            lines=lines,
+            output=args.out,
+            ecp_path=args.out.with_suffix(".ecp"),
+            style=args.style,
+        )
+    except (ManifestError, EffectCraftError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"lyrics ({len(lines)} line(s))")
+    print(f"  output:  {result.output.relative_to(project.root)}")
+    print(f"  ecp:     {result.ecp_path.relative_to(project.root)}")
     print(f"  report:  {result.report_path.relative_to(project.root)}")
     print("verdict: " + ("pass" if result.ok else "FAIL"))
     return EXIT_OK if result.ok else EXIT_FAILURE
