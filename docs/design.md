@@ -354,6 +354,20 @@ The MCP server is for incremental inspection and exploration (scene state, objec
 queries, small edits). The committed artifact is the script; a scene rebuilt from scripts
 must reproduce the same result.
 
+### 3D model modification and image-to-mesh (planned)
+
+As planned (docs/plans/blender-3d-modify.md): `ms 3d modify <model> <modifications>` applies
+procedural mesh operations headlessly through Blender Geometry Nodes + Python — mirror, smooth,
+subdivide, deform_bend, deform_taper, boolean_cut, uv_project, decimate, transform, vertex_color —
+with no new installs and zero VRAM overhead. Declared in `project.yaml` under
+`model.modifications:`. Output chains into `ms 3d convert` → `ms 3d material` → `ms 3d turntable`.
+
+As planned (docs/plans/triposr-image-to-mesh.md): `ms 3d image-to-mesh ` generates a draft
+mesh from a single image using TripoSR (MIT license, offline after install, no API key). VRAM-safe
+on the GTX 1650 4GB via `--chunk-size 4096` or `--device cpu`, gated by `storage-doctor` because
+model weights use 3–5 GB of disk. Output OBJ/GLB chains into `ms 3d convert` → `ms 3d material`
+→ `ms 3d turntable`, matching existing model input so every downstream path works unchanged.
+
 ### 5.3 Design
 
 As built (2026-10-25): `media_studio/design.py` composes SVG templates from `templates/design/`
@@ -471,6 +485,23 @@ unfiltered frame, regenerated deliberately with `MS_PRESET_SNAPSHOTS=regen`.
 
 Out of scope: executing After Effects or Premiere templates, redistributing third-party
 templates, and paid marketplaces.
+
+### 5.7 AMV compositing and motion graphics (planned)
+
+As planned (docs/plans/natron-compositing.md): `ms video composite <project>` renders each shot
+from the MLT timeline through `NatronRenderer` (headless, CPU-based, no VRAM constraint). Natron is
+a GPLv2 node-based compositor equivalent to Nuke/After Effects: OFX Glow, Blur, ChromaKey, Roto,
+Tracker, Grade, OpenColorIO LUTs, plus keyframe-able node parameters driven by Python API. Per-shot
+composited output feeds back into `ms video render` for final encode, or the Kdenlive handoff for
+final assembly and audio mix.
+
+As planned (docs/plans/effectcraft-motion-graphics.md): `ms motion {render,title,lyrics}` renders
+motion-graphics sequences through EffectCraft (AGPL-3.0, pure Rust, headless CLI + MCP server).
+EffectCraft is an After Effects clone: compositions, layers, keyframes, 3D cameras and lights,
+306 effects including Glow, Curves, Lumetri color, Fractal Noise, CC Particle World, Shatter, and
+keying tools, with expressions and an effect graph editor. Alpha-channel output is composited over
+Natron-graded footage in a final Natron pass, then through Kdenlive handoff. The MCP server is an
+optional control path for Claude Code.
 
 ## 6. Asset acquisition
 

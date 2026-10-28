@@ -82,6 +82,10 @@ Acceptance matrix
   phase 1  preset registry                               implemented (offline tests; 12 recipes, 2026-10-26)
   phase 1  design render through Inkscape                implemented (offline tests; live render 2026-10-25)
   phase 1  scr2026 baseline reproduction                 pending
+  phase 1  video composite (Natron)                       planned (plan docs/plans/natron-compositing.md)
+  phase 1  motion graphics (EffectCraft)                  planned (plan docs/plans/effectcraft-motion-graphics.md)
+  phase 1  3D model modify (Blender)                      planned (plan docs/plans/blender-3d-modify.md)
+  phase 1  3D image-to-mesh (TripoSR)                     planned (plan docs/plans/triposr-image-to-mesh.md)
 MATRIX
 }
 
