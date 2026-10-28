@@ -190,7 +190,7 @@ def test_a_declared_title_reaches_the_render(project_root: Path) -> None:
         {"text": "Demo title", "start": 1.2, "duration": 1.5}
     ]
     mlt = result.mlt_path.read_text(encoding="utf-8")
-    assert "qtext" in mlt
+    assert "kdenlivetitle" in mlt
     assert "qtblend" in mlt
     assert "Demo title" in mlt
 
@@ -232,8 +232,10 @@ def test_ducking_measurably_lowers_the_music(project_root: Path, tmp_path: Path)
 def test_titles_render_over_the_picture(tmp_path: Path) -> None:
     """The text must actually appear, so this measures a region where the title sits.
 
-    Getting here took a bisect: declaring `sample_aspect_num="1"` on the profile made qtblend
-    drop the title composite entirely in this MLT build.
+    Getting here took a bisect: the title composite was invisible because `qtblend` was told to
+    blend the title track in at low opacity instead of compositing it over the picture below.
+    Switching to `kdenlivetitle` (the producer Kdenlive's own title clips use) plus
+    `compositing=0` draws the title over the moving tracks instead.
     """
 
     from media_studio.mlt import Title
@@ -260,8 +262,8 @@ def test_titles_render_over_the_picture(tmp_path: Path) -> None:
         titles=(Title(text="DEMO", start=0.5, duration=1.0, size=60),),
     )
     xml = timeline.to_xml(tmp_path)
-    assert "qtext" in xml and "qtblend" in xml
-    assert '<property name="compositing">1</property>' in xml
+    assert "kdenlivetitle" in xml and "qtblend" in xml
+    assert '<property name="compositing">0</property>' in xml
 
     rendered = media.render_timeline(_write(tmp_path / "titles.mlt", xml), tmp_path / "titles.mkv")
 
@@ -355,7 +357,9 @@ def test_the_handoff_carries_the_envelope_kdenlive_looks_for(project_root: Path)
         if properties(tractor).get("kdenlive:producer_type") == mlt.KDENLIVE_SEQUENCE_TYPE
     )
     sequence_properties = properties(sequence)
-    count = str(len(sequence.findall("track")))
+    # The black track the sequence starts with is not one of the tracks Kdenlive counts, which is
+    # also how the project this envelope mirrors records it.
+    count = str(len(sequence.findall("track")) - 1)
     assert sequence_properties["kdenlive:sequenceproperties.tracksCount"] == count
     assert sequence_properties["kdenlive:sequenceproperties.tracks"] == count
     assert sequence_properties["kdenlive:trackheight"] == mlt.KDENLIVE_TRACK_HEIGHT
@@ -366,10 +370,38 @@ def test_the_handoff_carries_the_envelope_kdenlive_looks_for(project_root: Path)
     assert properties(project)["kdenlive:projectTractor"] == "1"
     assert [track.get("producer") for track in project.findall("track")] == [sequence.get("id")]
 
-    # The bin has to list the clips, or Kdenlive shows an empty project bin.
-    bin_entries = root.find("playlist[@id='main_bin']").findall("entry")
-    assert {entry.get("producer") for entry in bin_entries} == {
-        producer.get("id") for producer in root.findall("producer")
+    # The bin has to list the clips, or Kdenlive shows an empty project bin; it also has to carry
+    # the retain marker and an entry for the sequence itself, or Kdenlive builds no sequence model,
+    # aborts the load and reports a corrupted file.
+    bin_properties = properties(bin_playlist)
+    assert bin_properties["xml_retain"] == "1"
+    assert bin_properties["kdenlive:docproperties.opensequences"] == sequence.get("id")
+    assert bin_properties["kdenlive:sequenceFolder"] == mlt.KDENLIVE_SEQUENCE_FOLDER
+    assert (
+        bin_properties[f"kdenlive:folder.-1.{mlt.KDENLIVE_SEQUENCE_FOLDER}"]
+        == mlt.KDENLIVE_SEQUENCE_FOLDER_NAME
+    )
+    bin_entries = bin_playlist.findall("entry")
+    # The black track producer is a track, not a bin clip.
+    clip_ids = {
+        producer.get("id")
+        for producer in root.findall("producer")
+        if producer.get("id") != "producer0"
+    }
+    assert {entry.get("producer") for entry in bin_entries} == clip_ids | {sequence.get("id")}
+    sequence_entry = next(
+        entry for entry in bin_entries if entry.get("producer") == sequence.get("id")
+    )
+    assert sequence_entry.get("in") == mlt.KDENLIVE_SEQUENCE_ENTRY_OUT
+    assert sequence_entry.get("out") == mlt.KDENLIVE_SEQUENCE_ENTRY_OUT
+    # Properties first, then entries: the order a document Kdenlive writes itself uses.
+    tags = [child.tag for child in bin_playlist]
+    assert set(tags[: -len(bin_entries)]) == {"property"}
+    # The sequence is a bin clip too, so its bin id is its own and never a media clip's.
+    assert sequence_properties["kdenlive:id"] not in {
+        properties(producer)["kdenlive:id"]
+        for producer in root.findall("producer")
+        if "kdenlive:id" in properties(producer)
     }
     assert result.problems == [], result.problems
 
@@ -405,8 +437,9 @@ def test_the_handoff_carries_the_document_identity(project_root: Path) -> None:
     assert profile.get("sample_aspect_den") == "1"
 
 
-def test_the_handoff_leaves_the_render_input_without_sample_aspect(project_root: Path) -> None:
-    """The 1:1 sample aspect is what makes this MLT build drop qtblend titles, so it stays local."""
+def test_the_handoff_declares_square_sample_aspect(project_root: Path) -> None:
+    """The rendered file must match the canvas instead of being pillarboxed, so both documents
+    declare sample aspect 1:1; Kdenlive reads it back for its profile bookkeeping."""
 
     from media_studio.mlt import Clip, Timeline
 
@@ -417,8 +450,182 @@ def test_the_handoff_leaves_the_render_input_without_sample_aspect(project_root:
         clips=(Clip(resource=project_root / "assets" / "video" / "shot-1.mp4", duration=1.0),),
     )
 
-    assert "sample_aspect" not in timeline.to_xml(project_root)
-    assert "sample_aspect_num" in timeline.to_kdenlive_xml(project_root)
+    render_profile = ElementTree.fromstring(timeline.to_xml(project_root)).find("profile")
+    handoff_profile = ElementTree.fromstring(timeline.to_kdenlive_xml(project_root)).find("profile")
+    assert render_profile is not None and handoff_profile is not None
+    assert render_profile.get("sample_aspect_num") == "1"
+    assert render_profile.get("sample_aspect_den") == "1"
+    assert handoff_profile.get("sample_aspect_num") == "1"
+    assert handoff_profile.get("sample_aspect_den") == "1"
+
+
+def _properties(element: ElementTree.Element) -> dict[str, str]:
+    return {item.get("name", ""): item.text or "" for item in element.findall("property")}
+
+
+def sequence_of(root: ElementTree.Element) -> ElementTree.Element:
+    """The sequence tractor, identified by its `kdenlive:producer_type`."""
+    return next(
+        tractor
+        for tractor in root.findall("tractor")
+        if _properties(tractor).get("kdenlive:producer_type") == mlt.KDENLIVE_SEQUENCE_TYPE
+    )
+
+
+def test_the_handoff_has_no_kdenlive_uuid_on_media_producers(project_root: Path) -> None:
+    """Kdenlive reserves `kdenlive:uuid` for sequences; a media producer carrying one is logged as
+    an incorrect sequence, skipped by the bin loader, and every timeline instance of it is then
+    removed as "without bin reference found". The handoff must therefore never write it on clips."""
+
+    result = video.handoff(load_project(project_root))
+    root = ElementTree.fromstring(result.path.read_text(encoding="utf-8"))
+
+    for producer in root.findall("producer"):
+        assert "kdenlive:uuid" not in _properties(producer), producer.get("id")
+
+    # The sequence, not a media clip, is the one entry that carries a uuid.
+    sequence = sequence_of(root)
+    assert _properties(sequence)["kdenlive:uuid"] == _properties(sequence)["kdenlive:control_uuid"]
+
+
+def test_the_handoff_pairs_control_uuid_with_bin_entry(project_root: Path) -> None:
+    """Every timeline clip carries a `kdenlive:control_uuid` that the bin loader indexes, and the
+    `main_bin` playlist lists every media producer so the rebuild can match each clip to its bin
+    entry instead of dropping it as "without bin reference found"."""
+
+    result = video.handoff(load_project(project_root))
+    root = ElementTree.fromstring(result.path.read_text(encoding="utf-8"))
+
+    bin_playlist = root.find("playlist[@id='main_bin']")
+    assert bin_playlist is not None
+    bin_producers = {entry.get("producer") for entry in bin_playlist.findall("entry")}
+
+    media_producers = [p for p in root.findall("producer") if p.get("id") != "producer0"]
+    for producer in media_producers:
+        pid = producer.get("id")
+        assert pid in bin_producers, f"{pid} missing from main_bin"
+        assert producer.find("property[@name='kdenlive:control_uuid']") is not None, pid
+
+    # The sequence is itself a bin clip with its own id, distinct from any media clip id.
+    sequence = sequence_of(root)
+    assert sequence.get("id") in bin_producers
+    sequence_bin_entry = next(
+        e for e in bin_playlist.findall("entry") if e.get("producer") == sequence.get("id")
+    )
+    assert sequence_bin_entry.get("in") == mlt.KDENLIVE_SEQUENCE_ENTRY_OUT
+
+
+def test_the_handoff_uses_double_track_tractors(project_root: Path) -> None:
+    """Each sequence track is a tractor over exactly two playlists: the real playlist and an empty
+    `_b` companion reserved for same-track transition overlaps. The companion is declared before
+    the tractor that references it, so MLT resolves the producer while parsing."""
+
+    result = video.handoff(load_project(project_root))
+    root = ElementTree.fromstring(result.path.read_text(encoding="utf-8"))
+
+    sequence = sequence_of(root)
+
+    header_ids = {el.get("id") for el in root if el.get("id")}
+    declared_before: dict[str, int] = {}
+    for position, child in enumerate(list(root)):
+        if child.get("id"):
+            declared_before[child.get("id")] = position
+
+    # The black track is a plain producer, not a tractor. Every other sequence track is a
+    # double-track tractor.
+    for track in sequence.findall("track"):
+        tractor_id = track.get("producer")
+        if tractor_id == "producer0":
+            continue
+        assert tractor_id is not None and tractor_id.startswith("tractor_")
+        tractor = root.find(f"tractor[@id='{tractor_id}']")
+        assert tractor is not None, tractor_id
+
+        tracks = tractor.findall("track")
+        assert len(tracks) == 2, f"{tractor_id} has {len(tracks)} tracks, expected 2"
+        producers = [t.get("producer") for t in tracks]
+        main, companion = producers
+        assert companion == f"{main}_b", f"{tractor_id}: companion {companion} != {main}_b"
+        assert main in header_ids and companion in header_ids
+
+        # Companion playlist is declared before the tractor that references it.
+        assert declared_before[companion] < declared_before[tractor_id], (
+            f"{companion} declared after {tractor_id}"
+        )
+
+    # The sequence references the tractors, not the bare playlists. The black track
+    # (producer0) is the reserved black track, not a tractor.
+    seq_producers = [
+        t.get("producer") for t in sequence.findall("track") if t.get("producer") != "producer0"
+    ]
+    assert all(p.startswith("tractor_") for p in seq_producers)
+
+
+def test_the_handoff_luma_transitions_run_over_the_lower_track(project_root: Path) -> None:
+    """Kdenlive reads a composition as one track drawn over another and reports the opposite
+    direction as "compositing with track N was set to forced track". A plain dissolve reads the
+    same frames either way with the ramp inverted, so the pair is ordered background-over-foreground
+    (a_track <= b_track) and the ramp is reversed only when the original had to be swapped."""
+
+    result = video.handoff(load_project(project_root))
+    root = ElementTree.fromstring(result.path.read_text(encoding="utf-8"))
+
+    sequence = sequence_of(root)
+
+    for tr in sequence.findall("transition"):
+        if _properties(tr).get("mlt_service") != "luma":
+            continue
+        props = _properties(tr)
+        a = int(props["a_track"])
+        b = int(props["b_track"])
+        assert a <= b, f"luma {tr.get('id')} composits track {a} over {b}"
+        # `reverse` is only set when the pair had to be swapped; it is optional otherwise.
+        if "reverse" in props:
+            assert props["reverse"] in ("0", "1"), f"luma {tr.get('id')} bad reverse value"
+
+
+def test_the_handoff_title_is_a_kdenlivetitle_scene(project_root: Path) -> None:
+    """A title is a `kdenlivetitle` producer (the one Kdenlive's own title clips use) whose scene
+    is an `xmldata` document, not a `qtext` producer whose `argument` renders nothing. It carries
+    the Text producer type so double-clicking opens the title editor."""
+
+    result = video.handoff(load_project(project_root))
+    root = ElementTree.fromstring(result.path.read_text(encoding="utf-8"))
+
+    titles = [
+        p for p in root.findall("producer") if _properties(p).get("mlt_service") == "kdenlivetitle"
+    ]
+    assert titles, "expected at least one kdenlivetitle producer"
+    for title in titles:
+        props = _properties(title)
+        assert props["kdenlive:producer_type"] == mlt.KDENLIVE_TITLE_TYPE, title.get("id")
+        assert title.find("property[@name='xmldata']") is not None, title.get("id")
+        scene = title.find("property[@name='xmldata']").text or ""
+        assert "<kdenlivetitle" in scene and "QGraphicsTextItem" in scene
+        assert "font=" in scene
+
+
+def test_the_handoff_title_blend_composites_opaque(project_root: Path) -> None:
+    """The title transition uses qtblend with `compositing=0` so the title is drawn over the tracks
+    below instead of being blended into them at low opacity (which made it disappear)."""
+
+    result = video.handoff(load_project(project_root))
+    root = ElementTree.fromstring(result.path.read_text(encoding="utf-8"))
+
+    sequence = sequence_of(root)
+
+    blends = [
+        tr
+        for tr in sequence.findall("transition")
+        if _properties(tr).get("mlt_service") == "qtblend"
+    ]
+    assert blends, "expected a qtblend title transition"
+    for tr in blends:
+        props = _properties(tr)
+        assert props["compositing"] == "0", tr.get("id")
+        assert props["distort"] == "0", tr.get("id")
+        assert props["rotate_center"] == "0", tr.get("id")
+        assert props["always_active"] == "1", tr.get("id")
 
 
 def test_the_handoff_targets_the_installed_kdenlive(project_root: Path) -> None:
@@ -443,7 +650,7 @@ def test_the_handoff_names_a_font_kdenlive_would_substitute(project_root: Path) 
     result = video.handoff(load_project(project_root))
 
     assert result.notes, "expected the title's family to be reported"
-    assert "will be used instead" in result.notes[0]
+    assert "Noto Sans" in result.notes[0]
     # A cosmetic substitution is named but does not fail the handoff.
     assert result.problems == []
 
@@ -462,6 +669,11 @@ def test_the_handoff_references_only_files_inside_the_project(project_root: Path
     assert resources
     for resource in resources:
         path = Path(resource)
+        # The black track is an MLT generator rather than a file, which is what a project Kdenlive
+        # writes uses for it as well.
+        if not path.is_absolute():
+            assert resource == "black", resource
+            continue
         assert path.is_file(), resource
         assert path.is_relative_to(project.root), resource
     # The fades are cross-fades against a generated black clip, which has to be project-owned.

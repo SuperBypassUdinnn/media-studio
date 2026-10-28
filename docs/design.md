@@ -238,9 +238,10 @@ Rules:
 5. Verify with `ffprobe`: duration, resolution, fps, stream layout, integrated loudness,
    true peak, and black or frozen frame detection. Write a report to `out/reports/`.
 6. Produce a contact sheet plus representative frames for review.
-7. Hand off: the user may open the generated `.mlt` in Kdenlive and save it as
-   `.kdenlive` for manual refinement. That copy is a working file, never the source of
-   truth, and is excluded from the repository.
+7. Hand off: `ms video handoff <project> [--deliverable <id>]` writes `out/kdenlive/<deliverable>.kdenlive`,
+   the envelope Kdenlive needs to open the same edit as a project, alongside the untouched render
+   input `out/<deliverable>.mlt`. Kdenlive is a handoff target only: `.kdenlive` is a working copy,
+   never the source of truth, and is excluded from the repository.
 
 As built (2026-10-24): the timeline is written by `media_studio/mlt.py`, rendered by `melt` to an
 FFV1 intermediate under `/tmp/opencode/<slug>/`, encoded by FFmpeg with a **two-pass** `loudnorm`
@@ -256,42 +257,40 @@ Audio inside the path: voice-over cleanup (high-pass, denoise, compression), mus
 driven by voice-over segments, fades, and final loudness. Stem separation supplies
 instrumental-only or vocal-only variants when a project needs them.
 
-Kdenlive handoff, measured on 2026-10-26 with Kdenlive 26.08.2. The bare `.mlt` our writer produces
-is a valid MLT document that `melt` renders, but Kdenlive will not open it as a project: File > Open
-answers "Incorrect project file — Version of the project file cannot be read", and accepting the
-following "Attempting to open nonetheless" ends on an empty project. Two causes were established.
-First, that document carried no `kdenlive:` properties at all, while a project Kdenlive writes itself
-carries `kdenlive:docproperties.version` (1.1), `kdenlive:docproperties.kdenliveversion`,
-`kdenlive:docproperties.documentid`, a `main_bin` **playlist** holding the bin and the document
-properties, per-track `kdenlive:trackheight` and `kdenlive:timeline_active`, a sequence tractor with
-`kdenlive:sequenceproperties.*`, and a final tractor marked `kdenlive:projectTractor`. That reference
-document is kept as evidence at
+Kdenlive handoff, verified 2026-10-27 with Kdenlive 26.08.2 on `~/.local/state/opencode-media-studio/kdenlive-handoff`. `ms video
+handoff` now writes a Kdenlive-compatible document: `kdenlive:docproperties.version` (`1.1`),
+`kdenlive:docproperties.kdenliveversion` probed from the installed binary, `kdenlive:docproperties.documentid`,
+a `main_bin` playlist carrying `xml_retain=1` and every producer (plus the sequence itself), per-track
+`kdenlive:trackheight`, `kdenlive:timeline_active`, `kdenlive:audio_track`, a sequence tractor with
+`kdenlive:sequenceproperties.*`, and a final tractor marked `kdenlive:projectTractor`. The sample
+aspect is declared 1:1 in both documents' profiles (fixing the 256:135 pillarbox this MLT build
+produced before it was declared; the earlier belief that sample aspect drops qtblend titles was
+disproved — the real cause was `qtblend` with `compositing=1` plus a `qtext` producer served by
+`argument`). Titles are
+`kdenlivetitle` producers carrying an `xmldata` scene (the scene Kdenlive's own titler writes) with
+`compositing=0` on the title blend, so the title draws over moving tracks instead of disappearing at
+7% opacity. Every media producer carries `kdenlive:control_uuid` and is listed in `main_bin`, so the
+bin↔timeline rebuild resolves instead of dropping clips as "without bin reference found"; no media
+producer carries `kdenlive:uuid`, which Kdenlive reserves for sequences. Each track is a double-track
+tractor over a playlist plus its empty `_b` companion, the companion declared before the tractor that
+references it, matching the shape Kdenlive saves itself and removing the unbounded timeline-refresh
+recursion that killed earlier drafts. Generated fades reference `out/frames/black-<w>x<h>-<fps>.mp4`
+inside the project instead of `/tmp/opencode`, so the handed-off document is re-renderable.
+
+Measured result: opening the document in Kdenlive no longer crashes, produces no Clip Problems notes
+(Project Notes stays empty), shows all clips on the timeline (shot-1/2/3 on V2, the title composite on
+V2/V3, voice on A1, music on A2), runs at 12.0s matching the edit, and the title clip carries
+`kdenlive:producer_type=6` (Text) so double-clicking opens the title editor. The render path still
+produces the same 12.0s edit and passes QC at `-14.01 LUFS` against the `-14.0` target.
+
+Three method notes, because they cost real time: launching `kdenlive <file>` does not open a project
+on this build, it imports the file into the bin as a clip — it does the same to a project Kdenlive
+saved itself, so that path proves nothing about a document's validity; the Open dialog filters on the
+`.kdenlive` extension, so a `.mlt` is invisible in its file list until the name is typed into the
+field; and with `MANGOHUD=1` exported, Kdenlive 26.08.2 segfaults at startup on this machine, so it
+is driven with `env -u MANGOHUD`. The reference document used to reverse-engineer the schema sits at
 `~/.local/state/opencode-media-studio/kdenlive-evidence/kdenlive-reference-schema.mlt`, saved from an
-empty project Kdenlive created through its own dialog. Second, the fades are cross-fades against a
-generated black clip that the writer pointed at under `/tmp/opencode/<slug>/`, which is purged after
-encoding, so a handed-off project referenced a file that no longer exists; Kdenlive reported exactly
-that as a clip problem and the title's `Sans` family as a placeholder. Both are fixed — `ms video
-handoff` writes the envelope and keeps generated filler in the project's `out/frames/`, and it now
-predicts the font substitution instead of leaving it to be discovered. Screenshots of both dialogs sit
-beside the reference. Three method notes, because they cost real time: launching `kdenlive <file>` does
-not open a project on this build, it imports the file into the bin as a clip — it does the same to a
-project Kdenlive saved itself, so that path proves nothing about a document's validity; the Open
-dialog filters on the `.kdenlive` extension, so a `.mlt` is invisible in its file list until the
-file-type filter is changed or the name is typed into the field; and with `MANGOHUD=1` exported,
-Kdenlive 26.08.2 segfaults at startup on this machine, so it is driven with `env -u MANGOHUD`. A fix therefore means a
-Kdenlive-compatible handoff document, and a filler clip that lives inside the project rather than in
-`/tmp`. Both are now written by `ms video handoff` (see `docs/plans/kdenlive-handoff.md`), and the
-measured result is progress rather than success: Kdenlive accepts the document — the version refusal
-is gone, the load reaches the Clip Problems dialog, the file lands in Open Recent — and then drove into a
-crash while loading it, which Kdenlive itself confirmed with "Kdenlive crashed on last start" on its
-next launch. A core dump showed that crash as SIGFPE in an integer division by a zero field; after
-the handoff document gained the document profile name, the identity fields, and the bin entries that
-a Kdenlive-authored project carries, the silent crash is gone and the load ends on an Error dialog
-with the application still alive. The remaining gap is structural: Kdenlive's own timeline is a black track plus one tractor
-per track holding two playlists with `hide` attributes, referenced by a sequence tractor with a JSON
-track description, where ours puts playlists straight on `main` and nests its own A/B and title
-tractors. Evidence, including the document and both screenshots, is in
-`~/.local/state/opencode-media-studio/kdenlive-evidence/`.
+empty project Kdenlive created through its own dialog.
 
 ### 5.2 3D
 
@@ -611,7 +610,7 @@ MCP path does not need it.
 | Path | Acceptance criteria |
 | --- | --- |
 | `/assets` | A single query returns ranked, licensed candidates from at least three keyless 3D sources; download writes the file plus a complete sidecar; the index and `CREDITS.md` regenerate; duplicates collapse by hash; quota violations abort with a clear message |
-| `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.mlt` opens in Kdenlive. Met for everything except the Kdenlive open, which is still **not met** after two measurement rounds on 2026-10-26: Kdenlive first refused the bare `.mlt`, and now accepts the handoff document `ms video handoff` writes — no version complaint, the load reaches the Clip Problems dialog, the file is recorded in Open Recent — but crashes while loading it. Section 5.1 records the schema, the remaining structural difference, and the evidence |
+| `/video` | From a fixture `project.yaml` with three clips, music, and voice-over: a generated `.mlt` renders through `melt`, the deliverable encodes with measured loudness within 0.5 LU of target, ducking measurably reduces music under voice-over, `ffprobe` QC report and contact sheet are written, and the `.kdenlive` handoff opens in Kdenlive. Met: MLT render, `melt` render, loudness, ducking, QC report, contact sheet, and Kdenlive handoff verified 2026-10-27 on Kdenlive 26.08.2 — no crash, empty Project Notes, all clips present, title clip carries `kdenlive:producer_type=6` (Text) and opens in the title editor. Section 5.1 records the envelope schema and the measured result |
 | `/3d` | A GLB, OBJ, and STL input each convert and normalize; a PBR material and HDRI from the library bind correctly; a turntable renders headless on the discrete GPU; render metrics and a contact sheet are written; the result re-exports to GLB. Met for all of it: OBJ, STL, and GLB conversion and normalisation, the headless turntable with metrics and a contact sheet, and material and HDRI binding, which was proved live on 2026-10-25 with `mossy_rock` and `belfast_sunset_puresky` at 1k (four shader slots bound, eight CC0 assets staged and indexed, a GLB with embedded textures, and a proof frame at 138.9 mean luma) |
 | `/design` | Brand tokens produce Instagram post and story, A3 poster, and YouTube thumbnail; PNG, PDF, and SVG all export; contrast and overflow checks pass; a contact sheet covers every variant |
 | Footage triage | A library of 200 or more clips keeps the number of reviewed images at or below 15 while still yielding one usable shot per concept beat; decisions persist, and re-running the same concept sends zero images |
@@ -632,11 +631,7 @@ loudness normalisation, ducking driven by `silencedetect` on the voice track, ti
 and A/B dissolves, a QC report with seven checks, and a contact sheet. Everything else in the table
 above landed on 2026-10-25: footage triage, the preset registry, the design path, the 3D path, and
 material and HDRI binding, and Jamendo on 2026-10-26 once its eight-character client id could be
-registered and a stale environment export stopped shadowing it. Still open in phase 1: the Kdenlive
-handoff, which was then measured and needs a Kdenlive-compatible document (section 5.1 states the
-causes and the reference schema); a downloaded preset pack staged through the ledger; and the phase 3
-`scr2026` baseline reproduction, which the acceptance matrix still lists as pending. The selftest runs a ledger roundtrip end to end, reports every phase 0
-check and every phase 1 check except that baseline row as implemented, and 260 pytest cases pass.
+registered and a stale environment export stopped shadowing it. Still open in phase 1: a downloaded preset pack staged through the ledger; and the phase 3 `scr2026` baseline reproduction, which the acceptance matrix still lists as pending. The selftest runs a ledger roundtrip end to end, reports every phase 0 check and every phase 1 check except that baseline row as implemented, and 260 pytest cases pass.
 
 ### Phase 2 - Canva
 

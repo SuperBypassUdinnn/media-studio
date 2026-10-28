@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import itertools
 import math
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree
+
+from . import fonts
 
 MLT_VERSION = "7.42.0"
 DEFAULT_TRANSITION = 0.5
@@ -29,6 +32,17 @@ KDENLIVE_TRACK_HEIGHT = "62"
 # Kdenlive tags a sequence producer with this type; a document without it leaves the sequence
 # untyped, which is not what a project Kdenlive writes looks like.
 KDENLIVE_SEQUENCE_TYPE = "17"
+# Kdenlive's Text type, which is what a `kdenlivetitle` clip is loaded as; the bin then offers the
+# title editor for it instead of treating it as footage.
+KDENLIVE_TITLE_TYPE = "6"
+# Kdenlive keeps sequences in a bin folder of their own and writes that folder into the bin as
+# `kdenlive:folder.<parent>.<id>`. The values below are the ones a project saved by Kdenlive 26.08.2
+# carries, and the sequence's own `kdenlive:folderid` points at the same number.
+KDENLIVE_SEQUENCE_FOLDER = "2"
+KDENLIVE_SEQUENCE_FOLDER_NAME = "Sequences"
+# A sequence's bin entry is written as a zero length timecode rather than a frame count, which is
+# how Kdenlive itself records it.
+KDENLIVE_SEQUENCE_ENTRY_OUT = "00:00:00.000"
 # Kdenlive stores the document's profile as the name of an MLT preset, which is what it later reads
 # back for the frame rate. The names below are the presets MLT ships for the sizes this toolkit
 # renders; a profile outside the table gets no name rather than an invented one.
@@ -204,21 +218,35 @@ class Timeline:
         sequence_uuid = _kdenlive_uuid(document_id)
         fps = self.fps
         total = frames(self.duration, fps)
+        self._substitute_title_fonts(header)
 
         for index, producer in enumerate(header.findall("producer")):
             identifier = producer.get("id", f"clip{index}")
+            service = _property_value(producer, "mlt_service")
+            is_title = service == "kdenlivetitle"
+            if is_title:
+                clipname = _property_value(producer, "text")
+            else:
+                clipname = Path(producer.findtext("property[@name='resource']") or identifier).name
             _properties(
                 producer,
                 (
-                    ("kdenlive:uuid", _kdenlive_uuid(identifier)),
-                    (
-                        "kdenlive:clipname",
-                        Path(producer.findtext("property[@name='resource']") or identifier).name,
-                    ),
-                    ("kdenlive:producer_type", "2"),
-                    ("kdenlive:id", str(index)),
+                    # No `kdenlive:uuid` here. Kdenlive reserves that property for sequences: its
+                    # bin loader sends every entry that carries one down the sequence branch, and an
+                    # avformat producer there is logged as an "incorrect sequence found in project
+                    # bin" and skipped, so the clip never reaches the bin index and every timeline
+                    # instance of it is then removed as "without bin reference found".
+                    # Kdenlive maps a timeline clip back to its bin clip through this property: the
+                    # rebuild walks the bin entries, and a timeline instance whose producer has no
+                    # control uuid here is dropped as "without bin reference found and removed".
+                    ("kdenlive:control_uuid", _kdenlive_uuid(f"{document_id}/{identifier}")),
+                    ("kdenlive:clipname", clipname),
+                    # Kdenlive's Text type is what makes double-clicking the clip open the title
+                    # editor; anything else loads the clip as ordinary footage.
+                    ("kdenlive:producer_type", KDENLIVE_TITLE_TYPE if is_title else "2"),
+                    ("kdenlive:id", str(index + 1)),
                     ("kdenlive:clip_type", "0"),
-                    ("kdenlive:folderid", "0"),
+                    ("kdenlive:folderid", "-1"),
                     ("kdenlive:maxduration", str(total)),
                 ),
             )
@@ -227,7 +255,37 @@ class Timeline:
         # zero divisor later in its timeline maths looks like, so it is written whenever known.
         profile_name = kdenlive_profile_name(self.width, self.height, fps)
         bin_playlist = ElementTree.Element("playlist", {"id": "main_bin"})
-        for producer in header.findall("producer"):
+        # Kdenlive rebuilds the bin from the XML that MLT *retains* for this playlist, so a document
+        # without the retain marker opens with an empty bin no matter which entries it lists.
+        _properties(
+            bin_playlist,
+            (
+                ("xml_retain", "1"),
+                ("kdenlive:docproperties.version", KDENLIVE_DOCUMENT_VERSION),
+                ("kdenlive:docproperties.kdenliveversion", kdenlive_version),
+                ("kdenlive:docproperties.documentid", document_id),
+                ("kdenlive:docproperties.profile", profile_name),
+                ("kdenlive:docproperties.patchversion", "1"),
+                ("kdenlive:docproperties.uuid", sequence_uuid),
+                ("kdenlive:docproperties.activetimeline", sequence_uuid),
+                ("kdenlive:docproperties.opensequences", sequence_uuid),
+                ("kdenlive:docproperties.sessionid", _kdenlive_uuid(f"{document_id}/session")),
+                ("kdenlive:docproperties.enableTimelineZone", "0"),
+                ("kdenlive:docproperties.binsort", "0"),
+                ("kdenlive:docproperties.audioChannels", "2"),
+                ("kdenlive:docproperties.decimalPoint", "."),
+                ("kdenlive:docproperties.enableproxy", "0"),
+                ("kdenlive:docproperties.generateproxy", "0"),
+                ("kdenlive:docproperties.generateimageproxy", "0"),
+                ("kdenlive:expandedFolders", ""),
+                ("kdenlive:sequenceFolder", KDENLIVE_SEQUENCE_FOLDER),
+                (f"kdenlive:folder.-1.{KDENLIVE_SEQUENCE_FOLDER}", KDENLIVE_SEQUENCE_FOLDER_NAME),
+                ("kdenlive:extraBins", "project_bin:-1:0"),
+                ("kdenlive:binZoom", "4"),
+            ),
+        )
+        media_producers = header.findall("producer")
+        for producer in media_producers:
             ElementTree.SubElement(
                 bin_playlist,
                 "entry",
@@ -237,34 +295,23 @@ class Timeline:
                     "out": producer.get("out", str(max(total - 1, 0))),
                 },
             )
-        _properties(
+        # The sequence is itself a bin clip, and Kdenlive aborts the load with "Could not recover
+        # corrupted file." when the active timeline uuid has no clip in the bin.
+        ElementTree.SubElement(
             bin_playlist,
-            (
-                ("kdenlive:docproperties.version", KDENLIVE_DOCUMENT_VERSION),
-                ("kdenlive:docproperties.kdenliveversion", kdenlive_version),
-                ("kdenlive:docproperties.documentid", document_id),
-                ("kdenlive:docproperties.profile", profile_name),
-                ("kdenlive:docproperties.patchversion", "1"),
-                ("kdenlive:docproperties.uuid", sequence_uuid),
-                ("kdenlive:docproperties.activetimeline", sequence_uuid),
-                ("kdenlive:docproperties.sessionid", _kdenlive_uuid(f"{document_id}/session")),
-                ("kdenlive:docproperties.enableTimelineZone", "0"),
-                ("kdenlive:docproperties.binsort", "0"),
-                ("kdenlive:docproperties.audioChannels", "2"),
-                ("kdenlive:docproperties.decimalPoint", "."),
-                ("kdenlive:docproperties.enableproxy", "0"),
-                ("kdenlive:docproperties.generateproxy", "0"),
-                ("kdenlive:docproperties.generateimageproxy", "0"),
-            ),
+            "entry",
+            {
+                "producer": sequence_uuid,
+                "in": KDENLIVE_SEQUENCE_ENTRY_OUT,
+                "out": KDENLIVE_SEQUENCE_ENTRY_OUT,
+            },
         )
-        header.insert(1, bin_playlist)
 
         sequence = header.find("tractor[@id='main']")
         if sequence is None:
             raise ValueError("the timeline has no main tractor to mark as the sequence")
-        tracks = list(sequence.findall("track"))
-        audio_ids = {f"{name}_playlist" for name, _plan in self.audio_tracks()}
         sequence.set("id", sequence_uuid)
+        tracks = self._flatten_for_kdenlive(header, sequence, total)
         _properties(
             sequence,
             (
@@ -272,10 +319,10 @@ class Timeline:
                 ("kdenlive:clipname", "Sequence 1"),
                 ("kdenlive:control_uuid", sequence_uuid),
                 ("kdenlive:producer_type", KDENLIVE_SEQUENCE_TYPE),
-                ("kdenlive:id", "0"),
+                ("kdenlive:id", str(len(header.findall("producer")) + 1)),
                 ("kdenlive:clip_type", "0"),
                 ("kdenlive:file_size", "0"),
-                ("kdenlive:folderid", "2"),
+                ("kdenlive:folderid", KDENLIVE_SEQUENCE_FOLDER),
                 ("kdenlive:sequenceproperties.tracksCount", str(len(tracks))),
                 ("kdenlive:sequenceproperties.tracks", str(len(tracks))),
                 ("kdenlive:sequenceproperties.hasVideo", "1"),
@@ -293,28 +340,35 @@ class Timeline:
                 ("kdenlive:sequenceproperties.zoom", "8"),
                 ("kdenlive:duration", _timecode(total, fps)),
                 ("kdenlive:maxduration", str(total)),
-                ("kdenlive:folderid", "2"),
                 ("kdenlive:sequenceproperties.groups", "[\n]"),
                 ("kdenlive:sequenceproperties.guides", "[\n]"),
                 ("kdenlive:trackheight", KDENLIVE_TRACK_HEIGHT),
                 ("kdenlive:timeline_active", "1"),
             ),
         )
-        # Kdenlive reads the per-track fields from the track's own producer, so they are written
-        # there as well as on the sequence.
+        # The per-track fields belong on the track element itself, and Kdenlive names its tracks
+        # after the direction they carry.
+        video_count = 0
+        audio_count = 0
         for track in tracks:
-            target = header.find(f"*[@id='{track.get('producer', '')}']")
-            if target is None:
-                continue
+            if _property_value(track, "kdenlive:audio_track") == "1":
+                audio_count += 1
+                name = f"A{audio_count}"
+            else:
+                video_count += 1
+                name = f"V{video_count}"
             _properties(
-                target,
+                track,
                 (
+                    ("kdenlive:track_name", name),
                     ("kdenlive:trackheight", KDENLIVE_TRACK_HEIGHT),
                     ("kdenlive:timeline_active", "1"),
-                    ("kdenlive:audio_track", "1" if track.get("producer") in audio_ids else ""),
                 ),
             )
 
+        # Written last, after the producers its entries reference, which is the order a project
+        # Kdenlive saved itself uses.
+        header.append(bin_playlist)
         project = ElementTree.SubElement(
             header,
             "tractor",
@@ -323,6 +377,176 @@ class Timeline:
         _property(project, "kdenlive:projectTractor", "1")
         ElementTree.SubElement(project, "track", {"producer": sequence_uuid})
         return _serialise(header)
+
+    def _substitute_title_fonts(self, header: ElementTree.Element) -> None:
+        """Name the family fontconfig actually resolves, so the load reports no clip problem.
+
+        A text producer carries a family name and its renderer silently substitutes a missing one.
+        Kdenlive turns that substitution into a "Clip Problems" dialog it makes the user dismiss
+        before the project is opened, which is exactly the kind of surprise a handoff should not
+        hand over. The render document keeps the requested family; only the handoff renames it. A
+        title keeps its family inside the `xmldata` scene rather than in a property of its own, so
+        both places are rewritten.
+        """
+
+        for producer in header.findall("producer"):
+            family = producer.findtext("property[@name='family']")
+            if family is not None:
+                resolved = fonts.resolved_family(family)
+                if resolved and resolved != family:
+                    for property_element in producer.findall("property[@name='family']"):
+                        property_element.text = resolved
+            scene = producer.findtext("property[@name='xmldata']")
+            if not scene:
+                continue
+            self._substitute_scene_font(producer, scene)
+
+    @staticmethod
+    def _substitute_scene_font(producer: ElementTree.Element, scene: str) -> None:
+        """Rewrite the font in a title scene when fontconfig resolves it differently."""
+
+        try:
+            document = ElementTree.fromstring(scene)
+        except ElementTree.ParseError:
+            return
+        changed = False
+        for content in document.iter("content"):
+            family = content.get("font", "")
+            resolved = fonts.resolved_family(family)
+            if resolved and resolved != family:
+                content.set("font", resolved)
+                changed = True
+        if not changed:
+            return
+        for property_element in producer.findall("property[@name='xmldata']"):
+            property_element.text = ElementTree.tostring(document, encoding="unicode")
+
+    def _flatten_for_kdenlive(
+        self, header: ElementTree.Element, sequence: ElementTree.Element, total: int
+    ) -> list[ElementTree.Element]:
+        """Rewrite the edit into the flat track model Kdenlive rebuilds, and return its tracks.
+
+        Kdenlive rebuilds a sequence from tracks that are each a "double track": a tractor over
+        exactly two playlists. It still reads a bare playlist track, but it then converts it during
+        the rebuild, and that path is where its timeline refresh recurses without bound on these
+        documents; a document already shaped the way Kdenlive saves its own loads cleanly. The
+        render document nests tractors on purpose - a dissolve needs two playlists under one
+        composite, and a title needs a composite of its own - so the same edit is flattened here:
+        every playlist becomes a track of its own, and the transitions that joined them move onto
+        the sequence with their track numbers rewritten to the new positions.
+        """
+
+        # A project Kdenlive writes starts the sequence with a black producer under the reserved
+        # black track name, and every other track sits above it.
+        black = ElementTree.Element(
+            "producer", {"id": "producer0", "in": "0", "out": str(max(total - 1, 0))}
+        )
+        for name, value in (
+            ("resource", "black"),
+            ("mlt_service", "color"),
+            ("kdenlive:playlistid", "black_track"),
+            ("set.test_audio", "0"),
+        ):
+            _property(black, name, value)
+
+        audio_ids = {f"{name}_playlist" for name, _plan in self.audio_tracks()}
+        playlists: list[ElementTree.Element] = []
+        moved: list[tuple[ElementTree.Element, ElementTree.Element, int, int]] = []
+        collapsed: list[ElementTree.Element] = []
+
+        def expand(element: ElementTree.Element) -> list[int]:
+            """Flatten one sequence track into the positions it occupies, bottom track first."""
+
+            if element.tag == "playlist":
+                playlists.append(element)
+                return [len(playlists)]
+            collapsed.append(element)
+            blocks = [
+                expand(target)
+                for target in (
+                    header.find(f"*[@id='{track.get('producer', '')}']")
+                    for track in element.findall("track")
+                )
+                if target is not None
+            ]
+            for transition in element.findall("transition"):
+                a_track = int(_property_value(transition, "a_track") or 0)
+                b_track = int(_property_value(transition, "b_track") or 0)
+                # A transition inside a composite can name that composite as its background; the
+                # flattened equivalent is the topmost track the block expanded into, which is what
+                # Kdenlive composites a title with as well.
+                background = blocks[a_track][-1] if a_track < len(blocks) and blocks[a_track] else 0
+                foreground = blocks[b_track][-1] if b_track < len(blocks) and blocks[b_track] else 0
+                moved.append((element, transition, background, foreground))
+            return [position for block in blocks for position in block]
+
+        for track in list(sequence.findall("track")):
+            target = header.find(f"*[@id='{track.get('producer', '')}']")
+            if target is not None:
+                expand(target)
+
+        for track in list(sequence.findall("track")):
+            sequence.remove(track)
+        for element in collapsed:
+            header.remove(element)
+        header.insert(list(header).index(sequence), black)
+        ElementTree.SubElement(sequence, "track", {"producer": black.get("id", "")})
+
+        # Each track becomes the double-track tractor Kdenlive saves itself: two playlists under one
+        # tractor, the second reserved for a clip that overlaps during a same-track transition. A
+        # bare playlist track is still read, but the timeline rebuild then has to convert it, and on
+        # a document like this one that conversion is where MLT's refresh starts recursing until the
+        # stack dies. The companion playlist is declared before the tractor that references it: MLT
+        # resolves a track producer while parsing, and an id it has not seen yet stays unresolved.
+        tractors: list[ElementTree.Element] = []
+        for playlist in playlists:
+            identifier = playlist.get("id", "")
+            is_audio = identifier in audio_ids
+            companion = ElementTree.Element("playlist", {"id": f"{identifier}_b"})
+            if is_audio:
+                for element in (playlist, companion):
+                    _property(element, "kdenlive:audio_track", "1")
+            tractor = ElementTree.Element("tractor", {"id": f"tractor_{identifier}", "in": "0"})
+            if is_audio:
+                _property(tractor, "kdenlive:audio_track", "1")
+            for producer_id in (identifier, companion.get("id", "")):
+                ElementTree.SubElement(
+                    tractor,
+                    "track",
+                    {"hide": "video" if is_audio else "audio", "producer": producer_id},
+                )
+            index = list(header).index(sequence)
+            header.insert(index, companion)
+            header.insert(index + 1, tractor)
+            ElementTree.SubElement(sequence, "track", {"producer": tractor.get("id", "")})
+            tractors.append(tractor)
+
+        for parent, transition, background, foreground in moved:
+            parent.remove(transition)
+            service = _property_value(transition, "mlt_service")
+            if (
+                background > foreground
+                and service == "luma"
+                and not _property_value(transition, "resource")
+            ):
+                # Kdenlive reads a composition as one track drawn over another and reports any
+                # other direction as "compositing with track N was set to forced track". MLT does
+                # not care, and for a plain dissolve the two directions are the same frames with
+                # the ramp inverted, so the pair is swapped and the ramp reversed instead.
+                background, foreground = foreground, background
+                _set_property(
+                    transition,
+                    "reverse",
+                    "0" if _property_value(transition, "reverse") == "1" else "1",
+                )
+            _set_property(transition, "a_track", str(background))
+            _set_property(transition, "b_track", str(foreground))
+            # Kdenlive names a composition from this property; without it the load reports a
+            # transition without an id even though it recovers the name from the service.
+            if not _property_value(transition, "kdenlive_id"):
+                _set_property(transition, "kdenlive_id", _property_value(transition, "mlt_service"))
+            sequence.append(transition)
+        return tractors
 
     def _tree(self, root: Path | None = None) -> ElementTree.Element:
         """Build the MLT element tree for this timeline."""
@@ -351,8 +575,12 @@ class Timeline:
                     "height": str(self.height),
                     "progressive": "1",
                     # The display aspect comes from the canvas, so a square or vertical
-                    # deliverable is described correctly. Sample aspect is deliberately not
-                    # declared: with it set to 1:1 this MLT build drops qtblend title composites.
+                    # deliverable is described correctly. Sample aspect is declared 1:1 so the
+                    # rendered file matches the canvas (16:9 here) instead of being pillarboxed to
+                    # 256:135; the handoff document declares the same field and only the handoff
+                    # needs it for Kdenlive's profile bookkeeping.
+                    "sample_aspect_num": "1",
+                    "sample_aspect_den": "1",
                     "display_aspect_num": str(self.width // gcd),
                     "display_aspect_den": str(self.height // gcd),
                     "frame_rate_num": f"{fps:g}",
@@ -462,9 +690,16 @@ class Timeline:
             _property(blend, "a_track", "0")
             _property(blend, "b_track", "1")
             _property(blend, "always_active", "1")
-            # Without an explicit composition mode qtblend freezes the whole frame behind the
-            # title, so the picture underneath stops moving; verified by rendering both ways.
-            _property(blend, "compositing", "1")
+            # `compositing=1` blends the title track at a few percent opacity instead of compositing
+            # it, which makes the title invisible over a moving picture; `compositing=0` is what
+            # Kdenlive writes for the compositions it saves itself, and it draws the title over the
+            # tracks below while they keep playing. Verified against a static pair of colour
+            # producers (where `compositing=1` returned the lower track's colour essentially
+            # unchanged) and against this timeline, where the title reads normally and the picture
+            # underneath still advances.
+            _property(blend, "compositing", "0")
+            _property(blend, "distort", "0")
+            _property(blend, "rotate_center", "0")
             video_element = video_track
 
         tracks = [("video", video_element)]
@@ -480,7 +715,15 @@ class Timeline:
         return header
 
     def _title_producers(self, header: ElementTree.Element) -> None:
-        """One `qtext` producer per title."""
+        """One `kdenlivetitle` producer per title, carrying the document Kdenlive's titler saves.
+
+        `qtext` is the wrong producer twice over: it renders only from a `text`/`resource`
+        property, so a title written with the service `argument` renders nothing, and it rescales
+        its bitmap to whatever the consumer asks for, so a title sized 36 px fills the frame.
+        `kdenlivetitle` renders the scene at the frame's own coordinates, which is what
+        `Title.geometry` and `Title.size` mean, and it is the producer Kdenlive's own title clips
+        use, so the handoff opens as an editable title rather than as a stray text clip.
+        """
 
         for index, title in enumerate(self.titles):
             producer = ElementTree.SubElement(
@@ -492,15 +735,9 @@ class Timeline:
                     "out": str(max(frames(title.duration, self.fps) - 1, 0)),
                 },
             )
-            _property(producer, "mlt_service", "qtext")
-            _property(producer, "argument", title.text)
+            _property(producer, "mlt_service", "kdenlivetitle")
+            _property(producer, "xmldata", _title_document(title, self.width, self.height))
             _property(producer, "length", str(max(frames(title.duration, self.fps), 1)))
-            _property(producer, "geometry", title.geometry)
-            _property(producer, "family", title.family)
-            _property(producer, "size", str(title.size))
-            _property(producer, "fgcolour", title.colour)
-            _property(producer, "olcolour", title.outline)
-            _property(producer, "bgcolour", "#00000000")
 
     def _title_playlist(self, header: ElementTree.Element, total: int) -> ElementTree.Element:
         """Titles padded with transparent blanks so each one lands on time."""
@@ -759,6 +996,67 @@ def kdenlive_profile_name(width: int, height: int, fps: float) -> str:
     return KDENLIVE_PROFILE_PRESETS.get((width, height, float(fps)), "")
 
 
+def _title_document(title: Title, width: int, height: int) -> str:
+    """The title scene Kdenlive's titler writes, which is what `kdenlivetitle` renders.
+
+    The producer draws this XML with Qt at the frame's own coordinates, so the text keeps the pixel
+    size and the corner it was asked for. Only the single text item a `Title` describes is written;
+    `box-width` is left out on purpose, which is the shape the MLT title wrapper reads as "measure
+    the text yourself".
+    """
+
+    root = ElementTree.Element(
+        "kdenlivetitle",
+        {"width": str(width), "height": str(height), "LC_NUMERIC": "C"},
+    )
+    item = ElementTree.SubElement(root, "item", {"type": "QGraphicsTextItem"})
+    content = ElementTree.SubElement(
+        item,
+        "content",
+        {
+            "font": title.family,
+            "font-weight": "50",
+            "font-pixel-size": str(title.size),
+            "font-italic": "0",
+            "font-underline": "0",
+            "letter-spacing": "0",
+            "font-color": _kdenlive_colour(title.colour),
+            "font-outline": "2",
+            "font-outline-color": _kdenlive_colour(title.outline),
+            "shadow": "0;#64000000;3;3;1",
+            "typewriter": "0;2;1;0;0",
+        },
+    )
+    content.text = title.text
+    x, y = _geometry_offset(title.geometry)
+    position = ElementTree.SubElement(item, "position", {"x": f"{x}", "y": f"{y}"})
+    ElementTree.SubElement(position, "transform").text = "1,0,0,0,1,0,0,0,1"
+    # A title is an overlay, so its own background is fully transparent.
+    ElementTree.SubElement(root, "background", {"color": "0,0,0,0"})
+    return ElementTree.tostring(root, encoding="unicode")
+
+
+def _geometry_offset(geometry: str) -> tuple[int, int]:
+    """The x and y of an MLT `+x+y` geometry, as the title scene wants them."""
+
+    numbers = re.findall(r"[-+]?\d+", geometry or "")
+    if len(numbers) < 2:
+        return 0, 0
+    return int(numbers[0]), int(numbers[1])
+
+
+def _kdenlive_colour(colour: str) -> str:
+    """An MLT `#aarrggbb` colour as the `r,g,b,a` component list the titler writes."""
+
+    value = (colour or "").lstrip("#")
+    if len(value) == 6:
+        value = f"ff{value}"
+    if len(value) != 8:
+        return "255,255,255,255"
+    alpha, red, green, blue = (int(value[index : index + 2], 16) for index in range(0, 8, 2))
+    return f"{red},{green},{blue},{alpha}"
+
+
 def _timecode(frames_count: int, fps: float) -> str:
     """A timecode in the `HH:MM:SS:FF` form Kdenlive writes for a duration."""
 
@@ -787,6 +1085,25 @@ def _property(parent: ElementTree.Element, name: str, value: str) -> ElementTree
     element = ElementTree.SubElement(parent, "property", {"name": name})
     element.text = value
     return element
+
+
+def _property_value(element: ElementTree.Element, name: str) -> str:
+    """The value of one property on an element, or an empty string when it carries none."""
+
+    for item in element.findall("property"):
+        if item.get("name") == name:
+            return item.text or ""
+    return ""
+
+
+def _set_property(element: ElementTree.Element, name: str, value: str) -> None:
+    """Rewrite one property in place, adding it when the element has none of that name."""
+
+    for item in element.findall("property"):
+        if item.get("name") == name:
+            item.text = value
+            return
+    _property(element, name, value)
 
 
 def _serialise(root: ElementTree.Element) -> str:

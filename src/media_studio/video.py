@@ -558,10 +558,10 @@ class HandoffResult:
 
     @property
     def notes(self) -> list[str]:
-        """What Kdenlive will change on open, named here instead of being discovered there."""
+        """What the handoff changed for Kdenlive's sake, named here instead of discovered there."""
 
         return [
-            f"title font {title.family!r} is not installed; {resolved!r} will be used instead"
+            f"title font {title.family!r} is not installed; the document names {resolved!r}"
             for title in self.timeline.titles
             if (resolved := fonts.resolved_family(title.family)) and resolved != title.family
         ]
