@@ -13,6 +13,7 @@ from . import __version__, media
 from .blender import (
     EXPORT_FORMATS,
     BlenderError,
+    modify_model,
     project_output,
     turntable,
     write_report,
@@ -273,6 +274,19 @@ def build_parser() -> argparse.ArgumentParser:
     spin.add_argument("--baseline", type=Path, default=None, help="a previous turntable-qc.json")
     spin.set_defaults(func=cmd_3d_turntable)
 
+    modify = three_d_sub.add_parser("modify", help="procedurally modify a model headlessly")
+    modify.add_argument("model", type=Path, help="model file to modify")
+    modify.add_argument("--project", required=True, help="project for outputs")
+    modify.add_argument(
+        "--ops", type=Path, default=None, help="YAML/JSON file with operations list"
+    )
+    modify.add_argument("--mirror", choices=("x", "y", "z"), default=None, help="mirror axis")
+    modify.add_argument("--smooth", type=int, default=None, help="Laplacian smooth iterations")
+    modify.add_argument("--subdivide", type=int, default=None, help="subdivision levels (1-3)")
+    modify.add_argument("--decimate", type=float, default=None, help="decimate ratio below 1.0")
+    modify.add_argument("--out", type=Path, default=None, help="output model path")
+    modify.set_defaults(func=cmd_3d_modify)
+
     design = subparsers.add_parser("design", help="render brand-consistent images")
     design_sub = design.add_subparsers(dest="design_command", required=True)
     draw = design_sub.add_parser("render", help="compose and export every declared variant")
@@ -510,6 +524,60 @@ def cmd_3d_turntable(args: argparse.Namespace) -> int:
         print(f"  {'ok  ' if passed else 'FAIL'} {name}")
     print("verdict: " + ("pass" if report.get("ok") else "FAIL"))
     return EXIT_OK if report.get("ok") else EXIT_FAILURE
+
+
+def cmd_3d_modify(args: argparse.Namespace) -> int:
+    """Procedurally modify a model headlessly through Blender."""
+
+    try:
+        project = load_project(args.project)
+        path = Path(args.model).expanduser()
+        if not path.is_file():
+            raise BlenderError(f"no such model: {path}")
+
+        operations: list[dict] = []
+        if args.ops is not None:
+            import yaml
+
+            operations = yaml.safe_load(args.ops.read_text(encoding="utf-8")) or []
+            if not isinstance(operations, list):
+                got = type(operations).__name__
+                raise BlenderError(f"--ops file must contain a list, got {got}")
+        else:
+            if args.mirror is not None:
+                operations.append(
+                    {
+                        "type": "mirror",
+                        "x": args.mirror == "x",
+                        "y": args.mirror == "y",
+                        "z": args.mirror == "z",
+                        "merge": True,
+                    }
+                )
+            if args.smooth is not None:
+                operations.append({"type": "smooth", "iterations": args.smooth, "factor": 0.5})
+            if args.subdivide is not None:
+                operations.append({"type": "subdivide", "levels": args.subdivide})
+            if args.decimate is not None:
+                operations.append({"type": "decimate", "ratio": args.decimate})
+        if not operations:
+            raise BlenderError("no operations given; pass --ops or a single-op flag")
+
+        output = args.out or project_output(project, f"{path.stem}-modified.glb")
+        result = modify_model(path, output, operations)
+    except (ManifestError, BlenderError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"modified {path.name}")
+    print(f"  output:  {result.output.relative_to(project.root)}")
+    print(f"  operations: {result.operations_applied}")
+    print(f"  triangles: {result.before_triangles} -> {result.after_triangles}")
+    print(f"  vertices:  {result.before_vertices} -> {result.after_vertices}")
+    if result.facts.get("problems"):
+        print("  problems:  " + ", ".join(result.facts["problems"]))
+    print("verdict: " + ("pass" if result.ok else "FAIL"))
+    return EXIT_OK if result.ok else EXIT_FAILURE
 
 
 def cmd_design_render(args: argparse.Namespace) -> int:

@@ -451,6 +451,192 @@ print("MEDIA_STUDIO_JSON " + json.dumps(report))
 )
 
 
+MODIFY_SCRIPT = (
+    IMPORT_HELPER
+    + """
+import bmesh, json, math, sys
+from mathutils import Vector, Euler
+
+arguments = sys.argv[sys.argv.index("--") + 1:]
+source, destination, operations_json = arguments[0], arguments[1], arguments[2]
+operations = json.loads(operations_json)
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+import_model(source)
+
+# Capture before stats before any modification.
+before_meshes = [item for item in bpy.data.objects if item.type == "MESH"]
+before_triangles = 0
+before_vertices = 0
+for item in before_meshes:
+    bmesh_data = bmesh.new()
+    bmesh_data.from_mesh(item.data)
+    before_triangles += sum(len(face.verts) - 2 for face in bmesh_data.faces)
+    before_vertices += len(bmesh_data.verts)
+    bmesh_data.free()
+
+# Apply each operation in declaration order; the user is responsible for ordering.
+for op in operations:
+    op_type = op.get("type")
+    target_name = op.get("object")
+    target = (
+        bpy.data.objects[target_name]
+        if target_name and target_name in bpy.data.objects
+        else (before_meshes[0] if before_meshes else None)
+    )
+    if target is None or target.type != "MESH":
+        raise SystemExit(f"no mesh target for operation {op_type!r}")
+
+    if op_type == "mirror":
+        mod = target.modifiers.new(name="mirror", type="MIRROR")
+        mod.use_axis = (
+            bool(op.get("x", True)),
+            bool(op.get("y", False)),
+            bool(op.get("z", False)),
+        )
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+
+    elif op_type == "smooth":
+        iterations = int(op.get("iterations", 1))
+        factor = float(op.get("factor", 0.5))
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.mesh.vertices_smooth(repeat=iterations, factor=factor)
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    elif op_type == "subdivide":
+        levels = max(1, min(3, int(op.get("levels", 1))))
+        mod = target.modifiers.new(name="subdivide", type="SUBSURF")
+        mod.levels = levels
+        mod.render_levels = levels
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+
+    elif op_type == "deform_bend":
+        angle = math.radians(float(op.get("angle", 45.0)))
+        axis = op.get("axis", "Z")
+        mod = target.modifiers.new(name="bend", type="SIMPLE_DEFORM")
+        mod.deform_method = "BEND"
+        mod.deform_axis = axis
+        mod.origin = target
+        mod.angle = angle
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+
+    elif op_type == "deform_taper":
+        mod = target.modifiers.new(name="taper", type="SIMPLE_DEFORM")
+        mod.deform_method = "TAPER"
+        mod.deform_axis = op.get("axis", "Z")
+        mod.origin = target
+        mod.start = float(op.get("start", 1.0))
+        mod.end = float(op.get("end", 0.0))
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+
+    elif op_type == "boolean_cut":
+        shape = op.get("shape", "box")
+        size = float(op.get("size", 1.0))
+        if shape == "box":
+            bpy.ops.mesh.primitive_cube_add(size=size)
+        elif shape == "cylinder":
+            bpy.ops.mesh.primitive_cylinder_add(radius=size, depth=size * 2.0)
+        elif shape == "sphere":
+            bpy.ops.mesh.primitive_uv_sphere_add(radius=size)
+        else:
+            raise SystemExit(f"unknown boolean shape {shape!r}")
+        cutter = bpy.context.active_object
+        if op.get("location"):
+            loc = op["location"]
+            cutter.location = (
+                float(loc.get("x", 0)),
+                float(loc.get("y", 0)),
+                float(loc.get("z", 0)),
+            )
+        mod = target.modifiers.new(name="boolean", type="BOOLEAN")
+        mod.operation = "DIFFERENCE"
+        mod.object = cutter
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+        bpy.data.objects.remove(cutter, do_unlink=True)
+
+    elif op_type == "uv_project":
+        method = op.get("method", "smart")
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        if method == "cube":
+            bpy.ops.uv.cube_projection()
+        else:
+            bpy.ops.uv.smart_project()
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    elif op_type == "decimate":
+        ratio = float(op.get("ratio", 0.5))
+        mod = target.modifiers.new(name="decimate", type="DECIMATE")
+        mod.ratio = ratio
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+
+    elif op_type == "transform":
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        loc = op.get("location", {})
+        rot = op.get("rotation", {})
+        scale = op.get("scale", {})
+        target.location = (
+            float(loc.get("x", 0)) + target.location.x,
+            float(loc.get("y", 0)) + target.location.y,
+            float(loc.get("z", 0)) + target.location.z,
+        )
+        target.rotation_euler = Euler((
+            math.radians(float(rot.get("x", 0))),
+            math.radians(float(rot.get("y", 0))),
+            math.radians(float(rot.get("z", 0))),
+        ), 'XYZ')
+        target.scale = (
+            float(scale.get("x", 1)) * target.scale.x,
+            float(scale.get("y", 1)) * target.scale.y,
+            float(scale.get("z", 1)) * target.scale.z,
+        )
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+    elif op_type == "vertex_color":
+        name = op.get("name", "Col")
+        r = float(op.get("r", 0.8))
+        g = float(op.get("g", 0.8))
+        b = float(op.get("b", 0.8))
+        if target.data.vertex_colors.get(name):
+            color_layer = target.data.vertex_colors[name]
+        else:
+            color_layer = target.data.vertex_colors.new(name=name)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        for loop in color_layer.data:
+            loop.color = (r, g, b, 1.0)
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    else:
+        raise SystemExit(f"unknown modification type {op_type!r}")
+
+# After stats.
+after_meshes = [item for item in bpy.data.objects if item.type == "MESH"]
+after_triangles = 0
+after_vertices = 0
+for item in after_meshes:
+    bmesh_data = bmesh.new()
+    bmesh_data.from_mesh(item.data)
+    after_triangles += sum(len(face.verts) - 2 for face in bmesh_data.faces)
+    after_vertices += len(bmesh_data.verts)
+    bmesh_data.free()
+
+export_model(destination)
+print("MEDIA_STUDIO_JSON " + json.dumps({
+    "source": source,
+    "destination": destination,
+    "operations": [op.get("type") for op in operations],
+    "operations_applied": len(operations),
+    "before_triangles": before_triangles,
+    "before_vertices": before_vertices,
+    "after_triangles": after_triangles,
+    "after_vertices": after_vertices,
+}))
+"""
+)
+
+
 @dataclass(frozen=True)
 class ModelReport:
     """What a model is, measured by Blender."""
@@ -621,6 +807,73 @@ def turntable(
             if isinstance(entry, dict):
                 (out_dir / str(entry.get("file") or "")).unlink(missing_ok=True)
     return TurntableResult(directory=out_dir, report_path=report_path, sheet=sheet, facts=report)
+
+
+@dataclass(frozen=True)
+class ModifyResult:
+    """The result of one model-modification run."""
+
+    output: Path
+    """Modified model file."""
+
+    operations_applied: int
+    """How many operations ran."""
+
+    before_triangles: int
+    after_triangles: int
+    before_vertices: int
+    after_vertices: int
+
+    facts: dict[str, object]
+
+    @property
+    def ok(self) -> bool:
+        return self.output.is_file() and self.after_triangles > 0
+
+
+def modify_model(
+    input_path: Path,
+    output_path: Path,
+    operations: list[dict],
+    *,
+    object_name: str | None = None,
+) -> ModifyResult:
+    """Apply procedural mesh modifications headlessly through Blender.
+
+    ``operations`` is a list of dicts, each with a ``type`` key naming one of:
+    ``mirror``, ``smooth``, ``subdivide``, ``deform_bend``, ``deform_taper``,
+    ``boolean_cut``, ``uv_project``, ``decimate``, ``transform``, ``vertex_color``.
+    Operations run in declaration order; the caller is responsible for ordering.
+
+    Returns a :class:`ModifyResult`.
+    """
+
+    path = Path(input_path).expanduser()
+    if not path.is_file():
+        raise BlenderError(f"no such model: {path}")
+    if path.suffix.lower() not in SUPPORTED_INPUTS:
+        raise BlenderError(
+            f"{path.suffix} is not supported; expected one of {', '.join(SUPPORTED_INPUTS)}"
+        )
+    target = Path(output_path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    args = [str(path), str(target), json.dumps(operations)]
+    if object_name:
+        args.append(object_name)
+
+    facts = _report(run_script(MODIFY_SCRIPT, *args))
+    if not target.is_file():
+        raise BlenderError(f"blender did not write {target}")
+    return ModifyResult(
+        output=target,
+        operations_applied=int(facts.get("operations_applied") or 0),
+        before_triangles=int(facts.get("before_triangles") or 0),
+        after_triangles=int(facts.get("after_triangles") or 0),
+        before_vertices=int(facts.get("before_vertices") or 0),
+        after_vertices=int(facts.get("after_vertices") or 0),
+        facts=facts,
+    )
 
 
 def _duplicate_frames(facts: dict[str, object]) -> list[int]:
