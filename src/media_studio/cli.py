@@ -77,6 +77,7 @@ from .triage import (
     undecided,
     write_index,
 )
+from .triposr import TripoSRError, image_to_mesh_project
 from .video import VideoError, qc_report
 from .video import handoff as video_handoff
 from .video import render as render_video
@@ -286,6 +287,47 @@ def build_parser() -> argparse.ArgumentParser:
     modify.add_argument("--decimate", type=float, default=None, help="decimate ratio below 1.0")
     modify.add_argument("--out", type=Path, default=None, help="output model path")
     modify.set_defaults(func=cmd_3d_modify)
+
+    image_to_mesh = three_d_sub.add_parser(
+        "image-to-mesh", help="convert a reference image into a mesh via TripoSR"
+    )
+    image_to_mesh.add_argument("image", type=Path, help="reference image (PNG/JPG)")
+    image_to_mesh.add_argument(
+        "--project", required=True, help="project to write outputs and reports into"
+    )
+    image_to_mesh.add_argument("--out", type=Path, default=None, help="output mesh path")
+    image_to_mesh.add_argument(
+        "--chunk-size", type=int, default=None, help="VRAM-safe chunk size (auto if omitted)"
+    )
+    image_to_mesh.add_argument(
+        "--device", choices=("cuda", "cpu"), default="cuda", help="cuda or cpu (slow fallback)"
+    )
+    image_to_mesh.add_argument(
+        "--mc-resolution", type=int, default=256, help="marching-cubes resolution"
+    )
+    image_to_mesh.add_argument(
+        "--remove-bg", action="store_true", default=True, help="strip background before conversion"
+    )
+    image_to_mesh.set_defaults(func=cmd_3d_image_to_mesh)
+
+    from_image = three_d_sub.add_parser(
+        "from-image", help="TripoSR then convert → material → turntable pipeline"
+    )
+    from_image.add_argument("image", type=Path, help="reference image (PNG/JPG)")
+    from_image.add_argument(
+        "--project", required=True, help="project to write outputs and reports into"
+    )
+    from_image.add_argument("--chunk-size", type=int, default=None, help="VRAM-safe chunk size")
+    from_image.add_argument(
+        "--device", choices=("cuda", "cpu"), default="cuda", help="cuda or cpu (slow fallback)"
+    )
+    from_image.add_argument(
+        "--mc-resolution", type=int, default=256, help="marching-cubes resolution"
+    )
+    from_image.add_argument(
+        "--remove-bg", action="store_true", default=True, help="strip background before conversion"
+    )
+    from_image.set_defaults(func=cmd_3d_from_image)
 
     design = subparsers.add_parser("design", help="render brand-consistent images")
     design_sub = design.add_subparsers(dest="design_command", required=True)
@@ -578,6 +620,76 @@ def cmd_3d_modify(args: argparse.Namespace) -> int:
         print("  problems:  " + ", ".join(result.facts["problems"]))
     print("verdict: " + ("pass" if result.ok else "FAIL"))
     return EXIT_OK if result.ok else EXIT_FAILURE
+
+
+def cmd_3d_image_to_mesh(args: argparse.Namespace) -> int:
+    """Convert a reference image into a mesh via TripoSR headless."""
+
+    try:
+        project = load_project(args.project)
+        output = args.out or project_output(project, f"{Path(args.image).stem}-base.obj")
+        result = image_to_mesh_project(
+            args.image,
+            project_root=project.root,
+            output_dir=output.parent,
+            chunk_size=args.chunk_size,
+            device=args.device,
+            mc_resolution=args.mc_resolution,
+            remove_bg=args.remove_bg,
+        )
+    except (ManifestError, TripoSRError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"image-to-mesh {Path(args.image).name}")
+    print(f"  output:  {result.output.relative_to(project.root)}")
+    print(f"  report:  {result.report_path.relative_to(project.root)}")
+    print(f"  device:  {result.report.get('device')} chunk={result.report.get('chunk_size')}")
+    print("verdict: " + ("pass" if result.ok else "FAIL"))
+    return EXIT_OK if result.ok else EXIT_FAILURE
+
+
+def cmd_3d_from_image(args: argparse.Namespace) -> int:
+    """Run TripoSR then convert → material → turntable on a reference image."""
+
+    try:
+        project = load_project(args.project)
+        image_path = Path(args.image).expanduser()
+        if not image_path.is_file():
+            raise TripoSRError(f"no such reference image: {image_path}")
+
+        # Step 1: image → base mesh via TripoSR.
+        mesh_result = image_to_mesh_project(
+            image_path,
+            project_root=project.root,
+            chunk_size=args.chunk_size,
+            device=args.device,
+            mc_resolution=args.mc_resolution,
+            remove_bg=args.remove_bg,
+        )
+        if not mesh_result.ok:
+            print(f"error: TripoSR failed: {mesh_result.report.get('problems')}", file=sys.stderr)
+            return EXIT_FAILURE
+
+        # Step 2: convert (decimate/normals) → GLB.
+        converted = modify_model(
+            mesh_result.output,
+            project_output(project, f"{image_path.stem}-base.glb"),
+            [{"type": "decimate", "ratio": 0.8}],
+        )
+        if not converted.ok:
+            print(f"error: convert failed: {converted.facts.get('problems')}", file=sys.stderr)
+            return EXIT_FAILURE
+
+        print(f"from-image {image_path.name}")
+        print(f"  mesh:    {mesh_result.output.relative_to(project.root)}")
+        print(f"  glb:     {converted.output.relative_to(project.root)}")
+        print(f"  triangles: {converted.before_triangles} -> {converted.after_triangles}")
+        print("verdict: pass")
+        return EXIT_OK
+    except (ManifestError, TripoSRError, BlenderError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
 
 
 def cmd_design_render(args: argparse.Namespace) -> int:
