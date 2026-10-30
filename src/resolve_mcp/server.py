@@ -29,7 +29,7 @@ except ImportError:
         )
         sys.exit(1)
 
-from resolve_mcp import audio, presets
+from resolve_mcp import audio, presets, timeline
 from resolve_mcp.resolve_bridge import (
     get_current_project,
     get_media_pool,
@@ -377,6 +377,93 @@ def remove_silence(
         Path(input_path), Path(output_path), silence_threshold_db, min_silence_duration
     )
     return {"output_path": str(result)}
+
+
+# ---------------------------------------------------------------------------
+# Timeline building from project.yaml
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def plan_timeline_from_project(project_path: str) -> dict:
+    """
+    Read a media-studio project.yaml and report the timeline it would build.
+
+    Pure planning: no Resolve connection needed, nothing is changed. Use this to
+    check the shot list, frame ranges, transitions, and unsupported effects
+    before committing to a build.
+
+    Parameters
+    ----------
+    project_path:
+        Project directory (the folder holding project.yaml) or any path inside it.
+
+    Returns the plan in frames plus notes on anything Resolve cannot reproduce.
+    """
+    plan = timeline.plan_from_project(Path(project_path))
+    return {
+        "name": plan.name,
+        "fps": plan.fps,
+        "resolution": f"{plan.width}x{plan.height}",
+        "clips": [
+            {
+                "asset": clip.asset_id,
+                "path": str(clip.path),
+                "in_frame": clip.in_frame,
+                "out_frame": clip.out_frame,
+            }
+            for clip in plan.clips
+        ],
+        "audio": [
+            {"asset": cue.asset_id, "in_frame": cue.in_frame, "gain": cue.gain}
+            for cue in plan.audio
+        ],
+        "titles": [{"text": title.text, "start_frame": title.start_frame} for title in plan.titles],
+        "transitions": [{"after_shot": index, "name": name} for index, name in plan.transitions],
+        "grade_targets": list(plan.grade_targets),
+        "notes": list(plan.notes),
+    }
+
+
+@mcp.tool()
+def build_timeline_from_project(
+    project_path: str,
+    apply_grades: bool = False,
+    lut_name: str = "",
+) -> dict:
+    """
+    Build a DaVinci Resolve timeline from a media-studio project.yaml.
+
+    Imports every asset, creates a timeline, appends clips with their in/out
+    points on track 1, lays music and voice on audio tracks, adds Fusion titles,
+    and applies shot transitions. Resolve must be running with a project open.
+
+    Parameters
+    ----------
+    project_path:
+        Project directory (the folder holding project.yaml) or any path inside it.
+    apply_grades:
+        Apply a LUT to the clips that a colour-look preset targets.
+    lut_name:
+        Installed LUT name to apply when apply_grades is true.
+
+    Returns what was applied and what was skipped, with a reason for each skip.
+    """
+    result = timeline.build_timeline(
+        Path(project_path),
+        apply_grades=apply_grades,
+        lut_name=lut_name or None,
+    )
+    return {
+        "timeline": result.timeline_name,
+        "clips_added": result.clips_added,
+        "audio_added": result.audio_added,
+        "titles_added": result.titles_added,
+        "transitions_added": result.transitions_added,
+        "applied": result.applied,
+        "skipped": result.skipped,
+        "notes": result.notes,
+    }
 
 
 # ---------------------------------------------------------------------------
