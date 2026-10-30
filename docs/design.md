@@ -510,6 +510,40 @@ Kdenlive handoff. The MCP server is an optional control path for Claude Code.
 Neither NatronRenderer nor effectcraft is installed on this machine; both raise a clear install
 hint when invoked and are otherwise optional — the rest of the toolkit is unaffected.
 
+### 5.8 DaVinci Resolve as the editor
+
+DaVinci Resolve is the primary editor for work that needs human judgement: cutting to feel,
+grading by eye, mixing by ear. `media-studio` does not try to replace it and does not call it.
+The two meet at files on disk, and the `resolve_mcp` package (a separate MCP server, not part of
+the `ms` CLI) is the only code that talks to Resolve.
+
+**Why not a shared file format.** The toolkit renders MLT XML and writes `.kdenlive` documents.
+Resolve reads neither, and no EDL, FCPXML, or AAF writer exists here. An intermediate format would
+add a conversion step whose failure modes are silent — dropped effects, drifted timecode, lost
+in-points. Instead `project.yaml` stays the single shot-list authority and is read directly:
+`resolve_mcp.timeline.plan_from_project` turns it into frames, and `build_timeline` drives the
+Resolve Python API through `MediaPool.AppendToTimeline`. Deterministic, and every step is
+inspectable before it runs.
+
+**The split.** Reproducible preparation belongs to `ms`: asset search and staging with licence
+sidecars, footage triage, loudness normalization, ducking, proxy and transcode work, and writing
+LUT `.cube` and Fusion `.setting` files. Anything requiring the running application belongs to
+resolve-mcp: media import, timeline construction, transition application, LUT installation. Taste
+belongs to the GUI.
+
+**Effects are mapped, not faked.** `project.yaml` effects are MLT filter recipes, and Resolve has
+no equivalent for most of them. The builder maps what exists — colour looks become grade targets,
+cross-dissolve and dip-to-black become native transitions — and reports everything else in
+`notes` with the Fusion or Color page route instead. It never drops an effect silently, because a
+timeline that looks complete but is missing half its look is worse than one that says what it
+could not do. Ducking is reported as a manual Fairlight step for the same reason: the scripting
+API cannot build a sidechain.
+
+**The free-tier constraint.** Resolve has no headless mode. Every tool that touches the
+application requires it to be running with a project open, so the server ships disabled in
+`opencode.jsonc` and is enabled on demand. The audio tools are the exception: they shell out to
+ffmpeg and work with Resolve closed.
+
 ## 6. Asset acquisition
 
 ### 6.1 Source matrix (batch 1)
