@@ -60,6 +60,8 @@ uv venv && uv pip install -e . pytest        # once, inside the checkout
 .venv/bin/python -m media_studio.cli assets index my-project
 .venv/bin/python -m media_studio.cli video render my-project          # add --preview for a look
 .venv/bin/python -m media_studio.cli video qc my-project --file out/video/master-16x9.mp4
+.venv/bin/python -m media_studio.cli video ingest ~/Projects/my-project/assets/video \
+  --out ~/Projects/my-project/media --profile proxy    # DNxHR for free Linux Resolve
 bash scripts/selftest.sh
 ```
 

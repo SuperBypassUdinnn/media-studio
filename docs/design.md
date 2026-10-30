@@ -531,6 +531,15 @@ LUT `.cube` and Fusion `.setting` files. Anything requiring the running applicat
 resolve-mcp: media import, timeline construction, transition application, LUT installation. Taste
 belongs to the GUI.
 
+**Codecs are a gate, not a detail.** The free Linux build of Resolve ships without an
+H.264/H.265 decode licence, so the MP4 that a camera, a download, or our own renderer produces
+cannot be imported at all. `ms video ingest` therefore runs before anything else in a Resolve
+workflow: it rewrites the picture into DNxHR and the sound into 24-bit PCM in a QuickTime
+container, choosing between `proxy` (DNxHR LB capped at 1080p), `hq` (DNxHR HQ to UHD), and `hqx`
+(DNxHR HQX 10-bit for grading). A source already in a codec Resolve imports is skipped rather than
+re-encoded. The output extension changes, so `project.yaml` must point at the `.mov`; pointing it
+at the original MP4 defeats the whole step.
+
 **Effects are mapped, not faked.** `project.yaml` effects are MLT filter recipes, and Resolve has
 no equivalent for most of them. The builder maps what exists — colour looks become grade targets,
 cross-dissolve and dip-to-black become native transitions — and reports everything else in

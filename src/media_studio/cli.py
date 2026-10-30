@@ -29,6 +29,7 @@ from .design import render as render_design
 from .effectcraft import EffectCraftError, lyric_overlay, motion_project, title_sequence
 from .fonts import FontError, font_environment, inventory, specimen_sheet
 from .fonts import search as search_fonts
+from .ingest import PROFILES, IngestError, ingest, ingest_folder
 from .ledger import (
     ASSET_CLASSES,
     LedgerError,
@@ -243,6 +244,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--vignette", type=float, default=0.0, help="vignette strength, 0 disables (default 0)"
     )
     composite.set_defaults(func=cmd_video_composite)
+
+    ingest_parser = video_sub.add_parser(
+        "ingest",
+        help="transcode footage into a codec DaVinci Resolve can import on Linux",
+    )
+    ingest_parser.add_argument("source", help="a footage file or a folder of footage to transcode")
+    ingest_parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILES),
+        default="proxy",
+        help="target intermediate (default proxy)",
+    )
+    ingest_parser.add_argument(
+        "--out", default=None, help="destination folder; defaults to beside each source"
+    )
+    ingest_parser.add_argument(
+        "--force", action="store_true", help="transcode even when the source is already safe"
+    )
+    ingest_parser.add_argument(
+        "--no-recursive", action="store_true", help="only read the top level of a folder"
+    )
+    ingest_parser.set_defaults(func=cmd_video_ingest)
 
     three_d = subparsers.add_parser("3d", help="inspect, convert, and render models")
     three_d_sub = three_d.add_subparsers(dest="three_d_command", required=True)
@@ -1139,6 +1162,51 @@ def cmd_video_composite(args: argparse.Namespace) -> int:
     print(f"  report:  {result.report_path.relative_to(project.root)}")
     print("verdict: " + ("pass" if result.ok else "FAIL"))
     return EXIT_OK if result.ok else EXIT_FAILURE
+
+
+def cmd_video_ingest(args: argparse.Namespace) -> int:
+    """Transcode footage into a codec DaVinci Resolve can import on Linux."""
+
+    source = Path(args.source).expanduser()
+    destination_dir = Path(args.out).expanduser() if args.out else None
+
+    try:
+        if source.is_dir():
+            results = ingest_folder(
+                source,
+                destination_dir,
+                args.profile,
+                force=args.force,
+                recursive=not args.no_recursive,
+            )
+        elif source.is_file():
+            destination = None
+            if destination_dir is not None:
+                destination = destination_dir / f"{source.stem}.{args.profile}.mov"
+            results = [ingest(source, destination, args.profile, force=args.force)]
+        else:
+            raise IngestError(f"no such file or folder: {source}")
+    except IngestError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    if not results:
+        print(f"no footage found in {source}")
+        return EXIT_OK
+
+    for result in results:
+        if result.skipped:
+            print(f"skipped  {result.source.name}: already Resolve-safe")
+            continue
+        size_mb = result.size_bytes / 1_000_000
+        print(
+            f"ingested {result.source.name} -> {result.destination.name} "
+            f"({args.profile}, {size_mb:.1f} MB)"
+        )
+
+    transcoded = sum(1 for result in results if not result.skipped)
+    print(f"{transcoded} transcoded, {len(results) - transcoded} already Resolve-safe")
+    return EXIT_OK
 
 
 def cmd_motion_render(args: argparse.Namespace) -> int:
