@@ -548,10 +548,18 @@ timeline that looks complete but is missing half its look is worse than one that
 could not do. Ducking is reported as a manual Fairlight step for the same reason: the scripting
 API cannot build a sidechain.
 
-**The free-tier constraint.** Resolve has no headless mode. Every tool that touches the
-application requires it to be running with a project open, so the server ships disabled in
-`opencode.jsonc` and is enabled on demand. The audio tools are the exception: they shell out to
-ffmpeg and work with Resolve closed.
+**The free-tier constraint.** External scripting connections do not work on the Free Linux build of
+Resolve, even with the GUI running and a project loaded. `scriptapp('Resolve')` returns `None`
+regardless of `RESOLVE_SCRIPT_API`, `RESOLVE_SCRIPT_LIB`, or `PYTHONPATH`. `System.Scripting.Mode`
+is set to `1` (Local) in `config.dat`, but Free tier ignores external connections. Every
+`resolve-mcp` tool that touches the live app (`build_timeline_from_project`, `install_lut`,
+`generate_fusion_macro`) requires DaVinci Resolve Studio. `-nogui` starts Resolve but also
+refuses `scriptapp()`, so headless automation is not available on Free either.
+
+The tools that still work without Resolve: `ms video ingest`, `ms video render`, `ms video qc`,
+and resolve-mcp's ffmpeg-based audio tools (`normalize_audio`, `detect_beats`, `duck_music`,
+`remove_silence`). The server ships `"enabled": false` because a dead Resolve makes it noisy at
+startup, and on Free tier it will never connect even when enabled.
 
 ## 6. Asset acquisition
 
