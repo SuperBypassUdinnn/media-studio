@@ -6,10 +6,11 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
-from . import __version__, media
+from . import __version__, ai, media
 from .blender import (
     EXPORT_FORMATS,
     BlenderError,
@@ -26,7 +27,21 @@ from .blender import (
 )
 from .design import DesignError, validate_design
 from .design import render as render_design
-from .effectcraft import EffectCraftError, lyric_overlay, motion_project, title_sequence
+from .effectcraft import (
+    EffectCraftError,
+    EffectCraftRunner,
+    lower_third,
+    lyric_overlay,
+    motion_project,
+    title_sequence,
+)
+from .fcproj import (
+    CompilerError,
+    compile_manifest_to_fcproj,
+    diff_timelines,
+    snapshot_timeline,
+)
+from .filmcraft import FilmCraftError, FilmCraftRunner
 from .fonts import FontError, font_environment, inventory, specimen_sheet
 from .fonts import search as search_fonts
 from .ingest import PROFILES, IngestError, ingest, ingest_folder
@@ -79,7 +94,7 @@ from .triage import (
     write_index,
 )
 from .triposr import TripoSRError, image_to_mesh_project
-from .video import VideoError, qc_report
+from .video import VideoError, qc_report, render_filmcraft
 from .video import handoff as video_handoff
 from .video import render as render_video
 
@@ -207,6 +222,23 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--deliverable", default=None, help="deliverable id from project.yaml")
     render.add_argument("--preview", action="store_true", help="small and fast, for a look")
     render.add_argument(
+        "--engine",
+        choices=("filmcraft", "mlt"),
+        default="filmcraft",
+        help="timeline engine: filmcraft (default) or the legacy MLT path",
+    )
+    render.add_argument(
+        "--gpu",
+        choices=("auto", "off"),
+        default="auto",
+        help="FilmCraft GPU rendering; auto falls back to CPU and records it in QC",
+    )
+    render.add_argument(
+        "--burn-captions",
+        action="store_true",
+        help="burn the transcript captions into the picture at export (FilmCraft engine only)",
+    )
+    render.add_argument(
         "--keep-intermediate",
         action="store_true",
         help="keep the lossless render under /tmp/opencode for inspection",
@@ -266,6 +298,108 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-recursive", action="store_true", help="only read the top level of a folder"
     )
     ingest_parser.set_defaults(func=cmd_video_ingest)
+
+    build_fc = video_sub.add_parser(
+        "build", help="compile project.yaml manifest into a FilmCraft .fcproj timeline"
+    )
+    build_fc.add_argument("project", help="project path or slug")
+    build_fc.add_argument("--deliverable", default=None, help="deliverable id from project.yaml")
+    build_fc.add_argument("--out", type=Path, default=None, help="destination .fcproj path")
+    build_fc.set_defaults(func=cmd_video_build)
+
+    cmd_parser = video_sub.add_parser(
+        "cmd", help="execute a FilmCraft engine command with typed parameters"
+    )
+    cmd_parser.add_argument("project", help="project path, slug, or direct .fcproj file")
+    cmd_parser.add_argument("command_id", help="command identifier (e.g. timeline.place)")
+    cmd_parser.add_argument("--params", default="{}", help="JSON object of command parameters")
+    cmd_parser.set_defaults(func=cmd_video_cmd)
+
+    place_parser = video_sub.add_parser(
+        "place", help="place an imported asset onto a sequence track"
+    )
+    place_parser.add_argument("project", help="project path, slug, or direct .fcproj file")
+    place_parser.add_argument("--item", type=int, required=True, help="media pool item id")
+    place_parser.add_argument("--track", default="V1", help="target track (default V1)")
+    place_parser.add_argument("--seconds", type=float, default=0.0, help="start time in seconds")
+    place_parser.add_argument(
+        "--duration", type=float, default=None, help="clip duration in seconds"
+    )
+    place_parser.add_argument(
+        "--source-in", type=float, default=0.0, help="source in-point in seconds"
+    )
+    place_parser.set_defaults(func=cmd_video_place)
+
+    trim_parser = video_sub.add_parser("trim", help="trim a clip on the timeline")
+    trim_parser.add_argument("project", help="project path, slug, or direct .fcproj file")
+    trim_parser.add_argument("--clip", type=int, required=True, help="clip id")
+    trim_parser.add_argument("--seconds", type=float, required=True, help="delta or target seconds")
+    trim_parser.add_argument(
+        "--ripple",
+        action="store_true",
+        help="ripple delete / shift subsequent clips",
+    )
+    trim_parser.set_defaults(func=cmd_video_trim)
+
+    inspect_p = video_sub.add_parser(
+        "inspect", help="inspect a FilmCraft project or active sequence"
+    )
+    inspect_p.add_argument("project", help="project path, slug, or direct .fcproj file")
+    inspect_p.add_argument(
+        "--target",
+        choices=["both", "project", "sequence"],
+        default="both",
+        help="inspection scope",
+    )
+    inspect_p.add_argument("--json", action="store_true", help="output raw JSON")
+    inspect_p.set_defaults(func=cmd_video_inspect)
+
+    open_parser = video_sub.add_parser(
+        "open", help="open project in FilmCraft GUI with environment sanitized"
+    )
+    open_parser.add_argument("project", help="project path, slug, or direct .fcproj file")
+    open_parser.set_defaults(func=cmd_video_open)
+
+    snap_parser = video_sub.add_parser(
+        "snapshot", help="create a timestamped snapshot of the working .fcproj timeline"
+    )
+    snap_parser.add_argument("project", help="project path, slug, or direct .fcproj file")
+    snap_parser.set_defaults(func=cmd_video_snapshot)
+
+    diff_parser = video_sub.add_parser(
+        "diff", help="diff current timeline against a previous snapshot"
+    )
+    diff_parser.add_argument("project", help="project path, slug, or direct .fcproj file")
+    diff_parser.add_argument(
+        "--against", type=Path, default=None, help="specific snapshot to compare against"
+    )
+    diff_parser.set_defaults(func=cmd_video_diff)
+
+    transcript_p = video_sub.add_parser(
+        "transcript", help="import word-level transcript into .fcproj"
+    )
+    transcript_p.add_argument("project", help="project path, slug, or direct .fcproj file")
+    transcript_p.add_argument("--file", type=Path, required=True, help="path to transcript JSON")
+    transcript_p.set_defaults(func=cmd_video_transcript)
+
+    captions_p = video_sub.add_parser(
+        "captions", help="generate captions track from imported transcript"
+    )
+    captions_p.add_argument("project", help="project path, slug, or direct .fcproj file")
+    captions_p.set_defaults(func=cmd_video_captions)
+
+    fillers_p = video_sub.add_parser(
+        "remove-fillers", help="cut filler words from transcript and ripple timeline"
+    )
+    fillers_p.add_argument("project", help="project path, slug, or direct .fcproj file")
+    fillers_p.add_argument("--fillers", default="um,uh,like", help="comma-separated words to cut")
+    fillers_p.set_defaults(func=cmd_video_remove_fillers)
+
+    beat_p = video_sub.add_parser("beat-sync", help="detect beats and inject timeline markers")
+    beat_p.add_argument("project", help="project path, slug, or direct .fcproj file")
+    beat_p.add_argument("--audio", type=Path, required=True, help="audio file to analyze")
+    beat_p.add_argument("--name", default="Beat", help="marker label name")
+    beat_p.set_defaults(func=cmd_video_beat_sync)
 
     three_d = subparsers.add_parser("3d", help="inspect, convert, and render models")
     three_d_sub = three_d.add_subparsers(dest="three_d_command", required=True)
@@ -446,6 +580,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     motion_lyrics.add_argument("--style", default="default", help="text style name")
     motion_lyrics.set_defaults(func=cmd_motion_lyrics)
+
+    motion_lt = motion_sub.add_parser("lower-third", help="render a lower-third overlay track")
+    motion_lt.add_argument("project", help="project path or slug")
+    motion_lt.add_argument("--title", required=True, help="primary title text")
+    motion_lt.add_argument("--subtitle", default="", help="optional subtitle text")
+    motion_lt.add_argument("--out", type=Path, default=None, help="output file path")
+    motion_lt.add_argument("--duration", type=float, default=4.0, help="duration in seconds")
+    motion_lt.set_defaults(func=cmd_motion_lower_third)
+
+    motion_insp = motion_sub.add_parser("inspect", help="inspect an EffectCraft project")
+    motion_insp.add_argument("project", help="project path, slug, or direct .ecproj file")
+    motion_insp.add_argument("--json", action="store_true", help="emit info as JSON")
+    motion_insp.set_defaults(func=cmd_motion_inspect)
 
     return parser
 
@@ -1009,22 +1156,42 @@ def cmd_triage_status(args: argparse.Namespace) -> int:
 def cmd_video_render(args: argparse.Namespace) -> int:
     """Render a deliverable and report the measured QC checks."""
 
+    engine = getattr(args, "engine", "filmcraft")
+    gpu = getattr(args, "gpu", "auto")
     try:
         project = load_project(args.project)
-        result = render_video(
+        if engine == "mlt":
+            result = render_video(
+                project,
+                args.deliverable,
+                preview=args.preview,
+                keep_intermediate=args.keep_intermediate,
+            )
+            print(f"rendered {result.deliverable.relative_to(project.root)}")
+            print(f"  mlt:      {result.mlt_path.relative_to(project.root)}")
+            print(f"  report:   {result.report_path.relative_to(project.root)}")
+            print(f"  sheet:    {result.contact_sheet.relative_to(project.root)}")
+            return _report_video_qc(result.report)
+
+        result = render_filmcraft(
             project,
             args.deliverable,
+            gpu=gpu,
             preview=args.preview,
-            keep_intermediate=args.keep_intermediate,
+            burn_captions=getattr(args, "burn_captions", False),
         )
-    except (ManifestError, VideoError, MediaError) as error:
+    except (ManifestError, VideoError, MediaError, FilmCraftError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
 
     print(f"rendered {result.deliverable.relative_to(project.root)}")
-    print(f"  mlt:      {result.mlt_path.relative_to(project.root)}")
+    print(f"  project:  {result.fcproj_path.relative_to(project.root)}")
     print(f"  report:   {result.report_path.relative_to(project.root)}")
     print(f"  sheet:    {result.contact_sheet.relative_to(project.root)}")
+    if result.proxy_path is not None:
+        print(f"  proxy:    {result.proxy_path.relative_to(project.root)}")
+    if result.stills:
+        print(f"  stills:   {len(result.stills)} frame(s)")
     return _report_video_qc(result.report)
 
 
@@ -1209,6 +1376,262 @@ def cmd_video_ingest(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _resolve_fcproj_target(target: str) -> tuple[Path, Project | None]:
+    """Resolve an argument to an fcproj file path and optional Project instance."""
+    path = Path(target).expanduser()
+    if path.suffix == ".fcproj":
+        return path, None
+    try:
+        project = load_project(target)
+        candidates = [
+            project.root / f"{project.slug}.fcproj",
+            project.root / "out" / f"{project.slug}.fcproj",
+        ]
+        for c in candidates:
+            if c.is_file():
+                return c, project
+        found = list(project.root.glob("*.fcproj"))
+        if found:
+            newest = sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+            return newest, project
+        return candidates[0], project
+    except (ManifestError, OSError):
+        return path, None
+
+
+def cmd_video_build(args: argparse.Namespace) -> int:
+    """Compile project.yaml into a FilmCraft .fcproj project."""
+    try:
+        project = load_project(args.project)
+        res = compile_manifest_to_fcproj(
+            project,
+            output_fcproj=args.out,
+            deliverable_id=args.deliverable,
+        )
+        print(f"compiled {res.fcproj_path.name}")
+        print(f"  project:   {project.slug}")
+        print(f"  sequence:  {res.sequence_id}")
+        print(f"  assets:    {len(res.imported_items)} imported")
+        print(
+            f"  clips:     {res.shots_placed} shots, "
+            f"{res.audio_cues_placed} audio cues, {res.titles_placed} titles"
+        )
+        return EXIT_OK
+    except (ManifestError, CompilerError, FilmCraftError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_cmd(args: argparse.Namespace) -> int:
+    """Execute a raw FilmCraft engine command."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        params = json.loads(args.params) if args.params else {}
+    except json.JSONDecodeError as err:
+        print(f"error: invalid JSON in --params: {err}", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        runner = FilmCraftRunner()
+        result = runner.exec(args.command_id, params=params, project_path=fcproj_path, save=True)
+        res_data = result.result if result.result is not None else {"status": "ok"}
+        print(json.dumps(res_data, indent=2))
+        return EXIT_OK
+    except FilmCraftError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_place(args: argparse.Namespace) -> int:
+    """Place an imported asset onto a sequence track."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    params = {
+        "item": args.item,
+        "track": args.track,
+        "seconds": args.seconds,
+        "sourceIn": {"seconds": args.source_in},
+    }
+    if args.duration is not None:
+        params["duration"] = {"seconds": args.duration}
+    try:
+        runner = FilmCraftRunner()
+        res = runner.exec("timeline.place", params=params, project_path=fcproj_path, save=True)
+        print(f"placed item {args.item} on {args.track} at {args.seconds}s: {res.result}")
+        return EXIT_OK
+    except FilmCraftError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_trim(args: argparse.Namespace) -> int:
+    """Trim a clip on the timeline."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    mode = "ripple" if args.ripple else "regular"
+    params = {
+        "clip": args.clip,
+        "delta": {"seconds": args.seconds},
+        "mode": mode,
+    }
+    try:
+        runner = FilmCraftRunner()
+        res = runner.exec("timeline.trim", params=params, project_path=fcproj_path, save=True)
+        print(f"trimmed clip {args.clip} ({mode}) by {args.seconds}s: {res.result}")
+        return EXIT_OK
+    except FilmCraftError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_inspect(args: argparse.Namespace) -> int:
+    """Inspect a FilmCraft project or sequence."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        runner = FilmCraftRunner()
+        data = runner.inspect(fcproj_path, target=args.target)
+        if args.json:
+            print(json.dumps(data, indent=2))
+        else:
+            proj = data.get("project", {})
+            seq = data.get("sequence", {})
+            pool_items = proj.get("items", []) or proj.get("root", {}).get("children", [])
+            print(f"project:   {proj.get('name', fcproj_path.stem)}")
+            print(f"items:     {len(pool_items)} in media pool")
+            print(f"sequence:  {seq.get('name', 'none')}")
+            video_tracks = seq.get("video", [])
+            audio_tracks = seq.get("audio", [])
+            all_clips = list(seq.get("clips", []))
+            for t in video_tracks + audio_tracks:
+                all_clips.extend(t.get("items", []))
+            print(f"clips:     {len(all_clips)} placed")
+            tracks = seq.get("tracks", []) or (video_tracks + audio_tracks)
+            if tracks:
+                track_names = ", ".join(t.get("name", "?") for t in tracks[:6])
+                print(f"tracks:    {len(tracks)} ({track_names})")
+        return EXIT_OK
+    except FilmCraftError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_open(args: argparse.Namespace) -> int:
+    """Open project in FilmCraft GUI with clean environment."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    env = dict(os.environ)
+    env.pop("MANGOHUD", None)  # Prevent known Wayland crash on KDE
+    try:
+        subprocess.Popen(["filmcraft", str(fcproj_path)], env=env)
+        print(f"opened {fcproj_path.name} in FilmCraft GUI")
+        return EXIT_OK
+    except Exception as error:
+        print(f"error opening FilmCraft: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_snapshot(args: argparse.Namespace) -> int:
+    """Create a timestamped snapshot of the current .fcproj."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    snap = snapshot_timeline(fcproj_path)
+    print(f"snapshot: {snap.name}")
+    return EXIT_OK
+
+
+def cmd_video_diff(args: argparse.Namespace) -> int:
+    """Diff current .fcproj against a previous snapshot."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    diff = diff_timelines(fcproj_path, args.against)
+    print(f"diff against {diff.get('snapshot', 'none')}:")
+    print(f"  duration delta: {diff.get('duration_delta', 0.0):+.2f}s")
+    print(f"  clips added:    {len(diff.get('added', []))}")
+    print(f"  clips removed:  {len(diff.get('removed', []))}")
+    print(f"  clips modified: {len(diff.get('modified', []))}")
+    return EXIT_OK
+
+
+def cmd_video_transcript(args: argparse.Namespace) -> int:
+    """Import word-level transcript JSON into project timeline."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        data = json.loads(args.file.read_text())
+        res = ai.import_transcript(fcproj_path, data)
+        print(f"imported transcript: {res.stdout or res.result}")
+        return EXIT_OK
+    except Exception as error:
+        print(f"error importing transcript: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_captions(args: argparse.Namespace) -> int:
+    """Generate captions track on project timeline from transcript."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        res = ai.generate_captions(fcproj_path)
+        print(f"generated captions: {res.stdout or res.result}")
+        return EXIT_OK
+    except Exception as error:
+        print(f"error generating captions: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_remove_fillers(args: argparse.Namespace) -> int:
+    """Cut filler words from timeline with ripple edit."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    fillers = args.fillers.split(",") if args.fillers else None
+    try:
+        res = ai.remove_fillers(fcproj_path, fillers=fillers)
+        print(f"removed fillers: {res.stdout or res.result}")
+        return EXIT_OK
+    except Exception as error:
+        print(f"error removing fillers: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_beat_sync(args: argparse.Namespace) -> int:
+    """Detect beats and create timeline markers in project."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    if not args.audio.is_file():
+        print(f"error: audio file not found: {args.audio}", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        count = ai.snap_cuts_to_beats(fcproj_path, args.audio, marker_name=args.name)
+        print(f"created {count} beat marker(s) on timeline")
+        return EXIT_OK
+    except Exception as error:
+        print(f"error syncing beats: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
 def cmd_motion_render(args: argparse.Namespace) -> int:
     """Render every motion-graphics sequence declared in project.yaml."""
 
@@ -1290,6 +1713,59 @@ def cmd_motion_lyrics(args: argparse.Namespace) -> int:
     print(f"  report:  {result.report_path.relative_to(project.root)}")
     print("verdict: " + ("pass" if result.ok else "FAIL"))
     return EXIT_OK if result.ok else EXIT_FAILURE
+
+
+def cmd_motion_lower_third(args: argparse.Namespace) -> int:
+    """Render a lower-third motion graphic with alpha ProRes 4444."""
+    try:
+        project = load_project(args.project)
+        out_path = args.out or project.root / "out" / "motion" / "lower-third.mov"
+        ecp_path = out_path.with_suffix(".ecproj")
+        res = lower_third(
+            title=args.title,
+            subtitle=args.subtitle,
+            output=out_path,
+            ecp_path=ecp_path,
+            duration=args.duration,
+        )
+        print(f"lower-third: {args.title}")
+        print(f"  output:  {res.output.relative_to(project.root)}")
+        print(f"  report:  {res.report_path.relative_to(project.root)}")
+        print(f"  verdict: {'pass' if res.ok else 'FAIL'}")
+        return EXIT_OK if res.ok else EXIT_FAILURE
+    except Exception as error:
+        print(f"error rendering lower-third: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_motion_inspect(args: argparse.Namespace) -> int:
+    """Inspect EffectCraft project comps and layers."""
+    try:
+        target = Path(args.project)
+        if target.is_dir():
+            out_motion = target / "out" / "motion"
+            candidates = list(out_motion.glob("*.ecproj")) + list(target.glob("*.ecproj"))
+            if not candidates:
+                print(f"no .ecproj found in {target}", file=sys.stderr)
+                return EXIT_FAILURE
+            target = candidates[0]
+        runner = EffectCraftRunner()
+        info = runner.inspect(target)
+        if args.json:
+            print(json.dumps(info, indent=2))
+        else:
+            print(f"project: {info.get('name', target.name)}")
+            comps = info.get("comps", [])
+            print(f"comps:   {len(comps)}")
+            for comp in comps:
+                w = comp.get("width", 1920)
+                h = comp.get("height", 1080)
+                fps = comp.get("fps", 30)
+                print(f"  comp {comp.get('name', '?')}: {w}x{h} @ {fps}fps")
+        return EXIT_OK
+    except Exception as error:
+        print(f"error inspecting motion project: {error}", file=sys.stderr)
+        return EXIT_FAILURE
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
