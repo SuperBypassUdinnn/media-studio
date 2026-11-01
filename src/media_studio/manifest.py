@@ -34,6 +34,8 @@ MANIFEST_KEYS = frozenset(
         "video",
         "design",
         "budget",
+        "motion",
+        "captions",
     }
 )
 DESIGN_KEYS = frozenset({"logo", "fonts", "variants"})
@@ -350,13 +352,19 @@ def _design(value: Any) -> DesignSpec | None:
     )
 
 
-def _size(value: str, variant_id: str) -> tuple[int, int]:
+def parse_resolution(value: str) -> tuple[int, int]:
+    """Parse a WxH resolution string like 1920x1080 into (width, height)."""
     if not RESOLUTION_PATTERN.match(value):
-        raise ManifestError(
-            f"design variant {variant_id!r}: size {value!r} must be WxH, for example 1080x1080"
-        )
-    width, _, height = value.partition("x")
+        raise ManifestError(f"size {value!r} must be WxH, for example 1920x1080")
+    width, _, height = value.lower().partition("x")
     return int(width), int(height)
+
+
+def _size(value: str, variant_id: str) -> tuple[int, int]:
+    try:
+        return parse_resolution(value)
+    except ManifestError as error:
+        raise ManifestError(f"design variant {variant_id!r}: {error}") from error
 
 
 def _effects(value: Any) -> tuple[dict[str, Any], ...]:
