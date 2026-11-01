@@ -1,25 +1,25 @@
-"""EffectCraft headless motion graphics for AMV production.
+"""EffectCraft headless motion graphics runner for OpenCode agent.
 
-Generates EffectCraft ``.ecp`` project files and renders them through the
-``effectcraft`` headless CLI. EffectCraft (AGPL-3.0, pure Rust) is an After
-Effects clone: compositions, layers, keyframes, 3D cameras and lights, 306+
-effects, expressions, and an effect graph editor.
-
-Nothing in this module runs unless explicitly called: if ``effectcraft`` is not
-on ``PATH`` every public function raises :class:`EffectCraftError` with an
-installation hint, so the rest of the toolkit stays usable on a machine
-without EffectCraft.
+Drives EffectCraft (0.19.0+, pure Rust, dual MIT/Apache-2.0) through its headless
+CLI (``effectcraft-cli``). Supports composition creation, 308+ effects, text layers,
+keyframed properties, frame previews, and headless alpha ProRes 4444 / WebM VP9 rendering.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-EFFECTCRAFT = shutil.which("effectcraft")  # /usr/local/bin or ~/.local/bin
+logger = logging.getLogger(__name__)
+
+# Prefer effectcraft-cli (headless engine) over the GUI binary
+EFFECTCRAFT = shutil.which("effectcraft-cli") or shutil.which("effectcraft")
 
 
 class EffectCraftError(RuntimeError):
@@ -34,12 +34,12 @@ class MotionResult:
     """Rendered motion-graphics file (alpha channel where supported)."""
 
     ecp_path: Path
-    """Generated EffectCraft project file (``.ecp``)."""
+    """Generated or target EffectCraft project file (``.ecproj`` or legacy ``.ecp``)."""
 
     report_path: Path
     """JSON report written beside the output."""
 
-    report: dict
+    report: dict[str, Any]
     """Machine-readable report (duration, fps, resolution, checks, problems)."""
 
     @property
@@ -47,42 +47,233 @@ class MotionResult:
         return bool(self.report.get("ok", False)) and self.output.exists()
 
 
-def check_installation() -> None:
-    """Raise :class:`EffectCraftError` if ``effectcraft`` is not on ``PATH``.
-
-    The hint names where to get the binary (ArtCraft Launcher or a direct
-    GitHub release) so a person can install it without searching docs.
-    """
-
-    if EFFECTCRAFT is None:
+def check_installation(cli_path: str | Path | None = None) -> Path:
+    """Raise :class:`EffectCraftError` if ``effectcraft-cli`` is not on ``PATH``."""
+    resolved = shutil.which(str(cli_path)) if cli_path else EFFECTCRAFT
+    if resolved is None:
         hint = (
-            "effectcraft is not on PATH. Install EffectCraft so ms motion works:\n"
-            "  ArtCraft Launcher (https://artcraft.app)\n"
-            "  or a release binary from https://github.com/storytold/effectcraft/releases\n"
-            "Copy the binary to ~/.local/bin/effectcraft or /usr/local/bin/effectcraft.\n"
-            "Then re-run with effectcraft on PATH, or run without motion graphics."
+            "effectcraft is not on PATH (effectcraft-cli missing). Please install EffectCraft:\n"
+            "  Binary tarball: https://github.com/storytold/effectcraft/releases\n"
+            "  Extract to ~/.local/opt/effectcraft-0.19.0/bin/ and symlink into "
+            "~/.local/bin/effectcraft-cli.\n"
+            "Run 'ms doctor' to verify."
         )
         raise EffectCraftError(hint)
+    return Path(resolved)
+
+
+class EffectCraftRunner:
+    """Headless driver for EffectCraft 0.19.0+."""
+
+    def __init__(self, cli_path: str | Path | None = None, default_timeout: int = 60):
+        self.cli_path = check_installation(cli_path)
+        self.default_timeout = default_timeout
+        self._commands_cache: list[dict[str, Any]] | None = None
+
+    def get_commands_catalog(self, cached: bool = True) -> list[dict[str, Any]]:
+        """Retrieve the catalog of engine commands supported by EffectCraft."""
+        if cached and self._commands_cache is not None:
+            return self._commands_cache
+
+        cmd = [str(self.cli_path), "commands", "--json"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        catalog = json.loads(proc.stdout)
+        if cached:
+            self._commands_cache = catalog
+        return catalog
+
+    def inspect(self, project_path: Path) -> dict[str, Any]:
+        """Inspect project structure and active composition via 'info --json'."""
+        if not project_path.exists():
+            raise EffectCraftError(f"Project not found: {project_path}")
+
+        argv = [str(self.cli_path), "info", "--project", str(project_path), "--json"]
+        proc = subprocess.run(argv, capture_output=True, text=True, check=True)
+        return json.loads(proc.stdout)
+
+    def exec(
+        self,
+        command_id: str,
+        params: dict[str, Any] | None = None,
+        project_path: Path | None = None,
+        save: bool = True,
+        save_as: Path | None = None,
+        empty: bool = False,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Execute one engine command via 'exec'."""
+        argv = [str(self.cli_path)]
+        if project_path:
+            argv.extend(["--project", str(project_path)])
+            if save:
+                argv.append("--save")
+        elif empty:
+            argv.append("--empty")
+
+        if save_as:
+            argv.extend(["--save-as", str(save_as)])
+
+        argv.extend(["exec", command_id])
+        if params is not None:
+            argv.extend(["--params", json.dumps(params)])
+
+        effective_timeout = timeout or self.default_timeout
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=effective_timeout)
+        if proc.returncode != 0:
+            raise EffectCraftError(
+                f"Command '{command_id}' failed ({proc.returncode}): {proc.stderr.strip()}"
+            )
+
+        try:
+            return json.loads(proc.stdout) if proc.stdout.strip() else {}
+        except json.JSONDecodeError:
+            return {"raw": proc.stdout.strip()}
+
+    def run_commands(
+        self,
+        commands: list[dict[str, Any]],
+        project_path: Path | None = None,
+        save: bool = True,
+        save_as: Path | None = None,
+        empty: bool = False,
+        timeout: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run multiple commands sequentially using 'run --commands -'."""
+        argv = [str(self.cli_path)]
+        if project_path:
+            argv.extend(["--project", str(project_path)])
+            if save:
+                argv.append("--save")
+        elif empty:
+            argv.append("--empty")
+
+        if save_as:
+            argv.extend(["--save-as", str(save_as)])
+
+        argv.extend(["run", "--commands", "-"])
+
+        lines = [json.dumps(cmd) for cmd in commands]
+        stdin_content = "\n".join(lines) + "\n"
+
+        effective_timeout = timeout or (self.default_timeout * max(1, len(commands)))
+        proc = subprocess.run(
+            argv,
+            input=stdin_content,
+            capture_output=True,
+            text=True,
+            timeout=effective_timeout,
+        )
+        if proc.returncode != 0:
+            raise EffectCraftError(
+                f"run_commands failed ({proc.returncode}): {proc.stderr.strip()}"
+            )
+
+        results: list[dict[str, Any]] = []
+        for line in proc.stdout.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                results.append(json.loads(line))
+            except json.JSONDecodeError:
+                results.append({"raw": line})
+        return results
+
+    def render_comp(
+        self,
+        project_path: Path,
+        output_file: Path,
+        comp: str | None = None,
+        format: str = "prores",
+        channels: str = "rgba",
+        prores_profile: str = "4444",
+        fps: float = 30.0,
+        timeout: int = 180,
+    ) -> Path:
+        """Render a composition to disk, defaulting to transparent ProRes 4444."""
+        if not project_path.exists():
+            raise EffectCraftError(f"Project not found: {project_path}")
+
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        argv = [
+            str(self.cli_path),
+            "--project",
+            str(project_path),
+            "render",
+            "--out",
+            str(output_file),
+            "--format",
+            format,
+            "--channels",
+            channels,
+            "--fps",
+            str(fps),
+        ]
+        if comp:
+            argv.extend(["--comp", comp])
+        if format == "prores":
+            argv.extend(["--prores", prores_profile])
+
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        if proc.returncode != 0 or not output_file.exists():
+            raise EffectCraftError(f"Render failed ({proc.returncode}): {proc.stderr.strip()}")
+        return output_file
+
+    def render_frame(
+        self,
+        project_path: Path,
+        output_png: Path,
+        seconds: float = 0.0,
+        comp: str | None = None,
+        transparent: bool = True,
+        scale: float = 1.0,
+        timeout: int = 15,
+    ) -> Path:
+        """Render a single frame to PNG with transparent alpha background."""
+        if not project_path.exists():
+            raise EffectCraftError(f"Project not found: {project_path}")
+
+        output_png.parent.mkdir(parents=True, exist_ok=True)
+        argv = [
+            str(self.cli_path),
+            "--project",
+            str(project_path),
+            "render-frame",
+            "--time",
+            str(seconds),
+            "--out",
+            str(output_png),
+            "--scale",
+            str(scale),
+        ]
+        if comp:
+            argv.extend(["--comp", comp])
+        if transparent:
+            argv.append("--transparent")
+
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        if proc.returncode != 0 or not output_png.exists():
+            raise EffectCraftError(
+                f"Frame render failed ({proc.returncode}): {proc.stderr.strip()}"
+            )
+        return output_png
+
+
+# =============================================================================
+# Legacy Spec & Helper Functions (Backward Compatibility)
+# =============================================================================
+
+
+def _validate_spec(spec: dict) -> None:
+    if not isinstance(spec, dict):
+        raise EffectCraftError("motion spec must be a dict")
+    for key in ("width", "height", "fps", "duration"):
+        if key in spec and not isinstance(spec[key], (int, float)):
+            raise EffectCraftError(f"motion spec {key} must be a number")
 
 
 def build_ecp(spec: dict, output_path: Path) -> Path:
-    """Serialise a motion-graphics spec as an EffectCraft ``.ecp`` JSON document.
-
-    ``spec`` is a minimal dict describing one composition. The recognised keys
-    are:
-
-    * ``width``, ``height`` — canvas size in pixels (default 1280x720).
-    * ``fps`` — frame rate (default 30.0).
-    * ``duration`` — composition length in seconds (default 3.0).
-    * ``layers`` — list of layer dicts; each has ``type`` (``"text"``,
-      ``"image"``, ``"solid"``), ``name``, and ``params``.
-
-    The output is valid JSON that ``json.loads`` can round-trip, so unit tests
-    can verify the structure without EffectCraft installed.
-
-    Returns the path written.
-    """
-
+    """Serialise a motion-graphics spec as an EffectCraft JSON document."""
     _validate_spec(spec)
 
     project = {
@@ -96,16 +287,169 @@ def build_ecp(spec: dict, output_path: Path) -> Path:
         "layers": list(spec.get("layers", [])),
     }
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(project, indent=2) + "\n", encoding="utf-8")
     return output_path
 
 
-def _validate_spec(spec: dict) -> None:
-    if not isinstance(spec, dict):
-        raise EffectCraftError("motion spec must be a dict")
-    for key in ("width", "height", "fps", "duration"):
-        if key in spec and not isinstance(spec[key], (int, float)):
-            raise EffectCraftError(f"motion spec {key} must be a number")
+def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
+    """Compile a high-level spec dictionary into a native .ecproj project."""
+    ecproj_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_data = json.loads(spec_path.read_text(encoding="utf-8"))
+    comp_info = spec_data.get("composition", {})
+
+    width = int(comp_info.get("width", 1280))
+    height = int(comp_info.get("height", 720))
+    fps = float(comp_info.get("fps", 30.0))
+    duration = float(comp_info.get("duration", 3.0))
+
+    cmds: list[dict[str, Any]] = [
+        {
+            "id": "comp.new",
+            "params": {
+                "name": "Main",
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "duration": duration,
+            },
+        }
+    ]
+
+    for layer in spec_data.get("layers", []):
+        ltype = layer.get("type")
+        params = layer.get("params", {})
+        if ltype == "text":
+            text_params: dict[str, Any] = {
+                "text": params.get("text", ""),
+                "size": float(params.get("font_size", 64.0)),
+            }
+            if layer.get("name"):
+                text_params["name"] = layer["name"]
+            # Comp-space anchor: [x, y] in pixels. Without it EffectCraft centres the layer.
+            if params.get("position") is not None:
+                text_params["position"] = [float(v) for v in params["position"]]
+            for optional in (
+                "fill",
+                "font",
+                "justify",
+                "tracking",
+                "stroke",
+                "strokeWidth",
+                "box",
+            ):
+                if params.get(optional) is not None:
+                    text_params[optional] = params[optional]
+            cmds.append({"id": "layer.newText", "params": text_params})
+        elif ltype == "image":
+            image_path = params.get("path")
+            if image_path:
+                cmds.append(
+                    {
+                        "id": "file.import",
+                        "params": {
+                            "paths": [image_path],
+                            "addToComp": True,
+                        },
+                    }
+                )
+        elif ltype == "solid":
+            cmds.append(
+                {
+                    "id": "layer.newSolid",
+                    "params": {
+                        "name": layer.get("name", "Solid"),
+                    },
+                }
+            )
+
+    runner = EffectCraftRunner()
+    runner.run_commands(cmds, empty=True, save_as=ecproj_path)
+
+
+def render(
+    project_path: Path,
+    output: Path,
+    *,
+    fps: float = 30.0,
+    transparent: bool = True,
+) -> MotionResult:
+    """Run ``effectcraft render`` on a project file and return the output path.
+
+    Handles both native ``.ecproj`` projects and spec JSON files automatically.
+    """
+    check_installation()
+
+    # If project_path is a legacy spec (.ecp or json missing schema), compile to native .ecproj
+    actual_project = project_path
+    is_spec = project_path.suffix in (".ecp", ".json")
+    if not is_spec and project_path.exists():
+        try:
+            content = project_path.read_text(encoding="utf-8")
+            data = json.loads(content)
+            if isinstance(data, dict) and "schema" not in data:
+                is_spec = True
+        except Exception:
+            pass
+
+    if is_spec:
+        compiled_proj = project_path.with_name(project_path.stem + "_compiled.ecproj")
+        try:
+            _compile_spec_to_ecproj(project_path, compiled_proj)
+            actual_project = compiled_proj
+        except Exception as exc:
+            logger.warning("Failed to compile spec to ecproj: %s; trying raw file", exc)
+
+    cmd = [
+        str(EFFECTCRAFT),
+        "--project",
+        str(actual_project),
+        "render",
+        "--out",
+        str(output),
+        "--fps",
+        str(fps),
+    ]
+
+    if transparent:
+        cmd.extend(["--format", "prores", "--channels", "rgba", "--prores", "4444"])
+    else:
+        cmd.extend(["--format", "h264", "--channels", "rgb"])
+
+    start_time = time.monotonic()
+    completed = subprocess.run(cmd, capture_output=True, text=True)
+    elapsed = time.monotonic() - start_time
+
+    ok = completed.returncode == 0 and output.exists()
+    report: dict[str, Any] = {
+        "tool": "effectcraft",
+        "binary": str(EFFECTCRAFT),
+        "project": str(project_path),
+        "output": str(output),
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+        "duration_sec": elapsed,
+        "ok": ok,
+        "problems": [],
+    }
+
+    if completed.returncode != 0:
+        report["problems"].append(f"effectcraft exited {completed.returncode}")
+        if completed.stderr:
+            report["problems"].append(completed.stderr.strip().splitlines()[-1])
+    if not output.exists():
+        report["problems"].append(f"no output written: {output}")
+
+    report_path = output.with_suffix(".json")
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    return MotionResult(
+        output=output,
+        ecp_path=project_path,
+        report_path=report_path,
+        report=report,
+    )
 
 
 def title_sequence(
@@ -124,14 +468,7 @@ def title_sequence(
     glow: bool = False,
     glow_intensity: float = 0.5,
 ) -> MotionResult:
-    """Generate an animated title sequence with alpha channel.
-
-    Builds an EffectCraft project with one text layer, keyframed opacity and
-    position for the requested animation, then renders through ``effectcraft``.
-
-    Returns a :class:`MotionResult`.
-    """
-
+    """Generate an animated title sequence with alpha channel."""
     spec = {
         "width": width,
         "height": height,
@@ -170,14 +507,7 @@ def lyric_overlay(
     height: int = 720,
     style: str = "default",
 ) -> MotionResult:
-    """Generate a lyric subtitle overlay track with alpha channel (for AMV).
-
-    ``lines`` is a list of ``(start, end, text)`` triples. Each becomes one
-    text layer keyed to its in/out timecodes.
-
-    Returns a :class:`MotionResult`.
-    """
-
+    """Generate a lyric subtitle overlay track with alpha channel."""
     layers = []
     for index, (start, end, text) in enumerate(lines):
         layers.append(
@@ -218,11 +548,7 @@ def logo_reveal(
     height: int = 720,
     animation: str = "scale_up",
 ) -> MotionResult:
-    """Generate a logo reveal animation with alpha channel.
-
-    Returns a :class:`MotionResult`.
-    """
-
+    """Generate a logo reveal animation with alpha channel."""
     if not logo_path.exists():
         raise EffectCraftError(f"logo file not found: {logo_path}")
 
@@ -249,67 +575,68 @@ def logo_reveal(
     return render(ecp_path, output, fps=fps, transparent=True)
 
 
-def render(
-    project_path: Path,
-    output: Path,
+def lower_third(
+    title: str,
+    subtitle: str = "",
     *,
+    output: Path | None = None,
+    ecp_path: Path | None = None,
+    duration: float = 4.0,
     fps: float = 30.0,
-    transparent: bool = True,
+    width: int = 1920,
+    height: int = 1080,
+    title_size: float = 48.0,
+    subtitle_size: float = 28.0,
 ) -> MotionResult:
-    """Run ``effectcraft render`` on a ``.ecp`` file and return the output path.
+    """Generate a lower-third title and subtitle animation with alpha channel."""
+    out_file = output or Path("out/motion/lower_third.mov")
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    project_file = ecp_path or out_file.with_suffix(".ecproj")
 
-    Writes a JSON report beside the output with duration, fps, resolution, and
-    problems. Auto-selects an alpha-capable codec (ProRes 4444 via prores_ks,
-    WebM VP9 fallback) based on what ``ffprobe`` reports as available.
-    """
+    # Paragraph boxes anchor text left in the lower safe area; a bare position would
+    # centre the layer on that point and clip wide titles off the left edge.
+    margin_x = round(width * 0.0625)
+    box_width = width - margin_x * 2
+    title_box = [margin_x, round(height * 0.74), box_width, round(height * 0.11)]
+    subtitle_box = [margin_x, round(height * 0.855), box_width, round(height * 0.09)]
 
-    check_installation()
-
-    cmd = [
-        EFFECTCRAFT,
-        "render",
-        str(project_path),
-        str(output),
-        "--fps",
-        str(fps),
+    layers = [
+        {
+            "type": "text",
+            "name": "title",
+            "params": {
+                "text": title,
+                "font_size": title_size,
+                "box": title_box,
+                "justify": "left",
+            },
+        }
     ]
-    if transparent:
-        cmd.extend(["--transparent", "true"])
+    if subtitle:
+        layers.append(
+            {
+                "type": "text",
+                "name": "subtitle",
+                "params": {
+                    "text": subtitle,
+                    "font_size": subtitle_size,
+                    "box": subtitle_box,
+                    "justify": "left",
+                },
+            }
+        )
 
-    completed = subprocess.run(cmd, capture_output=True, text=True)
-
-    report: dict = {
-        "tool": "effectcraft",
-        "binary": EFFECTCRAFT,
-        "project": str(project_path),
-        "output": str(output),
-        "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
-        "ok": completed.returncode == 0 and output.exists(),
+    spec = {
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "duration": duration,
+        "layers": layers,
     }
-
-    problems: list[str] = []
-    if completed.returncode != 0:
-        problems.append(f"effectcraft exited {completed.returncode}")
-        if completed.stderr:
-            problems.append(completed.stderr.strip().splitlines()[-1])
-    if not output.exists():
-        problems.append(f"no output written: {output}")
-
-    report_path = output.with_suffix(".json")
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-
-    report["ok"] = report["ok"] and not problems
-    report["problems"] = problems
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-
-    return MotionResult(
-        output=output,
-        ecp_path=project_path,
-        report_path=report_path,
-        report=report,
-    )
+    _validate_spec(spec)
+    check_installation()
+    build_ecp(spec, project_file)
+    return render(project_file, out_file, fps=fps, transparent=True)
 
 
 def motion_project(
@@ -317,90 +644,54 @@ def motion_project(
     project_root: Path | None = None,
     output_dir: Path | None = None,
 ) -> list[MotionResult]:
-    """Render every motion-graphics sequence declared in ``project.yaml``.
-
-    Each entry in ``sequences`` is a dict like::
-
-        sequences:
-          - id: opening
-            type: title
-            text: "夏の記憶"
-            duration: 3.0
-            animation: fade_in_up
-            font: Noto Sans JP
-            glow: true
-          - id: lyric-track
-            type: lyrics
-            lines: [[0.0, 2.0, "first line"], [2.0, 4.0, "second line"]]
-          - id: outro
-            type: logo_reveal
-            logo: assets/images/logo.svg
-            duration: 2.0
-
-    Outputs are written to ``out/motion/<id>.mov`` (alpha channel).
-    Returns one :class:`MotionResult` per sequence.
-    """
-
-    from .project import default_project_root
-
-    if project_root is None:
-        project_root = default_project_root()
-
-    if output_dir is None:
-        output_dir = project_root / "out" / "motion"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+    """Render every motion-graphics sequence declared in project spec."""
+    check_installation()
     results: list[MotionResult] = []
+    if not sequences:
+        return results
+
+    root = project_root or Path.cwd()
+    target_dir = output_dir or (root / "out" / "motion")
+    target_dir.mkdir(parents=True, exist_ok=True)
+
     for seq in sequences:
-        seq_id = seq.get("id", "sequence")
+        seq_id = seq.get("id", "seq")
         seq_type = seq.get("type", "title")
-        output = output_dir / f"{seq_id}.mov"
-        ecp_path = output_dir / f"{seq_id}.ecp"
+        out_file = target_dir / f"{seq_id}.mov"
+        ecp_file = target_dir / f"{seq_id}.ecproj"
 
         if seq_type == "title":
-            result = title_sequence(
-                text=seq.get("text", ""),
-                output=output,
-                ecp_path=ecp_path,
+            res = title_sequence(
+                seq.get("text", "Title"),
+                out_file,
+                ecp_file,
                 duration=float(seq.get("duration", 3.0)),
-                fps=float(seq.get("fps", 30.0)),
-                width=int(seq.get("width", 1280)),
-                height=int(seq.get("height", 720)),
-                font=seq.get("font", "Noto Sans"),
-                font_size=float(seq.get("font_size", 72.0)),
-                color=seq.get("color", "#FFFFFF"),
-                animation=seq.get("animation", "fade_in_up"),
-                glow=bool(seq.get("glow", False)),
-                glow_intensity=float(seq.get("glow_intensity", 0.5)),
             )
+            results.append(res)
         elif seq_type == "lyrics":
-            lines = [
-                (float(item[0]), float(item[1]), str(item[2])) for item in seq.get("lines", [])
-            ]
-            result = lyric_overlay(
-                lines=lines,
-                output=output,
-                ecp_path=ecp_path,
-                fps=float(seq.get("fps", 30.0)),
-                width=int(seq.get("width", 1280)),
-                height=int(seq.get("height", 720)),
-                style=seq.get("style", "default"),
+            res = lyric_overlay(
+                seq.get("lines", []),
+                out_file,
+                ecp_file,
             )
-        elif seq_type == "logo_reveal":
-            logo = project_root / seq["logo"]
-            result = logo_reveal(
-                logo_path=logo,
-                output=output,
-                ecp_path=ecp_path,
+            results.append(res)
+        elif seq_type == "logo":
+            logo_p = Path(seq.get("path", ""))
+            res = logo_reveal(
+                logo_p,
+                out_file,
+                ecp_file,
                 duration=float(seq.get("duration", 2.0)),
-                fps=float(seq.get("fps", 30.0)),
-                width=int(seq.get("width", 1280)),
-                height=int(seq.get("height", 720)),
-                animation=seq.get("animation", "scale_up"),
             )
-        else:
-            raise EffectCraftError(f"unknown motion sequence type: {seq_type!r}")
-
-        results.append(result)
+            results.append(res)
+        elif seq_type in ("lower_third", "lower-third", "lowerthird"):
+            res = lower_third(
+                seq.get("title", seq.get("text", "Name")),
+                seq.get("subtitle", ""),
+                output=out_file,
+                ecp_path=ecp_file,
+                duration=float(seq.get("duration", 4.0)),
+            )
+            results.append(res)
 
     return results

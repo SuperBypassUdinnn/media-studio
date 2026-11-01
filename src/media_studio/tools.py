@@ -6,6 +6,7 @@ seconds (torch imports, GPU device files) only run behind ``--deep``.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -102,13 +103,15 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("blender", ("--version",), True, "3D authoring and headless rendering"),
     ToolSpec("ffmpeg", ("-version",), True, "encoding, filters, loudness, QC"),
     ToolSpec("ffprobe", ("-version",), True, "media measurement"),
-    ToolSpec("melt", ("--version",), True, "MLT timeline rendering"),
+    ToolSpec("melt", ("--version",), True, "MLT timeline rendering (legacy fallback)"),
     ToolSpec("inkscape", ("--version",), True, "SVG to PNG and PDF"),
     ToolSpec("magick", ("-version",), True, "raster post-processing"),
     ToolSpec("node", ("--version",), True, "3d-asset-server and gltf-transform"),
     ToolSpec("npm", ("--version",), True, "Node package management"),
     ToolSpec("uv", ("--version",), True, "Python environments"),
-    ToolSpec("kdenlive", ("--version",), False, "manual timeline handoff"),
+    ToolSpec("filmcraft-cli", ("--version",), True, "timeline and NLE engine"),
+    ToolSpec("effectcraft-cli", ("--version",), True, "motion graphics engine"),
+    ToolSpec("kdenlive", ("--version",), False, "manual timeline handoff (legacy)"),
     ToolSpec("git", ("--version",), False, "project versioning"),
 )
 
@@ -235,6 +238,27 @@ def deep_checks(
             detail=f"{free_gib:.1f} GiB free",
         )
     )
+
+    engines_cfg = Path("~/.config/opencode/media-engines.json").expanduser()
+    if engines_cfg.is_file():
+        try:
+            with engines_cfg.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            engines = data.get("engines", {})
+            for name, meta in engines.items():
+                cli_path = Path(meta.get("cli", ""))
+                version = meta.get("version", "unknown")
+                if cli_path.is_file() and os.access(cli_path, os.X_OK):
+                    results.append(CheckResult(f"engine {name}", True, f"v{version} at {cli_path}"))
+                else:
+                    results.append(
+                        CheckResult(f"engine {name}", False, f"pinned binary missing: {cli_path}")
+                    )
+        except Exception as err:
+            results.append(CheckResult("media-engines.json", False, f"parse error: {err}"))
+    else:
+        results.append(CheckResult("media-engines.json", False, f"missing: {engines_cfg}"))
+
     return results
 
 

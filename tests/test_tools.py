@@ -138,3 +138,12 @@ def test_deep_checks_reports_usable_venv(monkeypatch: pytest.MonkeyPatch, tmp_pa
     by_name = {result.name: result for result in results}
     assert by_name["Vulkan NVIDIA ICD"].ok is True
     assert by_name["torch demo"] == CheckResult("torch demo", True, "2.12.0+cu130")
+
+
+def test_deep_checks_reports_engines_from_config() -> None:
+    results = deep_checks()
+    by_name = {result.name: result for result in results}
+    assert "engine filmcraft" in by_name
+    assert by_name["engine filmcraft"].ok is True
+    assert "engine effectcraft" in by_name
+    assert by_name["engine effectcraft"].ok is True
