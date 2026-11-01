@@ -21,6 +21,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import fonts, media
+from .fcproj import compile_manifest_to_fcproj
+from .filmcraft import ExportResult, FilmCraftError, FilmCraftRunner
 from .ledger import read_sidecar
 from .manifest import AudioCue, Deliverable, Project, VideoPlan
 from .mlt import AudioPlan, Clip, Timeline, Title, ducking_from_speech, timeline_seconds
@@ -47,6 +49,25 @@ class RenderResult:
     contact_sheet: Path
     intermediate: Path | None
     report: dict[str, object]
+
+    @property
+    def ok(self) -> bool:
+        checks = self.report.get("checks")
+        return bool(isinstance(checks, dict) and all(checks.values()))
+
+
+@dataclass(frozen=True)
+class FilmCraftRenderResult:
+    """What a FilmCraft render produced."""
+
+    deliverable: Path
+    fcproj_path: Path
+    report_path: Path
+    contact_sheet: Path
+    proxy_path: Path | None
+    stills: list[Path]
+    report: dict[str, object]
+    export_result: ExportResult | None = None
 
     @property
     def ok(self) -> bool:
@@ -397,9 +418,14 @@ def encode_with_loudness(
 def qc_report(
     deliverable: Path,
     *,
-    expected_duration: float,
+    expected_duration: float | None,
     target_lufs: float,
     preview: bool = False,
+    engine: str = "unknown",
+    engine_version: str | None = None,
+    render_path: str = "unknown",
+    gpu_fallback_to_cpu: bool = False,
+    gpu_failure_text: str | None = None,
 ) -> dict[str, object]:
     """Measure the finished file and decide, field by field, whether it passed."""
 
@@ -411,13 +437,16 @@ def qc_report(
     black = media.black_segments(deliverable, minimum=1.0)
     frozen = media.frozen_segments(deliverable, minimum=1.0)
     distance = loudness.distance_from(target_lufs)
-    duration_gap = abs(info.duration - expected_duration)
+    # When the manifest declares no duration there is nothing to match against;
+    # the measured duration is reported but the check cannot fail.
+    duration_declared = expected_duration is not None
+    duration_gap = abs(info.duration - (expected_duration or 0.0))
     tolerance = 0.5 if preview else 0.25
 
     checks = {
         "has_video": info.video_codec is not None,
         "has_audio": info.audio_codec is not None,
-        "duration_matches": duration_gap <= tolerance,
+        "duration_matches": (duration_gap <= tolerance) if duration_declared else True,
         "loudness_within_half_lu": distance <= LOUDNESS_TOLERANCE_LU,
         "true_peak_below_ceiling": loudness.true_peak_dbtp <= TRUE_PEAK_CEILING + 0.3,
         "no_black_frames": not black,
@@ -427,8 +456,13 @@ def qc_report(
         "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "deliverable": str(deliverable),
         "preview": preview,
+        "engine": engine,
+        "engine_version": engine_version,
+        "render_path": render_path,
+        "gpu_fallback_to_cpu": gpu_fallback_to_cpu,
+        "gpu_failure_text": gpu_failure_text,
         "duration_seconds": round(info.duration, 3),
-        "expected_seconds": round(expected_duration, 3),
+        "expected_seconds": round(expected_duration, 3) if duration_declared else None,
         "width": info.width,
         "height": info.height,
         "fps": info.fps,
@@ -480,6 +514,8 @@ def render(
         expected_duration=timeline.duration,
         target_lufs=project.loudness_lufs,
         preview=preview,
+        engine="mlt (legacy)",
+        render_path="cpu",
     )
     report["ducking"] = ducking_evidence
     report["timeline"] = {
@@ -512,6 +548,129 @@ def render(
         contact_sheet=sheet,
         intermediate=kept,
         report=report,
+    )
+
+
+def render_filmcraft(
+    project: Project,
+    deliverable_id: str | None = None,
+    *,
+    fcproj_path: Path | None = None,
+    gpu: str = "auto",
+    quality: int = 70,
+    runner: FilmCraftRunner | None = None,
+    generate_review: bool = True,
+    preview: bool = False,
+    burn_captions: bool = False,
+) -> FilmCraftRenderResult:
+    if isinstance(deliverable_id, Deliverable):
+        deliverable = deliverable_id
+    else:
+        deliverable = _pick_deliverable(project, deliverable_id)
+    if runner is None:
+        runner = FilmCraftRunner()
+
+    if fcproj_path is None:
+        if burn_captions:
+            # Transcript and caption tracks live in the working timeline
+            # (<slug>.fcproj); a freshly compiled render input has neither, so
+            # burning captions requires exporting from the working timeline.
+            working = project.root / f"{project.slug}.fcproj"
+            if not working.is_file():
+                raise FilmCraftError(
+                    f"burn-captions requires the working timeline {working.name}; "
+                    "run `ms video build` and `ms video captions` first"
+                )
+            fcproj_path = working
+        else:
+            fcproj_path = project.root / "out" / f"{deliverable.id}.fcproj"
+            fcproj_path.parent.mkdir(parents=True, exist_ok=True)
+            compile_manifest_to_fcproj(
+                project,
+                output_fcproj=fcproj_path,
+                deliverable_id=deliverable.id,
+                runner=runner,
+            )
+
+    extension = deliverable.container or "mp4"
+    destination = project.root / "out" / "video" / f"{deliverable.id}.{extension}"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Stage 4.2: export to scratch first, then move into out/video/ so a failed
+    # or partial encode never leaves a half-written deliverable at its final path.
+    scratch = project.root / "out" / "scratch" / f"{deliverable.id}.{extension}"
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+
+    target_lufs = (
+        deliverable.loudness_lufs
+        if deliverable.loudness_lufs is not None
+        else project.loudness_lufs
+    )
+
+    fmt = extension if extension in ("h264", "hevc", "prores", "dnxhr") else "h264"
+    export_result = runner.export(
+        project_path=fcproj_path,
+        output_file=scratch,
+        format=fmt,
+        quality=quality,
+        loudness_lufs=target_lufs,
+        gpu=gpu,
+        burn_captions=burn_captions,
+    )
+    if scratch.exists():
+        scratch.replace(destination)
+
+    expected_duration = deliverable.duration
+
+    report = qc_report(
+        destination,
+        expected_duration=expected_duration,
+        target_lufs=target_lufs,
+        engine="filmcraft 0.15.0",
+        engine_version=runner.engine_version(),
+        render_path=export_result.render_path,
+        gpu_fallback_to_cpu=export_result.gpu_fallback_to_cpu,
+        gpu_failure_text=export_result.details.get("gpu_failure_text"),
+        preview=preview,
+    )
+
+    is_rel = False
+    try:
+        rel_fc = str(fcproj_path.relative_to(project.root))
+        is_rel = True
+    except ValueError:
+        rel_fc = str(fcproj_path)
+
+    report["fcproj"] = rel_fc if is_rel else str(fcproj_path)
+    report["export"] = {
+        "returncode": export_result.returncode,
+        "gpu_fallback_to_cpu": export_result.gpu_fallback_to_cpu,
+        "render_path": export_result.render_path,
+    }
+
+    report_path = project.root / "out" / "reports" / f"{deliverable.id}-qc.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    contact_sheet_path: Path | None = None
+    proxy_path: Path | None = None
+    stills: list[Path] = []
+    if generate_review and destination.exists():
+        sheet_dest = project.root / "out" / "video" / f"{deliverable.id}-sheet.png"
+        contact_sheet_path = media.contact_sheet(destination, sheet_dest)
+        proxy_dest = project.root / "out" / "video" / f"{deliverable.id}-proxy540p.mp4"
+        proxy_path = media.generate_proxy(destination, proxy_dest, height=540)
+        stills_dir = project.root / "out" / "video" / "stills"
+        stills = media.extract_stills(destination, stills_dir)
+
+    return FilmCraftRenderResult(
+        deliverable=destination,
+        fcproj_path=fcproj_path,
+        report_path=report_path,
+        contact_sheet=contact_sheet_path,
+        proxy_path=proxy_path,
+        stills=stills,
+        report=report,
+        export_result=export_result,
     )
 
 
@@ -570,11 +729,16 @@ class HandoffResult:
 def handoff(project: Project, deliverable_id: str | None = None) -> HandoffResult:
     """Write a Kdenlive-compatible project beside the render input, without touching it.
 
-    The render reads `out/<id>.mlt`; Kdenlive needs an envelope around the same edit and refuses the
-    bare document, so the two are kept apart on purpose: a bad envelope can never break a render,
-    and the render input stays minimal.
+    [LEGACY in v2]: Maintained for backward compatibility. Use FilmCraft (`ms video open`)
+    for modern timeline editing.
     """
+    import sys
 
+    print(
+        "DEPRECATION WARNING: Kdenlive handoff is legacy in media-studio v2. "
+        "FilmCraft (`ms video open`) is the recommended editor.",
+        file=sys.stderr,
+    )
     deliverable = _pick_deliverable(project, deliverable_id)
     timeline, _evidence = build_timeline(project, deliverable)
     directory = project.root / "out" / "kdenlive"

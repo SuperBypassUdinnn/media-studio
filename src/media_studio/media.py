@@ -650,3 +650,69 @@ def shake_level(path: Path, *, scratch: Path) -> float:
         return (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
 
     return round((spread(xs) + spread(ys)) / 2, 4)
+
+
+def generate_proxy(source: Path, destination: Path, *, height: int = 540) -> Path:
+    """Generate a fast 540p H.264 proxy video for review loops.
+
+    Preserves aspect ratio (scale=-2:height) and downmixes audio to stereo.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(source),
+        "-vf",
+        f"scale=-2:{height}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "28",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        str(destination),
+    ]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"ffmpeg proxy failed: {p.stderr}")
+    return destination
+
+
+def extract_stills(
+    source: Path,
+    destination_dir: Path,
+    timestamps: list[float] | None = None,
+) -> list[Path]:
+    """Extract review still frames at specified timestamps.
+
+    If timestamps is None, defaults to 15%, 50%, and 85% of source duration.
+    """
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    if timestamps is None:
+        info = probe(source)
+        dur = info.duration or 5.0
+        timestamps = [round(dur * 0.15, 2), round(dur * 0.50, 2), round(dur * 0.85, 2)]
+
+    stills: list[Path] = []
+    for ts in timestamps:
+        out_path = destination_dir / f"still_{ts:.2f}s.png"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{ts:.2f}",
+            "-i",
+            str(source),
+            "-vframes",
+            "1",
+            str(out_path),
+        ]
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.returncode == 0 and out_path.exists():
+            stills.append(out_path)
+    return stills
