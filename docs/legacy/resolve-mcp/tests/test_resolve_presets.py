@@ -5,7 +5,6 @@ Tests for resolve_mcp.presets: LUT management and Fusion macro generation.
 from __future__ import annotations
 
 import pytest
-
 from resolve_mcp.presets import (
     PresetError,
     find_lut,
