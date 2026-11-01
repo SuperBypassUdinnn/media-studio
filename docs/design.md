@@ -1,8 +1,16 @@
 # media-studio - Design Document
 
-Status: locked design, implementation deferred (2026-10-23)
+Status: v2 revision locked 2026-10-31; video engine reassigned to FilmCraft and EffectCraft,
+phase 4 implementation pending
 
 Owner: SuperBypassUdinnn
+
+Revision history:
+
+| Version | Date | Change |
+| --- | --- | --- |
+| 1 | 2026-10-23 | Initial locked design: MLT and Kdenlive as the video engine, DaVinci Resolve as the human editor |
+| 2 | 2026-10-31 | Video engine replaced by FilmCraft (timeline, render, mix) and EffectCraft (motion graphics); licence policy narrowed to permissive only; Resolve, the Kdenlive handoff, and the Natron path retired. Sections 2 (D34-D47), 3, 4, 5.1, 5.7, 5.8, 5.9, 7, 8, 9, 10, 11, 12, and 14 are the authoritative record for v2 |
 
 Related: `~/.config/opencode` (global OpenCode setup), `~/Projects/scr2026-motion-logo-v3`
 (proving ground for the local engine conventions in section 8).
@@ -61,6 +69,21 @@ chosen. Section 11 records the interview itself.
 | D31 | Implementation ordering | Design doc first, implementation in later sessions | Keeps the locked design reviewable before code exists |
 | D32 | Footage triage | Local index and ranking run first (metadata, technical rejects, transcript, on-screen text, embeddings); the model reviews only batched contact sheets and a ranked shortlist, and decisions are cached by content hash | Selecting shots from a large library stays fast and token-bounded |
 | D33 | Preset and template library | Engine-native recipes (MLT, FFmpeg, Blender, LV2, Inkscape SVG) in a searchable registry, plus licensed free packs through the asset ledger; After Effects and Premiere templates are out of scope | Free transitions, video effects, and audio effects that actually execute headless |
+| D34 | Video engine (v2) | FilmCraft CLI plus its stdio MCP server as the timeline engine and renderer; MLT and `melt` demoted to a legacy fallback | 711 commands behind one registry, real keyframes, OTIO and FCPXML interchange, headless render with no window, dual MIT/Apache-2.0. MLT applies XML-declared filters statically, which blocked every animated effect |
+| D35 | Motion-graphics engine | EffectCraft, rendering alpha ProRes 4444 headless and composited as overlay tracks inside FilmCraft; Remotion documented as an optional phase-2 path for data-driven HTML templates only | AE-class toolset (308 effects, keyframes, expressions, 3D camera, Roto Brush) under a permissive licence, and the seam to the timeline is a single alpha file |
+| D36 | Human editor | FilmCraft GUI, opening the same `.fcproj` the agent writes | One project format for both modes, so there is no conversion step and no silent loss between batch and manual work |
+| D37 | Licence policy | Permissive only: MIT, Apache-2.0, BSD, CC0. AGPL and proprietary engines are excluded from the deliverable path | OpenChatCut is AGPL-3.0 and Remotion's company licence is proprietary; either would contaminate a toolkit meant to be reusable |
+| D38 | Project format | `.fcproj` is the working timeline, `project.yaml` stays the manifest, OTIO and FCPXML are the interchange bridge | The manifest keeps intent and licences human-editable while the timeline stays engine-native |
+| D39 | Agent control surface | Generated command catalogue from `filmcraft-cli commands --json`, a generic `ms video cmd <id> --params` passthrough, and a curated set of semantic recipes | 711 hand-written wrappers would rot; a generated catalogue plus a passthrough stays complete and cheap to maintain |
+| D40 | Engine installation | Pinned official release tarballs under `~/.local/opt/<tool>-<version>`, symlinks in `~/.local/bin`, versions recorded in `~/.config/opencode/media-engines.json` | Reproducible, two versions can coexist, and nothing couples to the distribution package manager |
+| D41 | Render acceleration | GPU (wgpu) by default with an automatic CPU retry on OOM or unsupported operation, and the path actually used recorded in the QC report | Measured 81.8 fps on the GTX 1650 against 58.2 fps on CPU, but 4 GB of VRAM must not turn a render into a failure |
+| D42 | Review loop | 540p proxy MP4, stills at key timestamps, and the existing seven `ffprobe` checks | Keeps review token-bounded while the numeric gate stays the contract |
+| D43 | AI features in v1 | Cut by transcript (pause and filler removal), captions plus translation, beat-synced cuts. Excluded: b-roll automation, face-safe reframe, TTS voice-over | These three pay back on every talking-head deliverable; the excluded ones each need a model or a judgement that is not proven here |
+| D44 | Transcript ownership | media MCP for cross-library triage and search, FilmCraft Whisper for word-level cuts inside the timeline | Each tool is used where it already holds the data, with no second index of the same library |
+| D45 | Legacy retirement | `resolve_mcp` archived, the Kdenlive handoff marked legacy and unmaintained, the Natron compositing path not pursued | Resolve Free cannot be scripted on Linux and Kdenlive was only ever a handoff; EffectCraft covers what Natron was meant to do |
+| D46 | Manual GUI edits | Snapshot the timeline after every agent run; the next invocation inspects the `.fcproj` and reports the diff before changing anything | Manual work must never be silently overwritten |
+| D47 | Project location | New projects under `~/media-projects/<slug>/`, scratch under `/tmp/opencode/<slug>/`; projects already under `~/Projects` stay readable | Separates media work from code projects without breaking what exists |
+| D48 | Baked ducking (2026-11-01) | FilmCraft 0.15.0 headless export ignores all audio automation (effect keyframes, clip-mixer keyframes, mixer automation lanes; only static mixer strip gain renders), so when a manifest asks `music.duck: true` the compiler bakes the duck into the music file with ffmpeg `sidechaincompress` before import (measured 4.8 dB drop under speech). This is a measured engine limitation and an explicit exception to section 5.9's "ms does not post-process audio"; the baked file is a deterministic derived artifact recorded in the project tree | The duck must actually reach the deliverable |
 
 ## 3. Architecture
 
@@ -70,7 +93,7 @@ Three layers, each with one responsibility.
 | --- | --- | --- |
 | Knowledge | `~/.config/opencode/skills/*`, `~/.config/opencode/commands/*` | Teach the workflow, enforce gates, route to the right tool |
 | Service | `media-studio` monorepo (CLI, asset MCP server, generators, runners), upstream MCP servers | Deterministic operations with structured results |
-| Application | Blender, melt/Kdenlive, FFmpeg, Inkscape, ImageMagick, torch-based audio tools | The actual rendering and processing |
+| Application | FilmCraft and EffectCraft (v2 engines), Blender, FFmpeg, Inkscape, ImageMagick, torch-based audio tools; melt and Kdenlive legacy | The actual rendering and processing |
 
 ### 3.1 Repositories
 
@@ -79,6 +102,9 @@ Three layers, each with one responsibility.
 | `~/.clone/Github/media-studio` | Our monorepo: CLI `ms`, asset MCP server, MLT generator, Blender runner, project template, tests, this document | Ours, private GitHub repo |
 | `~/.clone/Github/3d-asset-server` | Upstream 3D asset aggregator (Apache-2.0, TypeScript, 25 sites) | Upstream, pristine clone |
 | `~/.clone/Github/media-mcp` | Existing local video/audio context server (unchanged) | Existing |
+| `~/.local/opt/filmcraft-<version>` | FilmCraft release bundle: `filmcraft` (GUI) and `filmcraft-cli` (headless CLI plus stdio MCP) | Upstream, pinned, dual MIT/Apache-2.0 |
+| `~/.local/opt/effectcraft-<version>` | EffectCraft release bundle: `effectcraft` (GUI) and `effectcraft-cli` (headless render plus stdio MCP) | Upstream, pinned, dual MIT/Apache-2.0 |
+| `0xsline/OpenChatCut` | Evaluated 2026-10-31 and **rejected**: AGPL-3.0, one-way MCP bound to a running GUI in the open-source build, Node 24 pin | Not adopted |
 | Blender MCP servers | `sandraschi/blender-mcp` (headless), `ahujasid/blender-mcp` (GUI fallback) | Upstream, installed via `uvx` or clone |
 | `stocky` | Existing Unsplash photo MCP server | Existing |
 
@@ -87,7 +113,10 @@ Three layers, each with one responsibility.
 ```
 media-studio/
   docs/design.md            this document
+  docs/plans/               staged implementation plans, one per capability
   src/media_studio/         Python package: CLI, MLT writer, runners, ledger, asset clients, presets
+  src/media_studio/filmcraft.py     FilmCraft runner: catalogue, build, render, proxy, stills (phase 4)
+  src/media_studio/effectcraft.py   EffectCraft runner: compositions and alpha renders (phase 4)
   src/media_studio/mcp/     our asset MCP server entry point (phase 1)
   templates/project/        project scaffold copied by /media-new
   tests/                    pytest suites plus fixture assets
@@ -115,6 +144,8 @@ Implemented in phase 0: `docs/design.md`, `src/media_studio/{cli,tools,project}.
 | MCP | `assets-3d` | Self-hosted `3d-asset-server` over stdio; registered and verified in phase 0 |
 | MCP | `blender-headless` | `sandraschi/blender-mcp`; registered in phase 1 |
 | MCP | `blender-gui` | `ahujasid/blender-mcp`, kept disabled unless the fallback is needed |
+| MCP | `filmcraft` | FilmCraft stdio MCP (`filmcraft-cli mcp --project <p.fcproj>`), 17 tools; `ui_*` tools only answer with `--bridge` against a running GUI |
+| File | `media-engines.json` | Pinned FilmCraft and EffectCraft versions plus install paths, read by `ms doctor` |
 
 MCP entries that have no working server yet stay commented out in `opencode.jsonc` so startup
 is never delayed by a command that cannot answer.
@@ -127,10 +158,12 @@ Existing skills stay authoritative for their areas and must not be duplicated:
 
 ## 4. Project convention
 
-A media project is a directory created from the template, addressed by a slug.
+A media project is a directory created from the template, addressed by a slug. New projects are
+created under `~/media-projects/` (D47); the earlier `~/Projects/` root stays readable so existing
+projects keep working.
 
 ```
-~/Projects/<slug>/
+~/media-projects/<slug>/
   project.yaml            single source of truth
   README.md               what the project is and how to reproduce it
   .gitignore
@@ -228,6 +261,13 @@ Rules:
 ## 5. Capability paths
 
 ### 5.1 Video and audio
+
+**v2 direction (2026-10-31).** The numbered steps below are the v1 MLT path and are now **legacy**:
+they still run and still pass QC, but no new work targets them. The video path is FilmCraft (section
+5.9): `project.yaml` compiles into a `.fcproj`, FilmCraft assembles, mixes, and renders, and `ms`
+verifies the result with the same seven checks. The MLT writer stays in the tree as a fallback and
+as the reference for the preset recipes, because its measured facts (static filters, dB levels) are
+the reason the engine changed.
 
 1. Read `project.yaml`, resolve assets, and refuse to run on a missing or unlicensed asset.
 2. Generate plain MLT XML (`out/<deliverable>.mlt`) describing producers, playlists,
@@ -491,31 +531,46 @@ unfiltered frame, regenerated deliberately with `MS_PRESET_SNAPSHOTS=regen`.
 Out of scope: executing After Effects or Premiere templates, redistributing third-party
 templates, and paid marketplaces.
 
-### 5.7 AMV compositing and motion graphics (implemented)
+### 5.7 Motion graphics (EffectCraft)
 
-`ms video composite <project> [--deliverable <id>] [--lut <path>] [--gain|--gamma|--saturation|--glow-size|--glow-mix|--vignette]`
-renders each shot from the MLT timeline through `NatronRenderer` (headless, CPU-based, no VRAM
-constraint). Natron (GPLv2) is a node-based compositor equivalent to Nuke/After Effects: OFX Glow,
-Blur, ChromaKey, Roto, Tracker, Grade, OpenColorIO LUTs, plus keyframe-able node parameters driven
-by Python API. Per-shot composited output feeds back into `ms video render` for final encode, or the
-Kdenlive handoff for final assembly and audio mix.
+EffectCraft is the motion-graphics engine: an After Effects-class compositor with compositions,
+layers, keyframes carrying temporal ease and spatial Bezier, expressions, 3D cameras and lights,
+308 effects, Roto Brush, motion tracking, and Lottie import and export, under a dual
+MIT/Apache-2.0 licence, with a headless CLI and a stdio MCP server.
 
-`ms motion {render,title,lyrics}` renders motion-graphics sequences through EffectCraft (AGPL-3.0,
-pure Rust, headless CLI + MCP server). EffectCraft is an After Effects clone: compositions, layers,
-keyframes, 3D cameras and lights, 306 effects including Glow, Curves, Lumetri color, Fractal Noise,
-CC Particle World, Shatter, and keying tools, with expressions and an effect graph editor.
-Alpha-channel output is composited over Natron-graded footage in a final Natron pass, then through
-Kdenlive handoff. The MCP server is an optional control path for Claude Code.
+The seam to the timeline is a file. `ms motion` builds a composition, renders it to **alpha ProRes
+4444** (or an EXR or PNG sequence when a shot needs it), and the result is placed as an overlay
+track in the FilmCraft timeline. No shared memory and no live IPC, so re-rendering a graphic never
+invalidates the cut underneath it.
 
-Neither NatronRenderer nor effectcraft is installed on this machine; both raise a clear install
-hint when invoked and are otherwise optional — the rest of the toolkit is unaffected.
+1. `ms motion new <project> --comp <id>` scaffolds a composition from a template (lower-third,
+   title card, logo sting, lyric overlay, explainer beat) with brand tokens from `project.yaml`.
+2. `ms motion render <project> [--comp <id>]` renders through `effectcraft-cli` on the GPU with the
+   CPU fallback of section 5.9, into scratch, and reports duration, alpha coverage, and render time.
+3. `ms video place <project> --asset <alpha.mov> --track V2 --at <time>` overlays it in FilmCraft.
+4. `ms motion inspect <project>` lists compositions, their layers, and their render state, so the
+   agent can reason about an existing graphic instead of guessing at it.
 
-### 5.8 DaVinci Resolve as the editor
+Retired in v2: the Natron compositing path (`ms video composite`). Natron was GPLv2, was never
+installed here, and EffectCraft covers the same work under a permissive licence with a keyframe
+model that survives a round trip.
 
-DaVinci Resolve is the primary editor for work that needs human judgement: cutting to feel,
-grading by eye, mixing by ear. `media-studio` does not try to replace it and does not call it.
-The two meet at files on disk, and the `resolve_mcp` package (a separate MCP server, not part of
-the `ms` CLI) is the only code that talks to Resolve.
+Remotion is documented as an optional phase-2 path and is not installed. Its licence is free for
+individuals and small teams but proprietary above that, so it can only be adopted deliberately, and
+its advantage over EffectCraft is limited to data-driven HTML templating, which is a file-level
+seam (an alpha render) rather than an architectural one.
+
+### 5.8 DaVinci Resolve as the editor (retired in v2)
+
+**Retired 2026-10-31 (D45).** Nothing below is a current recommendation. External scripting does not
+work on the Free Linux build, FilmCraft replaced Resolve as both the engine and the human editor,
+and `resolve_mcp` is archived in phase 4. The section stays because it records the measurement that
+ended the path.
+
+DaVinci Resolve was the primary editor for work that needs human judgement: cutting to feel,
+grading by eye, mixing by ear. `media-studio` did not try to replace it and did not call it.
+The two met at files on disk, and the `resolve_mcp` package (a separate MCP server, not part of
+the `ms` CLI) was the only code that talked to Resolve.
 
 **Why not a shared file format.** The toolkit renders MLT XML and writes `.kdenlive` documents.
 Resolve reads neither, and no EDL, FCPXML, or AAF writer exists here. An intermediate format would
@@ -560,6 +615,51 @@ The tools that still work without Resolve: `ms video ingest`, `ms video render`,
 and resolve-mcp's ffmpeg-based audio tools (`normalize_audio`, `detect_beats`, `duck_music`,
 `remove_silence`). The server ships `"enabled": false` because a dead Resolve makes it noisy at
 startup, and on Free tier it will never connect even when enabled.
+
+### 5.9 FilmCraft as the editor and timeline engine
+
+FilmCraft is a Premiere-class NLE in pure Rust under dual MIT/Apache-2.0. Every UI action is a
+command with a stable id, typed parameters, and an `enabled()` reason, and the GUI, the CLI, a
+JSON-lines control channel, and a stdio MCP server all dispatch the same registry.
+
+Probed on this machine on 2026-10-31 against v0.15.0: `filmcraft-cli commands --json` returns
+**711 commands**; `file.newProject` -> `file.newSequence` -> `file.import` -> `timeline.place`
+assembles a timeline with A/V auto-linked; `render` writes a PNG of the program frame in 394 ms at
+540p; `file.exportMedia` produced a 5.01 s H.264+AAC file at 58.2 fps on CPU and 81.8 fps with
+`--gpu-rendering auto`; `file.exportOtio` wrote OTIO with `metadata.filmcraft` intact; and
+`filmcraft-cli mcp --project <p.fcproj>` completes a stdio handshake exposing 17 tools.
+
+The compiled timeline carries what MLT could not. `inspect sequence` reports per-clip effects with
+typed values (`Float`, `Vec2`, `Bool`) and a **keyframe count per parameter**, so position, scale,
+rotation, opacity, and speed are animatable and survive a save.
+
+Path:
+
+1. `project.yaml` is read and validated as today: assets, licences, deliverables, loudness target.
+2. `ms video build <project> [--deliverable <id>]` compiles the manifest into `out/<id>.fcproj`
+   through `filmcraft-cli`: sequence geometry and fps from the deliverable, `file.import` for every
+   declared asset, `timeline.place` per shot with in-points and durations, audio tracks for music
+   and voice-over, and overlay tracks for motion renders.
+3. Audio: FilmCraft owns the mix. Ducking is a clip-level gain envelope computed from the voice
+   track, and loudness is a first-class export parameter (`loudnessLufs`) measured by the engine's
+   own BS.1770 implementation. `ms` does not post-process audio; it verifies the result.
+4. `ms video render <project>` exports through `filmcraft-cli export` into `/tmp/opencode/<slug>/`
+   first, using the GPU path and the CPU retry below.
+5. `ms video qc <project>` keeps the seven `ffprobe` checks, adds the render path actually used, and
+   writes `out/reports/<id>-qc.json`.
+6. `ms video proxy` and `ms video stills` produce the 540p review artefacts of D42.
+7. `ms video open <project>` launches the FilmCraft GUI on the same `.fcproj` for manual work, and
+   the snapshot rule of D46 applies before the next agent run.
+
+Fallback rule: the wrapper passes `--gpu-rendering auto`, and on a GPU failure (device lost, OOM,
+unsupported operation) it retries once on CPU, records `renderPath: "cpu"` plus the failure text in
+the QC report, and never hides the downgrade. The benign
+`MESA-EGL: warning: DRI2: failed to create screen` line is filtered from surfaced output, because it
+appears on every successful GPU run on this machine.
+
+Known limits at v0.15.0: alpha status (no `.prproj` support, a narrower delivery codec list than
+Premiere), and no confinement in headless mode, so the wrapper treats a project path as trusted
+input.
 
 ## 6. Asset acquisition
 
@@ -639,7 +739,9 @@ Measured quantities per domain:
 
 - Video and audio: duration, resolution, fps, stream layout, integrated loudness and true
   peak, ducking effectiveness measured as loudness delta under voice-over segments, black
-  and frozen frame counts, encode bitrate sanity.
+  and frozen frame counts, encode bitrate sanity. In v2: the render path actually used
+  (`gpu` or `cpu`), render fps, engine versions, per-shot alpha coverage for motion overlays,
+  and the OTIO round-trip diff count.
 - 3D: mesh and triangle counts, bounding box and unit sanity, material and texture binding,
   per-frame render time, frame hash or SSIM against a baseline, non-empty render check.
 - Design: contrast ratios, text overflow detection, minimum font and stroke sizes, exported
@@ -660,7 +762,10 @@ Hard-won facts from the existing pipeline that the new runners must encode.
 | Backend mixing | Frames rendered via Vulkan differ slightly from OpenGL frames, so a whole cut must use one backend. |
 | GPU and memory | GTX 1650 Max-Q with 4 GB VRAM plus Intel UHD, 31 GiB RAM. Keep previews small, avoid concurrent GPU renders, and expect Cycles to be CPU unless a device is enabled. |
 | Disk | Root filesystem is 87% used with roughly 52 GB free. Scratch purge and quotas are not optional. |
-| DaVinci Resolve | 21.1.1 free edition at `/opt/resolve`. External scripting is Studio-gated, so Resolve is manual handoff only. |
+| DaVinci Resolve | 21.1.1 free edition at `/opt/resolve`. External scripting is Studio-gated, so Resolve is manual handoff only. Retired in v2. |
+| FilmCraft and EffectCraft install | Pinned tarballs under `~/.local/opt/<tool>-<version>`. The Linux FilmCraft bundle ships `filmcraft-cli` inside the GUI tarball, so the mac-only `filmcraft-cli-*.zip` release asset is not needed. |
+| GPU rendering (FilmCraft) | `--gpu-rendering auto` works on the GTX 1650: 81.8 fps against 58.2 fps on CPU for a 5 s 1080p30 export. It prints a harmless `MESA-EGL: warning: DRI2: failed to create screen` on stderr. With 4 GB of VRAM, run one GPU job at a time and keep the CPU retry path. |
+| Whisper models | None ship with FilmCraft. `transcript.models` reports the catalogue with `available: false`, models land in `~/.local/share/filmcraft/models`, and whisper-base is 292 MB under MIT weights. |
 | Audio acceleration | `DeepFilterNet/.venv` and `ultimatevocalremovergui/.venv` both carry torch 2.12.0+cu130 with CUDA available; no new torch install is required. |
 | Toolchain versions | Blender 5.2.2 LTS, FFmpeg 7.0.2, melt 7.42.0, Kdenlive 26.08.2, Inkscape 1.4.4, ImageMagick 7.1.2-34 Q16-HDRI, GIMP 3.2.6, Node 26.11.1, Python 3.14.8. MLT generation is tested against melt 7.42 and Kdenlive 26.08.2. |
 
@@ -676,6 +781,9 @@ Hard-won facts from the existing pipeline that the new runners must encode.
 | Blender MCP instability | 3D exploration stalls | Scripts are the source of truth; MCP is additive and can be dropped without losing work |
 | Disk exhaustion | Failed renders and corrupt caches | Scratch purge, quotas, storage-doctor archival |
 | Long renders on 4 GB VRAM | Timeouts or driver resets | Preview-first workflow, lower sample counts, sequential GPU jobs |
+| FilmCraft and EffectCraft are young (first release October 2026) | A regression or an abandoned project strands the video path | The MLT fallback stays runnable, `.fcproj` plus an OTIO export keeps the edit portable, and pinned versions mean a bad upgrade is one symlink away from reverting |
+| Generated catalogue drift between engine versions | A recipe calls a command id that no longer exists | Regenerate the catalogue per pinned version and assert in tests that every recipe's command id is present |
+| Whisper quality on real audio | A bad transcript produces bad cuts | Review the word-level transcript as text before cutting, and keep every cut reversible through snapshots |
 
 ## 10. Phases and acceptance criteria
 
@@ -735,11 +843,26 @@ registered and a stale environment export stopped shadowing it. Still open in ph
   3.1/255), keeping tolerance in the report.
 - Add automation for recurring variants and cold-project archival.
 
+### Phase 4 - FilmCraft and EffectCraft migration
+
+| Item | Acceptance criteria |
+| --- | --- |
+| Engines installed | Both binaries pinned under `~/.local/opt`, symlinked into `~/.local/bin`, versions recorded in `media-engines.json`, and `ms doctor` reports both |
+| Manifest to timeline | A fixture `project.yaml` compiles into a `.fcproj` whose `inspect sequence` shows every shot, both audio tracks, and the declared in-points |
+| Render and QC | Export at the declared geometry and fps, loudness within 0.5 LU of target, seven `ffprobe` checks green, and the render path recorded in the report |
+| Motion graphics | One EffectCraft lower-third renders to alpha ProRes 4444, overlays on V2, and appears in the exported frame |
+| AI slice | Cut by transcript removes pauses from a 60 s talking-head take, captions burn in, and beat-synced cuts land on detected beats |
+| Manual handoff | The `.fcproj` opens in the FilmCraft GUI, an edit is saved, and the next `ms video build` reports the diff instead of overwriting it |
+| Legacy retirement | `resolve_mcp` archived, the Kdenlive handoff marked legacy, and the docs, skills, and `opencode.jsonc` registrations updated |
+
 ## 11. Non-goals
 
-- No GUI automation outside the Blender and Kdenlive fallbacks.
+- No GUI automation outside the Blender fallback and the FilmCraft `--bridge` control channel.
 - No paid asset APIs or subscriptions in phase 1.
-- No DaVinci Resolve automation, and no claim of parity with its color and Fairlight suites.
+- No DaVinci Resolve integration of any kind; the path is retired.
+- No AGPL or proprietary editing engine in the deliverable path: OpenChatCut, Remotion's company
+  licence, and Resolve Studio features are all out.
+- No Remotion in v1; it stays an optional phase-2 path for data-driven HTML templates.
 - No long-form multicam authoring in the first batch.
 - No document, spreadsheet, or presentation generation; the existing `creating-consistent-*`
   skills own that.
@@ -793,6 +916,33 @@ Decisions were reached in six rounds of a structured interview on 2026-10-22 and
 | 6 | Immediate scope | Design document only in this session |
 | 6 | Loudness default | -14 LUFS with per-project override |
 | 6 | Selftest surface | Separate `/studio-test` command |
+
+### v2 revision interview (2026-10-31)
+
+A second structured interview re-opened the video engine after OpenChatCut was evaluated. Answers are
+recorded as given.
+
+| Round | Question | Answer |
+| --- | --- | --- |
+| 7 | Purpose of the video capability | Both headless batch render and human-interactive editing, on one shared project format |
+| 7 | Motion-graphics engine | EffectCraft now; Remotion documented as an optional phase-2 path |
+| 7 | Human editor target | FilmCraft |
+| 7 | Licence policy | Permissive only (MIT/Apache-2.0); OpenChatCut rejected for AGPL-3.0 |
+| 7 | Future of media-studio | Keep and extend; the video render core is delegated to the new engines |
+| 8 | Project format | `.fcproj` is the working timeline, `project.yaml` the manifest, OTIO and FCPXML the bridge |
+| 8 | Agent control | Semantic recipes plus a raw command and MCP escape hatch |
+| 8 | Transcripts | Both by role: media MCP for library triage, FilmCraft Whisper for in-timeline cuts |
+| 8 | First vertical slice | A 60 s talking-head social cut with captions, an EffectCraft lower-third, -14 LUFS, and QC |
+| 9 | Engine installation | Pinned official tarballs with symlinks and a version manifest |
+| 9 | Render acceleration | GPU by default with an automatic CPU retry |
+| 9 | Review loop | 540p proxy, key-timestamp stills, and the seven `ffprobe` checks |
+| 9 | Command surface | Generated catalogue, generic passthrough, and curated recipes |
+| 9 | Motion seam | Alpha ProRes 4444 rendered headless and overlaid as a track |
+| 10 | AI features in v1 | Cut by transcript, captions plus translation, beat-synced cuts |
+| 10 | Legacy tools | `resolve_mcp` archived and the Kdenlive handoff retired |
+| 10 | Manual GUI edits | Snapshot after each agent run, inspect and diff before the next change |
+| 10 | Audio ownership | FilmCraft owns the mix and loudness; `ms` only verifies |
+| 10 | Project location | `~/media-projects/<slug>/`, scratch in `/tmp/opencode/<slug>/` |
 
 ## 13. Items resolved during phase 0
 
@@ -855,3 +1005,17 @@ Decisions were reached in six rounds of a structured interview on 2026-10-22 and
    ledger behind it.
 7. Whether clip cards should carry CLIP scores from a local model already present on disk, or a
    separate small embedding model installed for this purpose.
+
+### Open items added by v2 (2026-10-31)
+
+8. FilmCraft OTIO round-trip fidelity for effects and keyframes is claimed, not measured. A fixture
+   must be exported and re-imported with a diff count before the bridge is trusted for anything
+   beyond clip layout.
+9. EffectCraft has not been run on this machine yet. Its GPU path, its alpha ProRes output, and its
+   MCP handshake are the first things phase 4 must probe.
+10. Whisper model choice (tiny, base, or small) on a 4 GB GPU is unmeasured; the download is 153 to
+    292 MB and the trade is speed against word accuracy.
+11. Whether FilmCraft's `loudnessLufs` export parameter lands within 0.5 LU of the two-pass
+    `loudnorm` result measured by the v1 path is unmeasured.
+12. The Kdenlive handoff and `resolve_mcp` are retired in design but still present in code and
+    config; removing them belongs to phase 4.

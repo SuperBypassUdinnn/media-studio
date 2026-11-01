@@ -86,6 +86,11 @@ Acceptance matrix
   phase 1  motion graphics (EffectCraft)                  implemented (plan docs/plans/effectcraft-motion-graphics.md; EffectCraft not installed locally)
   phase 1  3D model modify (Blender)                      implemented (plan docs/plans/blender-3d-modify.md; verified vs Blender 5.2.3)
   phase 1  3D image-to-mesh (TripoSR)                     implemented (plan docs/plans/triposr-image-to-mesh.md; TripoSR not installed locally)
+  phase 4  filmcraft timeline runner                     implemented (tests/test_filmcraft.py, CLI 0.15.0)
+  phase 4  manifest compiler (.fcproj)                   implemented (tests/test_fcproj.py)
+  phase 4  render, loudness, proxy, stills, QC          implemented (tests/test_filmcraft_video.py)
+  phase 4  motion graphics (EffectCraft 0.19.0)          implemented (tests/test_effectcraft.py, tests/test_ai_motion.py)
+  phase 4  AI transcript, captions, fillers, beat-sync   implemented (tests/test_ai_motion.py)
 MATRIX
 }
 
