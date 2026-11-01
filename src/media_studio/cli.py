@@ -28,17 +28,20 @@ from .blender import (
 from .design import DesignError, validate_design
 from .design import render as render_design
 from .effectcraft import (
+    MOTION_TEMPLATES,
     EffectCraftError,
     EffectCraftRunner,
     lower_third,
     lyric_overlay,
     motion_project,
+    new_composition,
     title_sequence,
 )
 from .fcproj import (
     CompilerError,
     compile_manifest_to_fcproj,
     diff_timelines,
+    plan_manifest_compile,
     snapshot_timeline,
 )
 from .filmcraft import FilmCraftError, FilmCraftRunner
@@ -61,7 +64,7 @@ from .materials import (
     fetch_material,
     proof_frame_luminance,
 )
-from .media import MediaError
+from .media import MediaError, extract_stills, generate_proxy, probe
 from .natron import NatronError, composite_project
 from .presets import (
     KINDS as PRESET_KINDS,
@@ -305,6 +308,16 @@ def build_parser() -> argparse.ArgumentParser:
     build_fc.add_argument("project", help="project path or slug")
     build_fc.add_argument("--deliverable", default=None, help="deliverable id from project.yaml")
     build_fc.add_argument("--out", type=Path, default=None, help="destination .fcproj path")
+    build_fc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the compilation plan (imports, geometry, clip counts), engine not run",
+    )
+    build_fc.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing .fcproj (D46: the old timeline is snapshotted first)",
+    )
     build_fc.set_defaults(func=cmd_video_build)
 
     cmd_parser = video_sub.add_parser(
@@ -400,6 +413,58 @@ def build_parser() -> argparse.ArgumentParser:
     beat_p.add_argument("--audio", type=Path, required=True, help="audio file to analyze")
     beat_p.add_argument("--name", default="Beat", help="marker label name")
     beat_p.set_defaults(func=cmd_video_beat_sync)
+
+    proxy_p = video_sub.add_parser(
+        "proxy", help="render a 540p review proxy of a deliverable or file"
+    )
+    proxy_p.add_argument("project", help="project path or slug")
+    proxy_p.add_argument("--deliverable", default=None, help="deliverable id from project.yaml")
+    proxy_p.add_argument(
+        "--file", type=Path, default=None, help="source media (default: deliverable's last render)"
+    )
+    proxy_p.add_argument("--height", type=int, default=540, help="proxy height in pixels")
+    proxy_p.add_argument(
+        "--out", type=Path, default=None, help="destination path (default out/<stem>-proxy.mp4)"
+    )
+    proxy_p.set_defaults(func=cmd_video_proxy)
+
+    stills_p = video_sub.add_parser(
+        "stills", help="extract review still frames from a deliverable or file"
+    )
+    stills_p.add_argument("project", help="project path or slug")
+    stills_p.add_argument("--deliverable", default=None, help="deliverable id from project.yaml")
+    stills_p.add_argument(
+        "--file", type=Path, default=None, help="source media (default: deliverable's last render)"
+    )
+    stills_p.add_argument(
+        "--at",
+        default=None,
+        help="comma-separated percentages of duration, e.g. 15,50,85 (default 15,50,85)",
+    )
+    stills_p.add_argument(
+        "--out", type=Path, default=None, help="destination directory (default out/<stem>-stills)"
+    )
+    stills_p.set_defaults(func=cmd_video_stills)
+
+    cut_p = video_sub.add_parser(
+        "cut-by-transcript",
+        help="import a transcript and apply AI cuts in one snapshot-guarded pass",
+    )
+    cut_p.add_argument("project", help="project path, slug, or direct .fcproj file")
+    cut_p.add_argument("--file", type=Path, required=True, help="word-level transcript JSON")
+    cut_p.add_argument(
+        "--remove-fillers", action="store_true", help="cut filler words with ripple after import"
+    )
+    cut_p.add_argument(
+        "--fillers", default=None, help="comma-separated filler words (default um,uh,like)"
+    )
+    cut_p.add_argument(
+        "--remove-pauses", action="store_true", help="compress silent gaps longer than --min-pause"
+    )
+    cut_p.add_argument(
+        "--min-pause", type=float, default=0.6, help="minimum pause length in seconds (default 0.6)"
+    )
+    cut_p.set_defaults(func=cmd_video_cut_by_transcript)
 
     three_d = subparsers.add_parser("3d", help="inspect, convert, and render models")
     three_d_sub = three_d.add_subparsers(dest="three_d_command", required=True)
@@ -593,6 +658,28 @@ def build_parser() -> argparse.ArgumentParser:
     motion_insp.add_argument("project", help="project path, slug, or direct .ecproj file")
     motion_insp.add_argument("--json", action="store_true", help="emit info as JSON")
     motion_insp.set_defaults(func=cmd_motion_inspect)
+
+    motion_new = motion_sub.add_parser(
+        "new", help="scaffold a brand-tokenised composition from a template (design 5.7)"
+    )
+    motion_new.add_argument("project", help="project path or slug")
+    motion_new.add_argument(
+        "--comp", required=True, help="composition id (file becomes motion/<id>.ecproj)"
+    )
+    motion_new.add_argument(
+        "--template",
+        default="lower-third",
+        help="one of: lower-third, title-card, logo-sting, lyric-overlay, explainer-beat",
+    )
+    motion_new.add_argument("--title", default="Title", help="primary text of the template")
+    motion_new.add_argument("--subtitle", default="Subtitle", help="secondary text of the template")
+    motion_new.add_argument(
+        "--duration", type=float, default=None, help="composition duration in seconds"
+    )
+    motion_new.add_argument(
+        "--force", action="store_true", help="overwrite an existing composition scaffold"
+    )
+    motion_new.set_defaults(func=cmd_motion_new)
 
     return parser
 
@@ -1403,10 +1490,32 @@ def cmd_video_build(args: argparse.Namespace) -> int:
     """Compile project.yaml into a FilmCraft .fcproj project."""
     try:
         project = load_project(args.project)
+        if args.dry_run:
+            plan = plan_manifest_compile(
+                project,
+                output_fcproj=args.out,
+                deliverable_id=args.deliverable,
+            )
+            print(f"plan {plan.fcproj_path.name} (dry run, engine not invoked)")
+            print(f"  geometry:  {plan.width}x{plan.height} @ {plan.fps:g} fps")
+            print(f"  duration:  {plan.duration_seconds:.2f} s")
+            print(
+                f"  clips:     {plan.shots} shots, {plan.titles} titles, "
+                f"{plan.motion_overlays} motion overlays"
+            )
+            print(
+                f"  audio:     {plan.voice_cues} voice, {plan.music_cues} music"
+                f"{', duck baked (D48)' if plan.bake_duck else ''}"
+            )
+            print(f"  imports:   {len(plan.imports)}")
+            for asset_id, path in plan.imports.items():
+                print(f"    {asset_id}: {path}")
+            return EXIT_OK
         res = compile_manifest_to_fcproj(
             project,
             output_fcproj=args.out,
             deliverable_id=args.deliverable,
+            force=args.force,
         )
         print(f"compiled {res.fcproj_path.name}")
         print(f"  project:   {project.slug}")
@@ -1418,6 +1527,78 @@ def cmd_video_build(args: argparse.Namespace) -> int:
         )
         return EXIT_OK
     except (ManifestError, CompilerError, FilmCraftError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def _resolve_review_source(
+    project: Project, args_file: Path | None, deliverable_id: str | None
+) -> Path:
+    """Resolve the media a review command operates on: --file, or the deliverable's last render."""
+    if args_file is not None:
+        if not args_file.is_file():
+            raise FileNotFoundError(f"file not found: {args_file}")
+        return args_file
+
+    if deliverable_id is None:
+        for deliverable in project.deliverables:
+            if deliverable.kind == "video":
+                deliverable_id = deliverable.id
+                break
+
+    candidates: list[Path] = []
+    if deliverable_id:
+        candidates.append(project.root / "out" / f"{deliverable_id}.mp4")
+        candidates.append(project.root / "out" / "video" / f"{deliverable_id}.mp4")
+    for pattern in ("*.mp4", "video/*.mp4"):
+        existing = sorted(
+            (p for p in (project.root / "out").glob(pattern) if "proxy" not in p.stem),
+            key=lambda p: p.stat().st_mtime,
+        )
+        candidates.extend(reversed(existing))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"no rendered deliverable found under {project.root / 'out'}; pass --file or render first"
+    )
+
+
+def cmd_video_proxy(args: argparse.Namespace) -> int:
+    """Render a 540p review proxy outside the render pipeline."""
+    try:
+        project = load_project(args.project)
+        source = _resolve_review_source(project, args.file, args.deliverable)
+        destination = args.out or (project.root / "out" / f"{source.stem}-proxy.mp4")
+        generate_proxy(source, destination, height=args.height)
+        print(f"proxy {source.name} -> {destination.relative_to(project.root)}")
+        print(f"  height:  {args.height}px")
+        return EXIT_OK
+    except (ManifestError, FileNotFoundError, RuntimeError, MediaError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_stills(args: argparse.Namespace) -> int:
+    """Extract review still frames outside the render pipeline."""
+    try:
+        project = load_project(args.project)
+        source = _resolve_review_source(project, args.file, args.deliverable)
+        destination = args.out or (project.root / "out" / f"{source.stem}-stills")
+        timestamps: list[float] | None = None
+        if args.at:
+            percentages = [float(v) for v in str(args.at).split(",")]
+            info = probe(source)
+            duration = info.duration or 0.0
+            if duration <= 0.0:
+                raise RuntimeError(f"cannot determine duration of {source}")
+            timestamps = [round(duration * (p / 100.0), 2) for p in percentages]
+        paths = extract_stills(source, destination, timestamps=timestamps)
+        print(f"stills {source.name} -> {destination.relative_to(project.root)}")
+        for path in paths:
+            print(f"  {path.name}")
+        return EXIT_OK
+    except (ManifestError, FileNotFoundError, RuntimeError, MediaError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
 
@@ -1614,6 +1795,47 @@ def cmd_video_remove_fillers(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
 
+def cmd_video_cut_by_transcript(args: argparse.Namespace) -> int:
+    """Import a transcript and apply AI cuts in one snapshot-guarded pass."""
+    fcproj_path, _ = _resolve_fcproj_target(args.project)
+    if not fcproj_path.is_file():
+        print(f"error: project file not found: {fcproj_path}", file=sys.stderr)
+        return EXIT_FAILURE
+    if not args.file.is_file():
+        print(f"error: transcript file not found: {args.file}", file=sys.stderr)
+        return EXIT_FAILURE
+    if not (args.remove_fillers or args.remove_pauses):
+        print(
+            "error: nothing to do; pass --remove-fillers and/or --remove-pauses",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+    fillers = [w.strip() for w in args.fillers.split(",")] if args.fillers else None
+    try:
+        results = ai.cut_by_transcript(
+            fcproj_path,
+            args.file,
+            remove_fillers_words=args.remove_fillers,
+            fillers=fillers,
+            remove_pauses=args.remove_pauses,
+            min_pause=args.min_pause,
+        )
+        print(f"cut-by-transcript on {fcproj_path.name} (previous timeline archived as snapshot)")
+        steps = [
+            "import",
+            "fillers" if args.remove_fillers else None,
+            f"pauses>={args.min_pause:g}s" if args.remove_pauses else None,
+        ]
+        print(f"  passes:   {', '.join(s for s in steps if s)}")
+        for res in results:
+            detail = res.stdout or str(res.result)
+            print(f"  {res.command}: {detail}")
+        return EXIT_OK
+    except FilmCraftError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
 def cmd_video_beat_sync(args: argparse.Namespace) -> int:
     """Detect beats and create timeline markers in project."""
     fcproj_path, _ = _resolve_fcproj_target(args.project)
@@ -1629,6 +1851,55 @@ def cmd_video_beat_sync(args: argparse.Namespace) -> int:
         return EXIT_OK
     except Exception as error:
         print(f"error syncing beats: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_motion_new(args: argparse.Namespace) -> int:
+    """Scaffold a brand-tokenised EffectCraft composition from a template."""
+    if args.template not in MOTION_TEMPLATES:
+        print(
+            f"error: unknown template {args.template!r}; choose one of: "
+            f"{', '.join(MOTION_TEMPLATES)}",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+    try:
+        project = load_project(args.project)
+        deliverable = None
+        for candidate in project.deliverables:
+            if candidate.kind == "video":
+                deliverable = candidate
+                break
+        palette = dict(project.brand.palette) if project.brand.palette else None
+        fonts = dict(project.brand.fonts) if project.brand.fonts else None
+        path = new_composition(
+            project.root,
+            args.comp,
+            args.template,
+            duration=args.duration,
+            deliverable_resolution=deliverable.resolution if deliverable else None,
+            deliverable_fps=deliverable.fps if deliverable else None,
+            palette=palette,
+            fonts=fonts,
+            title=args.title,
+            subtitle=args.subtitle,
+            force=args.force,
+        )
+        print(f"scaffolded {path.relative_to(project.root)}")
+        print(f"  template:  {args.template}")
+        print("  next:      render the scaffold, then let the compiler place it on V2:")
+        print(
+            f"             effectcraft-cli --project {path} render"
+            f" --out out/motion/{args.comp}.mov --channels rgba"
+        )
+        print(
+            "             declare the sequence under motion: sequences:"
+            f" in project.yaml (id: {args.comp})"
+        )
+        print("             ms video build imports out/motion/<id>.mov onto V2 automatically")
+        return EXIT_OK
+    except (ManifestError, EffectCraftError) as error:
+        print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
 
 

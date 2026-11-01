@@ -13,6 +13,7 @@ from media_studio.fcproj import (
     compile_manifest_to_fcproj,
     db_from_gain,
     diff_timelines,
+    plan_manifest_compile,
     seconds_from_ticks,
     snapshot_timeline,
     ticks_from_seconds,
@@ -229,3 +230,120 @@ def test_compile_manifest_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert "file.import" in cmd_ids
     assert "timeline.place" in cmd_ids
     assert "graphics.newText" in cmd_ids
+
+
+def _make_project(root: Path, slug: str = "plan-proj", duck: bool = True) -> Project:
+    """Build a small but complete project for compiler tests."""
+    (root / "footage.mp4").write_text("fake video")
+    (root / "voice.wav").write_text("fake voice")
+    (root / "music.wav").write_text("fake music")
+    return Project(
+        root=root,
+        slug=slug,
+        title="Plan Project",
+        status="draft",
+        deliverables=(Deliverable(id="master", kind="video", resolution="1920x1080", fps=30.0),),
+        brand=Brand(),
+        budget=Budget(),
+        assets={"v1": "footage.mp4", "a1": "voice.wav", "m1": "music.wav"},
+        timeline=(),
+        video=VideoPlan(
+            shots=(Shot(asset="v1", in_point=0.0, duration=3.0),),
+            voice=AudioCue(asset="a1", in_point=0.0, gain=0.8),
+            music=AudioCue(asset="m1", in_point=0.0, gain=0.35, duck=duck),
+            titles=(TitleText(text="Hello", start=1.0, duration=2.0),),
+        ),
+        design=None,
+        effects=(),
+        raw={},
+    )
+
+
+def test_plan_manifest_compile_dry_run(tmp_path: Path) -> None:
+    """plan() reports geometry, imports and counts without touching engine or disk."""
+    project = _make_project(tmp_path)
+    mock_runner = MagicMock(spec=FilmCraftRunner)
+
+    plan = plan_manifest_compile(project, runner=mock_runner)
+
+    assert plan.fcproj_path == (tmp_path / "plan-proj.fcproj").resolve()
+    assert (plan.width, plan.height, plan.fps) == (1920, 1080, 30.0)
+    assert plan.shots == 1
+    assert plan.titles == 1
+    assert plan.voice_cues == 1
+    assert plan.music_cues == 1
+    assert plan.bake_duck is True  # music.duck and voice both present
+    assert plan.duration_seconds == 3.0
+    assert set(plan.imports) == {"v1", "a1", "m1"}
+    assert plan.imports["v1"] == (tmp_path / "footage.mp4").resolve()
+
+    # Dry run side-effect contract: no engine interaction, no file created.
+    assert not plan.fcproj_path.exists()
+    assert mock_runner.mock_calls == []
+
+
+def test_compile_refuses_existing_target(tmp_path: Path) -> None:
+    """D46: an existing .fcproj is never silently overwritten without --force."""
+    project = _make_project(tmp_path)
+    target = tmp_path / "plan-proj.fcproj"
+    target.write_text("manual GUI edits live here")
+    mock_runner = MagicMock(spec=FilmCraftRunner)
+
+    with pytest.raises(CompilerError, match="already exists"):
+        compile_manifest_to_fcproj(project, runner=mock_runner)
+
+    assert target.read_text() == "manual GUI edits live here"
+    assert mock_runner.mock_calls == []
+
+
+def test_compile_force_snapshots_before_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D46: --force archives the existing timeline as a snapshot, then rebuilds."""
+    project = _make_project(tmp_path, duck=False)  # keep the fake wavs out of ffmpeg
+    target = tmp_path / "plan-proj.fcproj"
+    target.write_text("manual GUI edits live here")
+
+    snapshotted: list[Path] = []
+    real_snapshot = snapshot_timeline
+
+    def recording_snapshot(path: Path) -> Path:
+        snapshotted.append(path)
+        return real_snapshot(path)
+
+    monkeypatch.setattr("media_studio.fcproj.snapshot_timeline", recording_snapshot)
+
+    mock_runner = MagicMock(spec=FilmCraftRunner)
+
+    def mock_exec(cmd_id: str, params: dict | None = None, **kwargs: object) -> CommandResult:
+        if cmd_id == "file.import":
+            return CommandResult(
+                command=cmd_id,
+                returncode=0,
+                stdout="",
+                stderr="",
+                result={"items": [101]},
+                ok=True,
+            )
+        return CommandResult(command=cmd_id, returncode=0, stdout="", stderr="", result={}, ok=True)
+
+    def mock_run_batch(cmds: list[dict[str, Any]], **kwargs: object) -> list[CommandResult]:
+        return [
+            CommandResult(
+                command=c.get("id", ""),
+                returncode=0,
+                stdout="",
+                stderr="",
+                result={"sequence": 7} if c.get("id") == "file.newSequence" else {},
+                ok=True,
+            )
+            for c in cmds
+        ]
+
+    mock_runner.exec.side_effect = mock_exec
+    mock_runner.run_batch.side_effect = mock_run_batch
+
+    result = compile_manifest_to_fcproj(project, runner=mock_runner, force=True)
+
+    assert snapshotted == [target.resolve()]
+    assert result.output_path == target

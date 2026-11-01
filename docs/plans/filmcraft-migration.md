@@ -11,19 +11,37 @@ automation lanes), so music ducking is baked into the audio file via ffmpeg
 sidechaincompress before import (gate (a) measured a 4.8 dB drop under speech); caption
 burn-in uses the working `<slug>.fcproj` and was verified on frame stills at 6 s and 35 s.
 
-Deferred to a follow-up plan (explicitly de-scoped, not silently dropped):
+Follow-up plan (2026-11-01, later the same day): five of the six deferred items are now
+implemented and verified on the same project (88 tests across the touched files, ruff
+clean; engine-verified where noted):
 
-- `ms motion new` template scaffolding with brand tokens (Stage 5.1).
-- `ms video cut-by-transcript --remove-pauses --remove-fillers` with automatic
-  snapshot-before-change (Stage 6.2); the atomic pieces exist (`transcript`,
-  `remove-fillers`, `captions`, `snapshot`).
-- Standalone `ms video proxy` / `ms video stills` commands (Stage 4.4); both run
-  today as part of `render_filmcraft`.
-- `ms video build --dry-run` and D46 overwrite-protection `--force` (Stage 3).
-- `effectcraft.render_comp()` returning duration/alpha-coverage metadata and a
-  GPU->CPU fallback for EffectCraft itself (Stage 2; FilmCraft has both).
-- Deeper ducking: `duck_music` params tuned beyond the measured ~5 dB if a project
-  needs heavier attenuation.
+- `ms video build --dry-run` (`CompilePlan` preview, no engine calls) and `--force`
+  with D46 overwrite protection: refuses an existing `.fcproj`, and with `--force`
+  archives a timestamped snapshot beside the project before rebuilding. Engine-verified:
+  dry-run plan, refusal error, and `--force` rebuild producing
+  `talking-head-promo.fcproj.snapshot-<ts>`.
+- Standalone `ms video proxy` / `ms video stills` (height and percentage flags,
+  `--file` override). Source resolution prefers the deliverable's master render
+  (`out/<id>.mp4`, `out/video/<id>.mp4`) and skips proxy artefacts in the fallback.
+  Engine-verified against `out/video/main.mp4`.
+- `ms motion new --comp <id> --template <t>` scaffolding: five design-5.7 templates
+  (lower-third, title-card, logo-sting, lyric-overlay, explainer-beat) with brand
+  tokens injected (palette text/accent colours, display font) into text and solid
+  layers; the spec compiler now forwards `fill`/`font`/`position`/solid `color`.
+  Engine-verified scaffold plus GPU render of the scaffolded composition.
+- `effectcraft.render_comp()` returns `CompRenderResult` (render path gpu/cpu with
+  automatic fallback, render seconds, composition duration from engine info, and
+  mean alpha coverage for RGBA via ffmpeg alphaextract+signalstats normalised by
+  YMAX) plus a `<output>.render.json` sidecar. Engine-verified: GPU path 13.6 s for
+  a 4 s comp, duration 4.0, alpha coverage 0.0706.
+- `ms video cut-by-transcript --remove-fillers --remove-pauses` chains
+  transcript import (auto-resolving the first audio media-pool item, normalising
+  word times in seconds to engine ticks), filler removal, and pause compression,
+  after archiving a D46 snapshot. Engine-verified: 7 words imported onto item 10,
+  2 fillers cut (1.0 s), 1 pause compressed (4.27 s).
+
+Still deferred (unchanged): deeper ducking tuning beyond the measured ~5 dB —
+`duck_music` params stay as measured unless a project needs heavier attenuation.
 
 Design: `docs/design.md` v2, decisions D34-D47 and sections 5.7, 5.9, 10 (phase 4)
 

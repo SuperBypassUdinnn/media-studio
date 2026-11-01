@@ -126,3 +126,141 @@ def test_video_inspect_json_mock(
     payload = json.loads(capsys.readouterr().out)
     assert payload["project"]["name"] == "demo"
     mock_runner.inspect.assert_called_once()
+
+
+def _review_project(tmp_path: Path):
+    """A project whose out/video holds a master render and a decoy proxy."""
+    from media_studio.manifest import Brand, Budget, Deliverable, Project
+
+    out_video = tmp_path / "out" / "video"
+    out_video.mkdir(parents=True)
+    master = out_video / "main.mp4"
+    master.write_text("fake master")
+    (out_video / "main-proxy.mp4").write_text("fake decoy proxy")
+    project = Project(
+        root=tmp_path,
+        slug="review-proj",
+        title="Review Project",
+        status="draft",
+        deliverables=(Deliverable(id="main", kind="video", resolution="1920x1080", fps=30.0),),
+        brand=Brand(),
+        budget=Budget(),
+        assets={},
+        timeline=(),
+        video=None,
+        design=None,
+        effects=(),
+        raw={},
+    )
+    return project, master
+
+
+def test_video_cli_review_subparsers_registered() -> None:
+    parser = cli_module.build_parser()
+    subparsers_action = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    video_parser = subparsers_action.choices["video"]
+    video_sub_action = next(
+        a for a in video_parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    for cmd in ["proxy", "stills", "transcript", "captions", "remove-fillers", "beat-sync"]:
+        assert cmd in video_sub_action.choices
+
+
+def test_video_proxy_resolves_master_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, master = _review_project(tmp_path)
+    monkeypatch.setattr(cli_module, "load_project", lambda _p: project)
+
+    calls: dict[str, object] = {}
+
+    def fake_proxy(source: Path, destination: Path, *, height: int = 540) -> Path:
+        calls["args"] = (source, destination, height)
+        destination.write_text("proxy")
+        return destination
+
+    monkeypatch.setattr(cli_module, "generate_proxy", fake_proxy)
+
+    exit_code = main(["video", "proxy", str(tmp_path)])
+    assert exit_code == 0
+    source, destination, height = calls["args"]  # type: ignore[index]
+    assert source == master  # the decoy proxy must never be picked
+    assert destination == tmp_path / "out" / "main-proxy.mp4"
+    assert height == 540
+    assert "proxy main.mp4" in capsys.readouterr().out
+
+
+def test_video_proxy_explicit_file_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _master = _review_project(tmp_path)
+    monkeypatch.setattr(cli_module, "load_project", lambda _p: project)
+    explicit = tmp_path / "somewhere-else.mp4"
+    explicit.write_text("explicit source")
+
+    seen: list[Path] = []
+    monkeypatch.setattr(
+        cli_module,
+        "generate_proxy",
+        lambda source, destination, *, height=540: seen.append(source) or destination,
+    )
+
+    exit_code = main(["video", "proxy", str(tmp_path), "--file", str(explicit)])
+    assert exit_code == 0
+    assert seen == [explicit]
+    assert f"proxy {explicit.name}" in capsys.readouterr().out
+
+
+def test_video_stills_percent_timestamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, master = _review_project(tmp_path)
+    monkeypatch.setattr(cli_module, "load_project", lambda _p: project)
+
+    probe_info = MagicMock()
+    probe_info.duration = 10.0
+    monkeypatch.setattr(cli_module, "probe", lambda _p: probe_info)
+
+    calls: dict[str, object] = {}
+
+    def fake_stills(source: Path, destination_dir: Path, timestamps=None):
+        calls["args"] = (source, destination_dir, timestamps)
+        return [destination_dir / "still_1.00s.png", destination_dir / "still_9.00s.png"]
+
+    monkeypatch.setattr(cli_module, "extract_stills", fake_stills)
+
+    exit_code = main(["video", "stills", str(tmp_path), "--at", "10,90"])
+    assert exit_code == 0
+    source, _destination, timestamps = calls["args"]  # type: ignore[index]
+    assert source == master
+    assert timestamps == [1.0, 9.0]  # percentages of the 10 s duration
+    assert "stills main.mp4" in capsys.readouterr().out
+
+
+def test_video_proxy_without_render_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from media_studio.manifest import Brand, Budget, Deliverable, Project
+
+    project = Project(
+        root=tmp_path,
+        slug="empty-proj",
+        title="Empty",
+        status="draft",
+        deliverables=(Deliverable(id="main", kind="video", resolution="1920x1080", fps=30.0),),
+        brand=Brand(),
+        budget=Budget(),
+        assets={},
+        timeline=(),
+        video=None,
+        design=None,
+        effects=(),
+        raw={},
+    )
+    monkeypatch.setattr(cli_module, "load_project", lambda _p: project)
+
+    exit_code = main(["video", "proxy", str(tmp_path)])
+    assert exit_code == 1
+    assert "no rendered deliverable" in capsys.readouterr().err

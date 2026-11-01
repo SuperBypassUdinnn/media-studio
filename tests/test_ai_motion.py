@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from media_studio import ai, audio, effectcraft
 from media_studio.cli import main
 from media_studio.filmcraft import CommandResult
@@ -64,12 +66,15 @@ def test_ai_import_transcript(tmp_path: Path):
         stderr="",
         result={"words": 2},
     )
+    mock_runner.inspect.return_value = {
+        "root": {"children": [{"item": 10, "name": "voice.wav", "type": "Audio"}]}
+    }
 
     res = ai.import_transcript(fcproj, transcript_file, runner=mock_runner)
     assert res.ok
     mock_runner.exec.assert_called_once_with(
         "transcript.set",
-        params=transcript_data,
+        params={"transcript": transcript_data, "item": 10},
         project_path=fcproj,
         save=True,
     )
@@ -179,3 +184,119 @@ def test_cli_motion_and_ai_commands(tmp_path: Path):
         code = main(["video", "transcript", str(fcproj), "--file", str(transcript_file)])
         assert code == 0
         assert mock_import.called
+
+
+def _cut_transcript_file(tmp_path: Path) -> Path:
+    transcript_file = tmp_path / "transcript.json"
+    transcript_file.write_text(
+        json.dumps(
+            {
+                "words": [
+                    {"word": "um", "start": 0.0, "end": 0.4},
+                    {"word": "hello", "start": 1.6, "end": 2.2},
+                ]
+            }
+        )
+    )
+    return transcript_file
+
+
+def _cut_runner(monkeypatch: pytest.MonkeyPatch, events: list[tuple[str, str]]):
+    """Runner mock recording exec order; snapshot_timeline is stubbed by caller."""
+    runner = MagicMock()
+    responses = {
+        "transcript.set": {"words": 2},
+        "transcript.removeFillers": {"removed": 1},
+        "transcript.removePauses": {"compressed": 1},
+    }
+
+    def fake_exec(cmd_id, params=None, **kwargs):
+        events.append(("exec", cmd_id))
+        return CommandResult(
+            command=cmd_id,
+            returncode=0,
+            stdout="",
+            stderr="",
+            result=responses.get(cmd_id, {}),
+            ok=True,
+        )
+
+    runner.exec.side_effect = fake_exec
+    runner.inspect.return_value = {
+        "root": {"children": [{"item": 10, "name": "voice.wav", "type": "Audio"}]}
+    }
+    monkeypatch.setattr(ai, "FilmCraftRunner", lambda *a, **k: runner)
+    return runner
+
+
+def test_cut_by_transcript_snapshots_before_changes(tmp_path, monkeypatch):
+    """D46: the snapshot is archived before the first engine command runs."""
+    fcproj = tmp_path / "project.fcproj"
+    fcproj.write_text("{}")
+    events: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        "media_studio.ai.snapshot_timeline",
+        lambda p: events.append(("snapshot", str(p))),
+    )
+    _cut_runner(monkeypatch, events)
+
+    ai.cut_by_transcript(fcproj, _cut_transcript_file(tmp_path), remove_fillers_words=True)
+
+    kinds = [kind for kind, _ in events]
+    assert kinds[0] == "snapshot"
+    assert kinds[1:] == ["exec", "exec"]  # import, then fillers
+
+
+def test_cut_by_transcript_pass_order_and_params(tmp_path, monkeypatch):
+    fcproj = tmp_path / "project.fcproj"
+    fcproj.write_text("{}")
+    calls: list[tuple[str, dict | None]] = []
+    runner = MagicMock()
+    runner.exec.side_effect = lambda cmd_id, params=None, **kw: (
+        calls.append((cmd_id, params))
+        or CommandResult(command=cmd_id, returncode=0, stdout="", stderr="", result={}, ok=True)
+    )
+    runner.inspect.return_value = {
+        "root": {"children": [{"item": 10, "name": "voice.wav", "type": "Audio"}]}
+    }
+    monkeypatch.setattr(ai, "FilmCraftRunner", lambda *a, **k: runner)
+    monkeypatch.setattr("media_studio.ai.snapshot_timeline", lambda p: None)
+
+    ai.cut_by_transcript(
+        fcproj,
+        _cut_transcript_file(tmp_path),
+        remove_fillers_words=True,
+        fillers=["erm"],
+        remove_pauses=True,
+        min_pause=0.9,
+    )
+
+    assert [c[0] for c in calls] == [
+        "transcript.set",
+        "transcript.removeFillers",
+        "transcript.removePauses",
+    ]
+    assert calls[1][1] == {"fillers": ["erm"]}
+    assert calls[2][1] == {"minSeconds": 0.9}
+
+
+def test_cut_by_transcript_no_flags_imports_only(tmp_path, monkeypatch):
+    fcproj = tmp_path / "project.fcproj"
+    fcproj.write_text("{}")
+    calls: list[str] = []
+    runner = MagicMock()
+    runner.exec.side_effect = lambda cmd_id, params=None, **kw: (
+        calls.append(cmd_id)
+        or CommandResult(command=cmd_id, returncode=0, stdout="", stderr="", result={}, ok=True)
+    )
+    runner.inspect.return_value = {
+        "root": {"children": [{"item": 10, "name": "voice.wav", "type": "Audio"}]}
+    }
+    monkeypatch.setattr(ai, "FilmCraftRunner", lambda *a, **k: runner)
+    monkeypatch.setattr("media_studio.ai.snapshot_timeline", lambda p: None)
+
+    results = ai.cut_by_transcript(fcproj, _cut_transcript_file(tmp_path))
+
+    assert calls == ["transcript.set"]
+    assert len(results) == 1

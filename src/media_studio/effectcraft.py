@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import time
@@ -45,6 +46,36 @@ class MotionResult:
     @property
     def ok(self) -> bool:
         return bool(self.report.get("ok", False)) and self.output.exists()
+
+
+@dataclass(frozen=True)
+class CompRenderResult:
+    """Outcome of a :meth:`EffectCraftRunner.render_comp` run (design 5.9)."""
+
+    output: Path
+    """Rendered composition file."""
+
+    render_path: str
+    """``gpu`` or ``cpu``: the path that actually produced the output."""
+
+    gpu_requested: bool
+    """Whether a GPU render was attempted (``auto`` or ``on`` mode)."""
+
+    render_seconds: float
+    """Wall-clock time of the successful render attempt (including fallback)."""
+
+    duration_seconds: float | None
+    """Composition duration from the engine info, or None when unreadable."""
+
+    alpha_coverage: float | None
+    """Mean alpha 0..1 for RGBA renders, None for RGB or unmeasurable output."""
+
+    report_path: Path
+    """JSON report written beside the output (``<output>.render.json``)."""
+
+    @property
+    def ok(self) -> bool:
+        return self.output.exists()
 
 
 def check_installation(cli_path: str | Path | None = None) -> Path:
@@ -189,13 +220,23 @@ class EffectCraftRunner:
         prores_profile: str = "4444",
         fps: float = 30.0,
         timeout: int = 180,
-    ) -> Path:
-        """Render a composition to disk, defaulting to transparent ProRes 4444."""
+        gpu: str = "auto",
+    ) -> CompRenderResult:
+        """Render a composition to disk, defaulting to transparent ProRes 4444.
+
+        ``gpu`` selects the render path (design 5.9): ``auto`` tries the GPU
+        first and falls back to CPU, ``on`` is GPU-only, ``off`` is CPU-only.
+        The returned result carries the render path, render time, composition
+        duration, and (for RGBA) mean alpha coverage; a sidecar report is
+        written next to the output.
+        """
+        if gpu not in ("auto", "on", "off"):
+            raise EffectCraftError(f"invalid gpu mode {gpu!r}; use auto, on, or off")
         if not project_path.exists():
             raise EffectCraftError(f"Project not found: {project_path}")
 
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        argv = [
+        base = [
             str(self.cli_path),
             "--project",
             str(project_path),
@@ -210,14 +251,123 @@ class EffectCraftRunner:
             str(fps),
         ]
         if comp:
-            argv.extend(["--comp", comp])
+            base.extend(["--comp", comp])
         if format == "prores":
-            argv.extend(["--prores", prores_profile])
+            base.extend(["--prores", prores_profile])
 
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        if proc.returncode != 0 or not output_file.exists():
-            raise EffectCraftError(f"Render failed ({proc.returncode}): {proc.stderr.strip()}")
-        return output_file
+        # `--gpu` is a global option, so it goes before the subcommand.
+        attempts: list[tuple[str, list[str]]] = []
+        if gpu in ("auto", "on"):
+            attempts.append(("gpu", [*base[:3], "--gpu", *base[3:]]))
+        if gpu in ("auto", "off"):
+            attempts.append(("cpu", base))
+
+        started = time.monotonic()
+        last_error: EffectCraftError | None = None
+        render_path = "cpu"
+        for label, argv in attempts:
+            try:
+                proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                last_error = EffectCraftError(f"render timed out after {timeout}s ({label})")
+                continue
+            if proc.returncode == 0 and output_file.exists():
+                render_path = label
+                break
+            detail = proc.stderr.strip() or f"no output written to {output_file}"
+            last_error = EffectCraftError(
+                f"render failed ({label}, exit {proc.returncode}): {detail}"
+            )
+        else:
+            assert last_error is not None
+            raise last_error
+        render_seconds = round(time.monotonic() - started, 3)
+
+        duration = self._comp_duration(project_path)
+        alpha = self._alpha_coverage(output_file) if channels == "rgba" else None
+        result = CompRenderResult(
+            output=output_file,
+            render_path=render_path,
+            gpu_requested=gpu in ("auto", "on"),
+            render_seconds=render_seconds,
+            duration_seconds=duration,
+            alpha_coverage=alpha,
+            report_path=output_file.with_suffix(".render.json"),
+        )
+        result.report_path.write_text(
+            json.dumps(
+                {
+                    "tool": "effectcraft",
+                    "project": str(project_path),
+                    "comp": comp,
+                    "output": str(output_file),
+                    "format": format,
+                    "channels": channels,
+                    "fps": fps,
+                    "gpuMode": gpu,
+                    "renderPath": render_path,
+                    "gpuRequested": result.gpu_requested,
+                    "renderSeconds": render_seconds,
+                    "durationSeconds": duration,
+                    "alphaCoverage": alpha,
+                    "ok": result.ok,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return result
+
+    def _comp_duration(self, project_path: Path) -> float | None:
+        """Composition duration from the engine's info, or None when unreadable."""
+        try:
+            data = self.inspect(project_path)
+        except Exception:
+            return None
+        duration = (data.get("activeComp") or {}).get("duration")
+        try:
+            return float(duration) if duration is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _alpha_coverage(self, output: Path, timeout: int = 120) -> float | None:
+        """Mean alpha of a rendered file as 0..1, via alphaextract + signalstats.
+
+        Normalised per frame by YMAX so 8- and 12-bit alpha decode identically.
+        Returns None when ffmpeg cannot measure the file.
+        """
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-i",
+            str(output),
+            "-vf",
+            "alphaextract,signalstats,metadata=print",
+            "-f",
+            "null",
+            "-",
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if proc.returncode != 0:
+            return None
+        stderr = proc.stderr
+        yavgs = [float(v) for v in re.findall(r"YAVG[=:]\s*([0-9.]+)", stderr)]
+        ymaxs = [float(v) for v in re.findall(r"YMAX[=:]\s*([0-9.]+)", stderr)]
+        if not yavgs:
+            return None
+        ratios: list[float] = []
+        for index, yavg in enumerate(yavgs):
+            ymax = ymaxs[index] if index < len(ymaxs) else 255.0
+            if ymax <= 0:
+                continue
+            ratios.append(yavg / ymax)
+        if not ratios:
+            return None
+        return round(min(sum(ratios) / len(ratios), 1.0), 4)
 
     def render_frame(
         self,
@@ -354,14 +504,11 @@ def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
                     }
                 )
         elif ltype == "solid":
-            cmds.append(
-                {
-                    "id": "layer.newSolid",
-                    "params": {
-                        "name": layer.get("name", "Solid"),
-                    },
-                }
-            )
+            solid_params: dict[str, Any] = {"name": layer.get("name", "Solid")}
+            for optional in ("color", "width", "height"):
+                if params.get(optional) is not None:
+                    solid_params[optional] = params[optional]
+            cmds.append({"id": "layer.newSolid", "params": solid_params})
 
     runner = EffectCraftRunner()
     runner.run_commands(cmds, empty=True, save_as=ecproj_path)
@@ -695,3 +842,170 @@ def motion_project(
             results.append(res)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Composition scaffolding (`ms motion new`, design 5.7)
+# ---------------------------------------------------------------------------
+
+MOTION_TEMPLATES: tuple[str, ...] = (
+    "lower-third",
+    "title-card",
+    "logo-sting",
+    "lyric-overlay",
+    "explainer-beat",
+)
+
+
+def _text_layer(
+    name: str,
+    text: str,
+    *,
+    size: float,
+    position: list[float],
+    fill: str,
+    font: str | None = None,
+) -> dict[str, Any]:
+    """A text layer spec with brand tokens already applied."""
+    params: dict[str, Any] = {
+        "text": text,
+        "font_size": size,
+        "position": position,
+        "fill": fill,
+    }
+    if font:
+        params["font"] = font
+    return {"type": "text", "name": name, "params": params}
+
+
+def scaffold_spec(
+    template: str,
+    *,
+    width: int,
+    height: int,
+    fps: float,
+    duration: float,
+    palette: dict[str, str] | None = None,
+    fonts: dict[str, str] | None = None,
+    title: str = "Title",
+    subtitle: str = "Subtitle",
+) -> dict[str, Any]:
+    """Build a motion spec for a named template with brand tokens injected.
+
+    Templates are the five from design 5.7. Colours come from the project
+    palette (``text`` for copy, ``accent`` then ``primary`` for decoration)
+    and fonts from ``fonts.display`` so every scaffold matches the brand
+    without manual styling.
+    """
+    palette = palette or {}
+    fonts = fonts or {}
+    text_colour = palette.get("text", "#f8fafc")
+    accent_colour = palette.get("accent") or palette.get("primary", "#3b82f6")
+    display_font = fonts.get("display")
+
+    def text(name: str, body: str, size: float, position: list[float]) -> dict[str, Any]:
+        return _text_layer(
+            name, body, size=size, position=position, fill=text_colour, font=display_font
+        )
+
+    def bar(x: float, y: float, w: float, h: float) -> dict[str, Any]:
+        return {
+            "type": "solid",
+            "name": "accent-bar",
+            "params": {"color": accent_colour, "width": w, "height": h},
+        }
+
+    if template == "lower-third":
+        layers = [
+            bar(100, height - 240, 8, 160),
+            text("title", title, 64, [128, height - 220]),
+            text("subtitle", subtitle, 36, [128, height - 140]),
+        ]
+    elif template == "title-card":
+        layers = [
+            bar(width / 2 - 60, height / 2 - 150, 120, 8),
+            text("headline", title, 96, [width / 2 - 240, height / 2 - 110]),
+            text("subhead", subtitle, 40, [width / 2 - 180, height / 2 + 10]),
+        ]
+    elif template == "logo-sting":
+        layers = [
+            {
+                "type": "image",
+                "name": "logo",
+                "params": {"path": "", "position": [width / 2 - 96, height / 2 - 96]},
+            },
+            text("brand", title, 72, [width / 2 - 180, height / 2 + 120]),
+        ]
+    elif template == "lyric-overlay":
+        layers = [
+            text("lyric", title, 56, [width / 2 - 320, height - 180]),
+        ]
+    elif template == "explainer-beat":
+        layers = [
+            text("heading", title, 64, [120, 120]),
+            text("body", subtitle, 36, [120, 220]),
+        ]
+    else:
+        raise EffectCraftError(
+            f"unknown template {template!r}; choose one of: {', '.join(MOTION_TEMPLATES)}"
+        )
+
+    return {
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "duration": duration,
+        "layers": layers,
+    }
+
+
+def new_composition(
+    project_root: Path,
+    comp_id: str,
+    template: str = "lower-third",
+    *,
+    duration: float | None = None,
+    deliverable_resolution: str | None = None,
+    deliverable_fps: float | None = None,
+    palette: dict[str, str] | None = None,
+    fonts: dict[str, str] | None = None,
+    title: str = "Title",
+    subtitle: str = "Subtitle",
+    force: bool = False,
+) -> Path:
+    """Scaffold a composition file for ``ms motion new`` and return its path.
+
+    The scaffold is a spec document (compiled to native form on first render)
+    written to ``<project>/motion/<comp>.ecproj``. An existing composition is
+    refused unless ``force`` is set, so agent scaffolds never clobber hand-edited
+    work.
+    """
+    geometry = deliverable_resolution or "1920x1080"
+    try:
+        width_s, height_s = geometry.lower().split("x", 1)
+        width, height = int(width_s), int(height_s)
+    except ValueError as error:
+        raise EffectCraftError(f"invalid resolution {geometry!r}") from error
+    fps = float(deliverable_fps or 30.0)
+    comp_duration = float(duration if duration is not None else 4.0)
+
+    spec = scaffold_spec(
+        template,
+        width=width,
+        height=height,
+        fps=fps,
+        duration=comp_duration,
+        palette=palette,
+        fonts=fonts,
+        title=title,
+        subtitle=subtitle,
+    )
+
+    target = (project_root / "motion" / f"{comp_id}.ecproj").resolve()
+    if target.exists() and not force:
+        raise EffectCraftError(
+            f"{target.name} already exists; pick another --comp id or pass --force to overwrite"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    build_ecp(spec, target)
+    return target

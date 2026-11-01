@@ -107,6 +107,32 @@ class CompileResult:
         )
 
 
+@dataclass
+class CompilePlan:
+    """Dry-run output: what ``build`` would do, without touching the engine."""
+
+    fcproj_path: Path
+    """Resolved destination of the compiled ``.fcproj``."""
+
+    width: int
+    height: int
+    fps: float
+
+    imports: dict[str, Path] = field(default_factory=dict)
+    """asset id -> resolved media path that ``file.import`` would receive."""
+
+    bake_duck: bool = False
+    """Whether the music duck would be baked into the music file before import (D48)."""
+
+    shots: int = 0
+    motion_overlays: int = 0
+    voice_cues: int = 0
+    music_cues: int = 0
+    titles: int = 0
+    duration_seconds: float = 0.0
+    """Timeline duration the V1 shot chain would occupy."""
+
+
 class CompilerError(FilmCraftError):
     """Raised when manifest compilation fails."""
 
@@ -153,16 +179,104 @@ class TimelineCompiler:
             loudness_lufs=-14.0,
         )
 
+    def plan(
+        self,
+        project: Project,
+        output_fcproj: Path | None = None,
+        deliverable_id: str | None = None,
+    ) -> CompilePlan:
+        """Compute what ``compile`` would do, without executing a single command.
+
+        Used by ``ms video build --dry-run``: validates the manifest, resolves the
+        deliverable geometry and every import path, and counts the placements. The
+        music duck is reported as a flag, never baked (that writes files).
+        """
+        deliverable = self._get_deliverable(project, deliverable_id)
+        target_path = output_fcproj or (project.root / f"{project.slug}.fcproj")
+        target_path = target_path.resolve()
+
+        width, height = (
+            parse_resolution(deliverable.resolution)
+            if deliverable.resolution
+            else (DEFAULT_WIDTH, DEFAULT_HEIGHT)
+        )
+        fps = float(deliverable.fps or DEFAULT_FPS)
+
+        imports: dict[str, Path] = {}
+        bake_duck = False
+        voice_cues = 0
+        music_cues = 0
+        if project.video:
+            for shot in project.video.shots:
+                imports.setdefault(shot.asset, self._resolve_asset_path(project, shot.asset))
+            if project.video.voice:
+                voice_cues = 1
+                imports.setdefault(
+                    project.video.voice.asset,
+                    self._resolve_asset_path(project, project.video.voice.asset),
+                )
+            if project.video.music:
+                music_cues = 1
+                imports.setdefault(
+                    project.video.music.asset,
+                    self._resolve_asset_path(project, project.video.music.asset),
+                )
+                bake_duck = bool(project.video.music.duck and project.video.voice)
+
+        motion_raw = project.raw.get("motion") if isinstance(project.raw, dict) else None
+        motion_seqs = motion_raw.get("sequences", []) if isinstance(motion_raw, dict) else []
+        motion_overlays = 0
+        for mseq in motion_seqs:
+            if not isinstance(mseq, dict) or not mseq.get("id"):
+                continue
+            candidates = [
+                project.root / "out" / "motion" / f"{mseq['id']}.mov",
+                project.root / "out" / f"{mseq['id']}.mov",
+            ]
+            if any(p.exists() for p in candidates):
+                motion_overlays += 1
+
+        duration = sum(
+            (shot.duration or DEFAULT_SHOT_SECONDS)
+            for shot in (project.video.shots if project.video else [])
+        )
+
+        return CompilePlan(
+            fcproj_path=target_path,
+            width=width,
+            height=height,
+            fps=fps,
+            imports=imports,
+            bake_duck=bake_duck,
+            shots=len(project.video.shots) if project.video else 0,
+            motion_overlays=motion_overlays,
+            voice_cues=voice_cues,
+            music_cues=music_cues,
+            titles=len(project.video.titles) if project.video else 0,
+            duration_seconds=duration,
+        )
+
     def compile(
         self,
         project: Project,
         output_fcproj: Path | None = None,
         deliverable_id: str | None = None,
+        force: bool = False,
     ) -> CompileResult:
         """Compile the project manifest into a .fcproj timeline."""
         deliverable = self._get_deliverable(project, deliverable_id)
         target_path = output_fcproj or (project.root / f"{project.slug}.fcproj")
         target_path = target_path.resolve()
+        if target_path.exists() and not force:
+            # D46: manual GUI edits must never be silently overwritten.
+            raise CompilerError(
+                f"{target_path} already exists and may carry manual GUI edits; "
+                "inspect it (ms video inspect) and re-run with --force to overwrite "
+                "(a snapshot is archived first)."
+            )
+        if target_path.exists() and force:
+            # D46 snapshot rule: archive the current state before clobbering it.
+            snapshot_timeline(target_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         self.runner.allowed_root = target_path.parent
 
@@ -550,9 +664,25 @@ def compile_manifest_to_fcproj(
     output_fcproj: Path | None = None,
     deliverable_id: str | None = None,
     runner: FilmCraftRunner | None = None,
+    force: bool = False,
 ) -> CompileResult:
     """Compile a project manifest into a native .fcproj timeline (convenience wrapper)."""
     return TimelineCompiler(runner=runner).compile(
+        project,
+        output_fcproj=output_fcproj,
+        deliverable_id=deliverable_id,
+        force=force,
+    )
+
+
+def plan_manifest_compile(
+    project: Project,
+    output_fcproj: Path | None = None,
+    deliverable_id: str | None = None,
+    runner: FilmCraftRunner | None = None,
+) -> CompilePlan:
+    """Preview a manifest compilation without touching the engine or disk (convenience wrapper)."""
+    return TimelineCompiler(runner=runner).plan(
         project,
         output_fcproj=output_fcproj,
         deliverable_id=deliverable_id,
