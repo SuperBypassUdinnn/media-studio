@@ -10,15 +10,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["pyyaml>=6.0", "fonttools>=4.47"]
 
-[project.optional-dependencies]
-resolve = ["mcp[cli]>=1.0"]
-
 [project.scripts]
 ms = "media_studio.cli:main"
-resolve-mcp = "resolve_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/media_studio", "src/resolve_mcp"]
+packages = ["src/media_studio"]
 
 [tool.ruff]
 line-length = 100
