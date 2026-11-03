@@ -17,6 +17,7 @@ Models are downloaded by rembg on first use and cached under ``~/.rembg/models/`
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,6 +66,7 @@ class RemoveResult:
     destination: Path
     model: str
     selective: bool
+    device: str = "gpu"
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,42 @@ def remove_background(
     return _remove_with_session(source, image, target, model, post_process=post_process)
 
 
+def _is_oom(error: Exception) -> bool:
+    """Whether an inference failure means the accelerator ran out of memory."""
+
+    message = str(error)
+    return "ONNXRuntimeError" in message or "Failed to allocate memory" in message
+
+
+def _infer(
+    image: Image.Image,
+    rembg_name: str,
+    kwargs: dict,
+    *,
+    new_session_fn: Callable[..., object],
+    remove_fn: Callable[..., object],
+) -> tuple[Image.Image, str]:
+    """Run one removal, retrying on CPU when the accelerator cannot fit it.
+
+    Large models such as birefnet-lite need more VRAM than a 4 GB card has
+    free, so the first attempt uses rembg's default providers and an
+    out-of-memory failure retries with an explicit CPU session.
+
+    Returns:
+        The result image and the device actually used: ``gpu`` when the
+        default providers worked, ``cpu`` after the retry.
+    """
+
+    try:
+        session = new_session_fn(rembg_name)
+        return remove_fn(image, session=session, **kwargs), "gpu"
+    except Exception as error:
+        if not _is_oom(error):
+            raise
+    session = new_session_fn(rembg_name, providers=["CPUExecutionProvider"])
+    return remove_fn(image, session=session, **kwargs), "cpu"
+
+
 def _remove_with_session(
     source: Path,
     image: Image.Image,
@@ -166,8 +204,13 @@ def _remove_with_session(
         kwargs["sam_prompt"] = sam_prompt
 
     try:
-        session = new_session(_REMBG_NAMES.get(model, model))
-        result = remove(image, session=session, **kwargs)
+        result, device = _infer(
+            image,
+            _REMBG_NAMES.get(model, model),
+            kwargs,
+            new_session_fn=new_session,
+            remove_fn=remove,
+        )
     except Exception as error:  # rembg raises bare RuntimeError variants
         raise CutoutError(f"background removal failed for {source}: {error}") from error
 
@@ -176,7 +219,13 @@ def _remove_with_session(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     result.save(target)
-    return RemoveResult(source=source, destination=target, model=model, selective=selective)
+    return RemoveResult(
+        source=source,
+        destination=target,
+        model=model,
+        selective=selective,
+        device=device,
+    )
 
 
 def extract_signature(

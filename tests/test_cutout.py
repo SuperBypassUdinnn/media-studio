@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,7 @@ from media_studio.cutout import (
     CutoutError,
     _destination,
     _dilate,
+    _infer,
     _otsu_threshold,
     extract_signature,
     remove_background,
@@ -241,3 +243,88 @@ class TestRemoveBackgroundInference:
         assert out.size == canvas.size
         assert result.model == "u2net"
         assert result.selective is False
+
+
+class _FailingFactory:
+    """Remembers session-creation calls so tests can assert the retry."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict | None] = []
+
+
+class TestInferFallback:
+    """_infer retries on CPU when the accelerator reports an out-of-memory."""
+
+    @staticmethod
+    def _factory(recorder: _FailingFactory) -> Callable[..., object]:
+        def new_session(_name: str, providers: list[str] | None = None) -> object:
+            recorder.calls.append(providers)
+            return object()
+
+        return new_session
+
+    @staticmethod
+    def _remover(outcomes: list[object]) -> Callable[..., object]:
+        def remove(_image: Image.Image, session: object, **_kwargs: object) -> object:
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        return remove
+
+    def test_returns_gpu_when_default_providers_work(self) -> None:
+        recorder = _FailingFactory()
+        image = _white_canvas((8, 8))
+        result, device = _infer(
+            image,
+            "u2net",
+            {},
+            new_session_fn=self._factory(recorder),
+            remove_fn=self._remover([image]),
+        )
+        assert device == "gpu"
+        assert result is image
+        assert recorder.calls == [None]
+
+    def test_oom_retries_with_explicit_cpu(self) -> None:
+        recorder = _FailingFactory()
+        image = _white_canvas((8, 8))
+        oom = RuntimeError(
+            "ONNXRuntimeError : FAIL : Failed to allocate memory for requested buffer"
+        )
+        result, device = _infer(
+            image,
+            "birefnet-general-lite",
+            {},
+            new_session_fn=self._factory(recorder),
+            remove_fn=self._remover([oom, image]),
+        )
+        assert device == "cpu"
+        assert result is image
+        assert recorder.calls == [None, ["CPUExecutionProvider"]]
+
+    def test_non_oom_errors_are_not_retried(self) -> None:
+        recorder = _FailingFactory()
+        with pytest.raises(RuntimeError, match="bad model"):
+            _infer(
+                _white_canvas((8, 8)),
+                "u2net",
+                {},
+                new_session_fn=self._factory(recorder),
+                remove_fn=self._remover([RuntimeError("bad model")]),
+            )
+        assert recorder.calls == [None]
+
+    def test_cpu_retry_failure_propagates(self) -> None:
+        recorder = _FailingFactory()
+        oom = RuntimeError("ONNXRuntimeError : FAIL : Failed to allocate memory")
+        with pytest.raises(RuntimeError, match="still out of memory"):
+            _infer(
+                _white_canvas((8, 8)),
+                "birefnet-general-lite",
+                {},
+                new_session_fn=self._factory(recorder),
+                remove_fn=self._remover([oom, RuntimeError("still out of memory")]),
+            )
+        assert recorder.calls == [None, ["CPUExecutionProvider"]]

@@ -1052,7 +1052,8 @@ def cmd_image_remove_bg(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     mode = "selective SAM" if result.selective else result.model
-    print(f"removed background with {mode}")
+    device = f" ({result.device})" if result.device != "gpu" else ""
+    print(f"removed background with {mode}{device}")
     print(f"  source: {result.source}")
     print(f"  output: {result.destination}")
     return EXIT_OK
