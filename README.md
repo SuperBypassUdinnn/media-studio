@@ -62,6 +62,10 @@ uv venv && uv pip install -e . pytest        # once, inside the checkout
 .venv/bin/python -m media_studio.cli video qc my-project --file out/video/master-16x9.mp4
 .venv/bin/python -m media_studio.cli video ingest ~/Projects/my-project/assets/video \
   --out ~/Projects/my-project/media --profile proxy    # DNxHR for free Linux Resolve
+.venv/bin/python -m media_studio.cli video scenes clip.mp4             # find hard cuts
+.venv/bin/python -m media_studio.cli video remove-bg clip.mp4 \
+  --select 850,280 --feather 2                         # SAM 2 alpha ProRes 4444
+.venv/bin/python -m media_studio.cli image remove-bg photo.jpg --model u2netp
 bash scripts/selftest.sh
 ```
 

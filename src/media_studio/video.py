@@ -23,6 +23,7 @@ from pathlib import Path
 from . import fonts, media
 from .fcproj import compile_manifest_to_fcproj
 from .filmcraft import ExportResult, FilmCraftError, FilmCraftRunner
+from .ingest import IngestError, probe_media
 from .ledger import read_sidecar
 from .manifest import AudioCue, Deliverable, Project, VideoPlan
 from .mlt import AudioPlan, Clip, Timeline, Title, ducking_from_speech, timeline_seconds
@@ -413,6 +414,83 @@ def encode_with_loudness(
     if not destination.is_file():
         raise VideoError(f"ffmpeg did not write {destination}")
     return measured
+
+
+@dataclass(frozen=True)
+class SceneCut:
+    """One hard cut: the first frame of the new scene and its timestamp."""
+
+    frame: int
+    time: float
+
+
+def detect_scene_cuts(source: Path, *, threshold: float = 0.3) -> list[SceneCut]:
+    """Find hard cuts in ``source`` with ffmpeg's scene filter.
+
+    Every frame the ``select`` filter passes is the first frame of a new
+    scene; ``showinfo`` prints its index and timestamp, which is all this
+    function parses. Use it to pick one ``--frame`` anchor per scene before
+    running SAM 2 background removal — a single prompt cannot survive a cut.
+
+    Raises:
+        VideoError: the file is missing or ffmpeg failed.
+    """
+
+    if not Path(source).is_file():
+        raise VideoError(f"no such file: {source}")
+
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-i",
+            str(source),
+            "-vf",
+            f"select='gt(scene,{threshold})',showinfo",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise VideoError(f"ffmpeg failed reading {source}:\n{completed.stderr.strip()[-2000:]}")
+
+    try:
+        info = probe_media(Path(source))
+    except IngestError as error:
+        raise VideoError(str(error)) from error
+
+    cuts: list[SceneCut] = []
+    for line in completed.stderr.splitlines():
+        if "showinfo" not in line:
+            continue
+        time_match = re.search(r"pts_time:([\d.]+)", line)
+        if time_match is None:
+            continue
+        # showinfo's n: counts only the frames the select filter passed, so
+        # the input frame index comes from the timestamp instead.
+        time_s = float(time_match.group(1))
+        cuts.append(SceneCut(round(time_s * info.fps), time_s))
+    return cuts
+
+
+def scene_ranges(cuts: list[SceneCut], total_frames: int) -> list[tuple[int, int, float, float]]:
+    """Turn cut frames into inclusive ``(start, end, start_s, end_s)`` ranges.
+
+    A cut frame belongs to the scene that begins there, so a scene spans
+    from its first frame to the frame before the next cut.
+    """
+
+    starts = [0] + [cut.frame for cut in cuts]
+    times = [0.0] + [cut.time for cut in cuts]
+    ranges: list[tuple[int, int, float, float]] = []
+    for index, start in enumerate(starts):
+        end = (starts[index + 1] - 1) if index + 1 < len(starts) else total_frames - 1
+        next_time = times[index + 1] if index + 1 < len(times) else -1.0
+        ranges.append((start, end, times[index], next_time))
+    return ranges
 
 
 def qc_report(

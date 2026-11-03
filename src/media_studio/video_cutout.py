@@ -10,10 +10,14 @@ where per-frame cutters flicker. The pipeline is deliberately simple:
    encodes a ProRes 4444 QuickTime with real alpha — the format DaVinci
    Resolve, Premiere and Final Cut all import as transparent footage.
 
-The mask never leaves memory as images: only one composited frame exists at
-a time, and masks are kept bit-packed so a 30-second clip stays under a
-hundred megabytes. Longer clips trade RAM for time; the honest ceiling for
-a 4 GB GPU is a few minutes of 1080p footage.
+The mask never leaves memory as images: masks are bit-packed and streamed to
+a disk memmap as propagation yields them, and SAM 2's own per-chunk state is
+the only large allocation. Clips longer than one state comfortably fits are
+propagated in segments: each segment starts a fresh predictor state seeded
+with the centroid of the previous segment's boundary mask, so RAM stays
+bounded no matter the clip length. A ``--feather`` radius softens the
+otherwise binary alpha at encode time without ever materialising a float
+mask per frame.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from .ingest import IngestError, probe_media
 
@@ -72,6 +76,8 @@ class VideoRemoveResult:
     select_point: tuple[int, int]
     fps: float
     size_bytes: int
+    feather: int = 0
+    segments: int = 1
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess:
@@ -178,6 +184,111 @@ def _unpack_mask(packed: np.ndarray, width: int, height: int) -> np.ndarray:
     return np.unpackbits(packed, count=width * height).reshape(height, width).astype(bool)
 
 
+def _frame_name(index: int) -> str:
+    """The JPEG name ffmpeg's ``%06d`` pattern gives frame ``index``."""
+
+    return f"{index:06d}.jpg"
+
+
+class _MaskStore:
+    """Bit-packed masks for every frame, backed by a disk memmap.
+
+    Propagation results stream here the moment SAM 2 yields them, so peak
+    memory stays at one packed mask instead of one per frame. Uncovered
+    frames encode as fully transparent.
+    """
+
+    def __init__(self, total: int, width: int, height: int, work_dir: Path) -> None:
+        self.total = total
+        self.width = width
+        self.height = height
+        self.bytes_per_mask = (width * height + 7) // 8
+        self.path = work_dir / "masks.bin"
+        self.buffer = np.memmap(
+            self.path, dtype=np.uint8, mode="w+", shape=(total, self.bytes_per_mask)
+        )
+        self.covered = np.zeros(total, dtype=bool)
+
+    def put(self, index: int, packed: np.ndarray) -> None:
+        self.buffer[index] = packed
+        self.covered[index] = True
+
+    def get(self, index: int) -> np.ndarray:
+        return np.asarray(self.buffer[index])
+
+    def covered_count(self) -> int:
+        return int(self.covered.sum())
+
+    def discard(self) -> None:
+        del self.buffer
+        self.path.unlink(missing_ok=True)
+
+
+#: SAM 2 loads frames as float32 RGB at the video resolution inside its
+#: inference state (verified in sam2/utils/misc.py load_video_frames), so a
+#: state for WxH frames costs roughly 12 bytes per pixel.
+_STATE_BYTES_PER_PIXEL = 3 * 4
+
+#: System-RAM budget for one SAM 2 inference state. Segmented propagation
+#: keeps every state at or below this.
+_STATE_BUDGET_BYTES = 2 * 1024**3
+
+
+def _chunk_frames(width: int, height: int, chunk_frames: int | None = None) -> int:
+    """Frames per propagation segment: the override, or the state budget."""
+
+    if chunk_frames is not None:
+        if chunk_frames < 1:
+            raise VideoCutoutError(f"chunk size must be at least 1, got {chunk_frames}")
+        return chunk_frames
+    per_frame = width * height * _STATE_BYTES_PER_PIXEL
+    return max(1, int(_STATE_BUDGET_BYTES // per_frame))
+
+
+def _chunk_ranges(total: int, chunk_frames: int) -> list[tuple[int, int]]:
+    """Split ``total`` frames into inclusive ``(start, end)`` ranges."""
+
+    return [
+        (start, min(start + chunk_frames, total) - 1) for start in range(0, total, chunk_frames)
+    ]
+
+
+def _mask_centroid(packed: np.ndarray, width: int, height: int) -> tuple[int, int] | None:
+    """The mean pixel of a packed mask, or ``None`` when it is empty."""
+
+    mask = _unpack_mask(packed, width, height)
+    if not mask.any():
+        return None
+    rows, columns = np.nonzero(mask)
+    return round(float(columns.mean())), round(float(rows.mean()))
+
+
+def _feather_alpha(mask: np.ndarray, radius: int) -> np.ndarray:
+    """Turn a boolean mask into a soft uint8 alpha channel.
+
+    ``radius <= 0`` keeps the current binary behaviour. Otherwise the mask
+    grows by half the radius (so soft edges never eat the object) and a
+    Gaussian blur of ``radius`` smooths the step into a gradient.
+    """
+
+    if radius <= 0:
+        return mask.astype(np.uint8) * 255
+    grow = max(1, radius // 2)
+    image = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+    image = image.filter(ImageFilter.MaxFilter(2 * grow + 1))
+    image = image.filter(ImageFilter.GaussianBlur(radius))
+    alpha = np.asarray(image, dtype=np.uint8)
+    # GaussianBlur sags below 255 even on a wide plateau, which would dim
+    # the object interior; rescale so the densest pixel is fully opaque.
+    peak = int(alpha.max())
+    if peak > 0:
+        alpha = (alpha.astype(np.float64) * 255.0 / peak).astype(np.uint8)
+    # The blur tail paints a faint haze over the whole frame; floor it so
+    # untouched background stays exactly transparent.
+    alpha[alpha < 8] = 0
+    return alpha
+
+
 def _video_destination(source: Path, destination: Path | None) -> Path:
     """Resolve the output ``.mov`` path the same way cutout resolves its PNG."""
 
@@ -218,6 +329,8 @@ def remove_background_video(
     model: str = "sam2.1-tiny",
     full_vram: bool = False,
     cache_dir: Path | None = None,
+    feather: int = 0,
+    chunk_frames: int | None = None,
 ) -> VideoRemoveResult:
     """Cut the prompted object out of a clip into an alpha ProRes 4444 MOV.
 
@@ -232,6 +345,9 @@ def remove_background_video(
         full_vram: keep per-frame features on the GPU. Default off, which
             offloads them to system RAM — the safe setting for a 4 GB card.
         cache_dir: override the SAM 2 checkpoint cache location.
+        feather: soft-edge radius in pixels; 0 keeps the binary mask.
+        chunk_frames: frames per propagation segment; ``None`` picks the
+            size that fits the state budget for this resolution.
 
     Raises:
         VideoCutoutError: probing, frame extraction, prompting, propagation
@@ -266,32 +382,30 @@ def remove_background_video(
 
         checkpoint = ensure_checkpoint(model, cache_dir=cache_dir)
         predictor, device = _build_predictor(model, checkpoint, None)
-        state = predictor.init_state(str(frames_dir), offload_video_to_cpu=not full_vram)
-        try:
-            predictor.add_new_points_or_box(
-                inference_state=state,
-                frame_idx=anchor_frame,
-                obj_id=1,
-                points=[[x, y]],
-                labels=[1],
-            )
-            packed: dict[int, np.ndarray] = {}
-            for frame_idx, _, logits in predictor.propagate_in_video(state):
-                packed[frame_idx] = _pack_mask(logits)
-            if anchor_frame > 0:
-                for frame_idx, _, logits in predictor.propagate_in_video(state, reverse=True):
-                    packed[frame_idx] = _pack_mask(logits)
-        finally:
-            del state
 
-        target = _video_destination(source, destination)
-        if target.suffix.lower() != ".mov":
-            target = target.with_suffix(".mov")
-        if len(packed) != len(frame_paths):
-            raise VideoCutoutError(
-                f"propagation covered {len(packed)} of {len(frame_paths)} frames"
+        per_chunk = _chunk_frames(width, height, chunk_frames)
+        ranges = _chunk_ranges(len(frame_paths), per_chunk)
+        store = _MaskStore(len(frame_paths), width, height, frames_dir)
+        try:
+            segments = _propagate_masks(
+                predictor,
+                frames_dir,
+                ranges,
+                anchor_frame,
+                (x, y),
+                store,
+                full_vram,
             )
-        _encode_frames(packed, frame_paths, width, height, info.fps, target)
+            target = _video_destination(source, destination)
+            if target.suffix.lower() != ".mov":
+                target = target.with_suffix(".mov")
+            if store.covered_count() == 0:
+                raise VideoCutoutError(
+                    "propagation never found the object; check --select and --frame"
+                )
+            _encode_frames(store, frame_paths, width, height, info.fps, target, feather)
+        finally:
+            store.discard()
     finally:
         shutil.rmtree(frames_dir, ignore_errors=True)
 
@@ -305,16 +419,149 @@ def remove_background_video(
         select_point=select_point,
         fps=info.fps,
         size_bytes=target.stat().st_size,
+        feather=feather,
+        segments=segments,
     )
 
 
+def _propagate_masks(
+    predictor,
+    frames_dir: Path,
+    ranges: list[tuple[int, int]],
+    anchor_frame: int,
+    point: tuple[int, int],
+    store: _MaskStore,
+    full_vram: bool,
+) -> int:
+    """Fill ``store`` segment by segment and return the segment count.
+
+    The anchor's segment runs first, prompted with the raw point, and covers
+    itself with a forward plus (when the anchor is not its first frame) a
+    reverse pass — the behaviour the single-segment pipeline always had.
+    Segments after it are seeded with the centroid of the previous segment's
+    last mask; segments before it run in descending order, seeded with the
+    centroid of the next segment's first mask and propagated in reverse.
+    A segment whose seed mask is empty is skipped and everything beyond it
+    in that direction stays transparent: the object is gone.
+    """
+
+    anchor_segment = next(
+        i for i, (start, end) in enumerate(ranges) if start <= anchor_frame <= end
+    )
+
+    def coverage_boundary(segment: int, direction: str) -> tuple[int, int] | None:
+        """Prompt point for the neighbouring segment, from an existing mask."""
+
+        start, end = ranges[segment]
+        frame = end if direction == "forward" else start
+        if not store.covered[frame]:
+            return None
+        return _mask_centroid(store.get(frame), store.width, store.height)
+
+    # Anchor segment: prompt with the user's point and cover both sides of
+    # it inside one state — the verified single-state behaviour.
+    start, end = ranges[anchor_segment]
+    _run_segment(
+        predictor,
+        frames_dir,
+        start,
+        end,
+        anchor_frame - start,
+        point,
+        store,
+        full_vram,
+        mode="both",
+    )
+
+    # Forward segments: each continues from the previous one's last mask.
+    for segment in range(anchor_segment + 1, len(ranges)):
+        seed = coverage_boundary(segment - 1, "forward")
+        if seed is None:
+            break
+        start, end = ranges[segment]
+        _run_segment(predictor, frames_dir, start, end, 0, seed, store, full_vram, mode="forward")
+
+    # Backward segments: descending, each continues in reverse from the
+    # next one's first mask.
+    for segment in range(anchor_segment - 1, -1, -1):
+        seed = coverage_boundary(segment + 1, "backward")
+        if seed is None:
+            break
+        start, end = ranges[segment]
+        _run_segment(
+            predictor,
+            frames_dir,
+            start,
+            end,
+            end - start,
+            seed,
+            store,
+            full_vram,
+            mode="reverse",
+        )
+
+    return len(ranges)
+
+
+def _run_segment(
+    predictor,
+    frames_dir: Path,
+    start: int,
+    end: int,
+    prompt_index: int,
+    point: tuple[int, int],
+    store: _MaskStore,
+    full_vram: bool,
+    *,
+    mode: str,
+) -> None:
+    """Propagate one segment in its own predictor state.
+
+    ``mode`` selects the propagation direction(s): ``"forward"`` covers the
+    prompt to the segment end, ``"reverse"`` covers the segment start down
+    to the prompt, and ``"both"`` runs a forward then a reverse pass in the
+    same state so one prompt covers the whole segment. The segment sees a
+    directory of symlinks into the shared frame dump, so SAM 2 treats it as
+    an independent clip while ffmpeg extracted the frames exactly once.
+    """
+
+    chunk_dir = frames_dir / f"chunk-{start:06d}"
+    chunk_dir.mkdir(exist_ok=True)
+    for index in range(start, end + 1):
+        link = chunk_dir / _frame_name(index)
+        if not link.exists():
+            link.symlink_to(f"../{_frame_name(index)}")
+
+    try:
+        state = predictor.init_state(str(chunk_dir), offload_video_to_cpu=not full_vram)
+        try:
+            predictor.add_new_points_or_box(
+                inference_state=state,
+                frame_idx=prompt_index,
+                obj_id=1,
+                points=[[point[0], point[1]]],
+                labels=[1],
+            )
+            if mode in ("forward", "both"):
+                for frame_idx, _, logits in predictor.propagate_in_video(state):
+                    store.put(start + frame_idx, _pack_mask(logits))
+            if mode in ("reverse", "both"):
+                for frame_idx, _, logits in predictor.propagate_in_video(state, reverse=True):
+                    store.put(start + frame_idx, _pack_mask(logits))
+        finally:
+            del state
+    finally:
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+
+
 def _encode_frames(
-    packed: dict[int, np.ndarray],
+    store: _MaskStore,
     frame_paths: list[Path],
     width: int,
     height: int,
     fps: float,
     destination: Path,
+    feather: int = 0,
 ) -> None:
     """Composite every frame with its mask and pipe RGBA into ffmpeg."""
 
@@ -329,11 +576,13 @@ def _encode_frames(
     try:
         for index, path in enumerate(frame_paths):
             rgb = np.asarray(Image.open(path).convert("RGB"))
-            if index in packed:
-                alpha = _unpack_mask(packed[index], width, height) * 255
+            if store.covered[index]:
+                packed = store.get(index)
+                mask = _unpack_mask(packed, width, height)
+                alpha = _feather_alpha(mask, feather)
             else:
                 alpha = np.zeros((height, width), dtype=np.uint8)
-            rgba = np.dstack([rgb, alpha.astype(np.uint8)])
+            rgba = np.dstack([rgb, alpha])
             process.stdin.write(rgba.tobytes())
         process.stdin.close()
         code = process.wait()

@@ -55,7 +55,7 @@ from .fcproj import (
 from .filmcraft import FilmCraftError, FilmCraftRunner
 from .fonts import FontError, font_environment, inventory, specimen_sheet
 from .fonts import search as search_fonts
-from .ingest import PROFILES, IngestError, ingest, ingest_folder
+from .ingest import PROFILES, IngestError, ingest, ingest_folder, probe_media
 from .ledger import (
     ASSET_CLASSES,
     LedgerError,
@@ -105,7 +105,13 @@ from .triage import (
     write_index,
 )
 from .triposr import TripoSRError, image_to_mesh_project
-from .video import VideoError, qc_report, render_filmcraft
+from .video import (
+    VideoError,
+    detect_scene_cuts,
+    qc_report,
+    render_filmcraft,
+    scene_ranges,
+)
 from .video import handoff as video_handoff
 from .video import render as render_video
 from .video_cutout import (
@@ -343,7 +349,33 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="keep all frames on the GPU (faster, needs several GB of VRAM)",
     )
+    video_cutout.add_argument(
+        "--feather",
+        type=int,
+        default=0,
+        metavar="PX",
+        help="soft-edge radius in pixels (default 0 = binary mask)",
+    )
+    video_cutout.add_argument(
+        "--chunk-frames",
+        type=int,
+        default=None,
+        metavar="N",
+        help="frames per propagation segment (default: sized to a 2 GB state budget)",
+    )
     video_cutout.set_defaults(func=cmd_video_remove_bg)
+
+    scenes = video_sub.add_parser(
+        "scenes", help="list hard cuts so a SAM 2 prompt can be placed per scene"
+    )
+    scenes.add_argument("source", help="a video file to analyse")
+    scenes.add_argument(
+        "--threshold",
+        type=float,
+        default=0.3,
+        help="scene score between 0 and 1 above which a cut is reported (default 0.3)",
+    )
+    scenes.set_defaults(func=cmd_video_scenes)
 
     build_fc = video_sub.add_parser(
         "build", help="compile project.yaml manifest into a FilmCraft .fcproj timeline"
@@ -1682,6 +1714,8 @@ def cmd_video_remove_bg(args: argparse.Namespace) -> int:
             anchor_frame=args.frame,
             model=args.model,
             full_vram=args.full_vram,
+            feather=args.feather,
+            chunk_frames=args.chunk_frames,
         )
     except VideoCutoutError as error:
         print(f"error: {error}", file=sys.stderr)
@@ -1689,9 +1723,41 @@ def cmd_video_remove_bg(args: argparse.Namespace) -> int:
 
     size_mb = result.size_bytes / 1_000_000
     print(f"removed video background with {result.model} ({result.device})")
-    print(f"  tracked:  {result.frames} frames from anchor {result.anchor_frame}")
+    print(f"  tracked:  {result.frames} frames in {result.segments} segment(s)")
     print(f"  point:    {result.select_point[0]},{result.select_point[1]}")
+    print(f"  feather:  {result.feather} px")
     print(f"  output:   {result.destination} ({size_mb:.1f} MB)")
+    return EXIT_OK
+
+
+def cmd_video_scenes(args: argparse.Namespace) -> int:
+    """List a clip's hard cuts and the frame range of every scene."""
+
+    source = Path(args.source).expanduser()
+    try:
+        cuts = detect_scene_cuts(source, threshold=args.threshold)
+    except VideoError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    if not cuts:
+        print(f"{source.name}: no hard cuts at threshold {args.threshold} (one scene)")
+        return EXIT_OK
+
+    try:
+        info = probe_media(source)
+    except IngestError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+    # The last scene ends at the last frame; a rounded duration x fps is
+    # close enough for choosing prompt anchors.
+    total_frames = round(info.duration * info.fps)
+
+    ranges = scene_ranges(cuts, total_frames)
+    print(f"{source.name}: {len(cuts)} cut(s) at threshold {args.threshold}")
+    for index, (start, end, start_s, end_s) in enumerate(ranges, start=1):
+        end_text = f"{end_s:.3f}s" if end_s >= 0 else "end"
+        print(f"  scene {index}: frames {start}-{end}  ({start_s:.3f}s - {end_text})")
     return EXIT_OK
 
 

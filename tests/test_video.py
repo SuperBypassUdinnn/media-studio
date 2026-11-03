@@ -744,3 +744,61 @@ def test_the_cli_writes_and_reports_the_handoff(
     assert (project_root / "out" / "kdenlive" / "master.kdenlive").is_file()
     # The render input is the render path's business and must not be created here.
     assert not (project_root / "out" / "master.mlt").exists()
+
+
+def _two_scene_clip(tmp_path: Path) -> Path:
+    """One second of black hard-cut to one second of red at 24 fps."""
+
+    return generate(
+        tmp_path / "scenes.mp4",
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:s=320x240:d=1:r=24",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:s=320x240:d=1:r=24",
+            "-filter_complex",
+            "[0:v][1:v]concat=n=2:v=1",
+        ],
+    )
+
+
+def test_detect_scene_cuts_finds_the_hard_cut(tmp_path: Path) -> None:
+    clip = _two_scene_clip(tmp_path)
+
+    cuts = video.detect_scene_cuts(clip)
+
+    assert len(cuts) == 1
+    assert cuts[0].frame == 24
+    assert cuts[0].time == pytest.approx(1.0, abs=0.1)
+
+
+def test_detect_scene_cuts_reports_one_scene_without_cuts(tmp_path: Path) -> None:
+    clip = generate(tmp_path / "flat.mp4", ["-f", "lavfi", "-i", "color=gray:s=320x240:d=1:r=24"])
+
+    assert video.detect_scene_cuts(clip) == []
+
+
+def test_scene_ranges_split_around_the_cuts(tmp_path: Path) -> None:
+    clip = _two_scene_clip(tmp_path)
+    cuts = video.detect_scene_cuts(clip)
+
+    ranges = video.scene_ranges(cuts, total_frames=48)
+
+    first = (0, 23, 0.0, pytest.approx(1.0, abs=0.1))
+    second = (24, 47, pytest.approx(1.0, abs=0.1), -1.0)
+    assert ranges == [first, second]
+
+
+def test_scene_ranges_without_cuts_cover_everything() -> None:
+    ranges = video.scene_ranges([], total_frames=48)
+
+    assert ranges == [(0, 47, 0.0, -1.0)]
+
+
+def test_detect_scene_cuts_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(video.VideoError, match="no such file"):
+        video.detect_scene_cuts(tmp_path / "ghost.mp4")

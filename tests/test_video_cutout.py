@@ -20,9 +20,16 @@ from media_studio.video_cutout import (
     _MODEL_SPECS,
     VIDEO_CUTOUT_MODELS,
     VideoCutoutError,
+    _chunk_frames,
+    _chunk_ranges,
     _encode_command,
     _extract_command,
+    _feather_alpha,
+    _frame_name,
+    _mask_centroid,
+    _MaskStore,
     _pack_mask,
+    _propagate_masks,
     _unpack_mask,
     _video_destination,
     ensure_checkpoint,
@@ -262,3 +269,236 @@ class TestEndToEnd:
         # 4444 keeps alpha; this ffmpeg build promotes the pixel format to
         # 12-bit, so accept any yuva444p depth rather than pinning one.
         assert pix_fmt.startswith("yuva444p")
+
+
+class TestFeather:
+    def test_zero_radius_keeps_binary_mask(self) -> None:
+        mask = np.zeros((8, 10), dtype=bool)
+        mask[2:6, 3:7] = True
+        alpha = _feather_alpha(mask, 0)
+        assert alpha.dtype == np.uint8
+        assert set(np.unique(alpha)) == {0, 255}
+
+    def test_positive_radius_softens_edges(self) -> None:
+        mask = np.zeros((32, 32), dtype=bool)
+        mask[8:24, 8:24] = True
+        alpha = _feather_alpha(mask, 4)
+        assert alpha.dtype == np.uint8
+        assert alpha.max() == 255
+        assert alpha.min() == 0
+        intermediate = ((alpha > 0) & (alpha < 255)).sum()
+        assert intermediate > 0, "a blurred edge must produce in-between alphas"
+
+    def test_negative_radius_behaves_like_zero(self) -> None:
+        mask = np.zeros((4, 4), dtype=bool)
+        mask[1:3, 1:3] = True
+        assert np.array_equal(_feather_alpha(mask, -2), mask.astype(np.uint8) * 255)
+
+
+class TestMaskCentroid:
+    def test_centroid_of_a_square(self) -> None:
+        mask = np.zeros((24, 32), dtype=bool)
+        mask[8:16, 12:20] = True
+        packed = np.packbits(mask.reshape(-1))
+        assert _mask_centroid(packed, 32, 24) == (16, 12)
+
+    def test_empty_mask_has_no_centroid(self) -> None:
+        packed = np.packbits(np.zeros(24 * 32, dtype=bool))
+        assert _mask_centroid(packed, 32, 24) is None
+
+
+class TestChunkPlan:
+    def test_default_sizes_from_state_budget(self) -> None:
+        # 2 GB / (W*H*12 bytes) — verified against sam2's float32 frame loading.
+        assert _chunk_frames(1280, 720) == 194
+        assert _chunk_frames(1920, 1080) == 86
+
+    def test_override_wins(self) -> None:
+        assert _chunk_frames(1280, 720, chunk_frames=10) == 10
+
+    def test_invalid_override_raises(self) -> None:
+        with pytest.raises(VideoCutoutError, match="chunk size must be at least 1"):
+            _chunk_frames(1280, 720, chunk_frames=0)
+
+
+class TestChunkRanges:
+    def test_partial_final_chunk(self) -> None:
+        assert _chunk_ranges(216, 80) == [(0, 79), (80, 159), (160, 215)]
+
+    def test_exact_division(self) -> None:
+        assert _chunk_ranges(60, 20) == [(0, 19), (20, 39), (40, 59)]
+
+    def test_single_chunk(self) -> None:
+        assert _chunk_ranges(30, 194) == [(0, 29)]
+
+
+class TestFrameName:
+    def test_six_digit_pattern(self) -> None:
+        assert _frame_name(7) == "000007.jpg"
+        assert _frame_name(123456) == "123456.jpg"
+
+
+class TestMaskStore:
+    def test_roundtrip_and_coverage(self, tmp_path: Path) -> None:
+        store = _MaskStore(4, 8, 6, tmp_path)
+        first = np.packbits(np.ones(8 * 6, dtype=bool))
+        second = np.packbits(np.zeros(8 * 6, dtype=bool))
+        store.put(0, first)
+        store.put(3, second)
+        assert store.covered_count() == 2
+        assert store.covered.tolist() == [True, False, False, True]
+        assert _unpack_mask(store.get(0), 8, 6).all()
+        assert not _unpack_mask(store.get(3), 8, 6).any()
+        store.discard()
+        assert not (tmp_path / "masks.bin").exists()
+
+
+class _FakeSegmentPredictor:
+    """Stands in for the SAM 2 predictor during segmented propagation.
+
+    Yields a constant mask per chunk (or a per-chunk mask when ``masks``
+    maps chunk starts), and records every init and prompt so tests can
+    assert the seeding behaviour.
+    """
+
+    def __init__(self, masks: dict[int, np.ndarray]) -> None:
+        self._masks = masks
+        self.inits: list[str] = []
+        self.prompts: list[tuple[int, tuple[int, int]]] = []
+
+    def init_state(self, path: str, offload_video_to_cpu: bool = True):
+        self.inits.append(str(path))
+        return object()
+
+    def add_new_points_or_box(
+        self, *, inference_state, frame_idx: int, obj_id: int, points, labels
+    ) -> None:
+        self.prompts.append((frame_idx, (points[0][0], points[0][1])))
+
+    def propagate_in_video(self, inference_state, reverse: bool = False):
+        directory = Path(self.inits[-1])
+        mask = self._masks[int(directory.name.split("-")[1])]
+        frames = sorted(directory.glob("*.jpg"))
+        order = range(len(frames)) if not reverse else reversed(range(len(frames)))
+        for local in order:
+            yield local, [1], _FakeTensor(mask)
+
+
+class TestSegmentedPropagation:
+    """The seeding protocol, exercised with a predictor stub."""
+
+    SQUARE = np.zeros((24, 32), dtype=bool)
+    SQUARE[8:16, 12:20] = True
+    EMPTY = np.zeros((24, 32), dtype=bool)
+
+    def _store(self, tmp_path: Path) -> _MaskStore:
+        return _MaskStore(60, 32, 24, tmp_path)
+
+    def test_anchor_forward_and_backward_coverage(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path)
+        predictor = _FakeSegmentPredictor({0: self.SQUARE, 20: self.SQUARE, 40: self.SQUARE})
+        ranges = [(0, 19), (20, 39), (40, 59)]
+
+        segments = _propagate_masks(
+            predictor, tmp_path, ranges, 30, (16, 12), store, full_vram=False
+        )
+
+        assert segments == 3
+        assert store.covered_count() == 60
+        # Anchor chunk first, then forward, then backward.
+        assert [Path(p).name for p in predictor.inits] == [
+            "chunk-000020",
+            "chunk-000040",
+            "chunk-000000",
+        ]
+        # The anchor keeps the raw point; neighbours inherit the centroid.
+        assert predictor.prompts[0] == (10, (16, 12))
+        assert predictor.prompts[1] == (0, (16, 12))
+        assert predictor.prompts[2] == (19, (16, 12))
+
+    def test_gone_object_stops_forward_seeding(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path)
+        predictor = _FakeSegmentPredictor({0: self.SQUARE, 20: self.EMPTY, 40: self.EMPTY})
+        ranges = [(0, 19), (20, 39), (40, 59)]
+
+        _propagate_masks(predictor, tmp_path, ranges, 10, (16, 12), store, full_vram=False)
+
+        # Chunk 1 was propagated (its seed existed) but yielded an empty
+        # mask; chunk 2 is skipped entirely because chunk 1's boundary has
+        # no centroid to seed from.
+        assert [Path(p).name for p in predictor.inits] == ["chunk-000000", "chunk-000020"]
+        assert store.covered[:40].all()
+        assert not store.covered[40:].any()
+
+
+class TestEndToEndSegmented:
+    """Real SAM 2 across segment seams, including the reverse pass."""
+
+    @NEEDS_SAM2_TINY
+    def test_static_object_tracked_across_three_segments(self, tmp_path: Path) -> None:
+        clip = tmp_path / "seg.mp4"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=320x240:d=1:rate=30",
+                "-vf",
+                "drawbox=x=100:y=80:w=60:h=40:color=white:t=fill",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(clip),
+            ],
+            check=True,
+        )
+
+        result = remove_background_video(
+            clip,
+            select_point=(130, 100),
+            anchor_frame=15,
+            chunk_frames=10,
+            cache_dir=Path.home() / ".cache/media-studio/sam2",
+        )
+
+        assert result.segments == 3
+        assert result.frames == 30
+        codec, _ = _ffprobe_video(result.destination)
+        assert codec == "prores"
+
+        # Both sides of the anchor must carry alpha: frame 5 lives in the
+        # backward (reverse-propagated) segment, frame 25 in a forward one.
+        for frame in (5, 25):
+            raw = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "quiet",
+                    "-i",
+                    str(result.destination),
+                    "-vf",
+                    f"select=eq(n\\,{frame})",
+                    "-vsync",
+                    "0",
+                    "-frames:v",
+                    "1",
+                    "-pix_fmt",
+                    "rgba",
+                    "-f",
+                    "rawvideo",
+                    "-",
+                ],
+                check=True,
+                capture_output=True,
+            ).stdout
+            alpha = np.frombuffer(raw, dtype=np.uint8).reshape(240, 320, 4)[:, :, 3]
+            # The box is only ~3% of the frame, so a perfect mask averages
+            # about 8; the prompt pixel itself must be fully opaque.
+            assert alpha.mean() > 5, f"frame {frame} lost its object"
+            assert alpha[100, 130] == 255, f"frame {frame} centre is not opaque"
