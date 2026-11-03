@@ -25,6 +25,7 @@ from .blender import (
 from .blender import (
     inspect as inspect_model,
 )
+from .cutout import MODELS, CutoutError, extract_signature, remove_background
 from .design import DesignError, validate_design
 from .design import render as render_design
 from .effectcraft import (
@@ -559,6 +560,60 @@ def build_parser() -> argparse.ArgumentParser:
     draw.add_argument("--check-only", action="store_true", help="check what is already rendered")
     draw.set_defaults(func=cmd_design_render)
 
+    image = subparsers.add_parser(
+        "image", help="project-less image operations (cutouts, signatures)"
+    )
+    image_sub = image.add_subparsers(dest="image_command", required=True)
+
+    remove_bg = image_sub.add_parser(
+        "remove-bg", help="remove an image's background with AI segmentation"
+    )
+    remove_bg.add_argument("source", help="image file to process")
+    remove_bg.add_argument(
+        "--out", default=None, help="destination; defaults to <stem>.nobg.png beside the source"
+    )
+    remove_bg.add_argument(
+        "--model",
+        choices=sorted(MODELS),
+        default="u2net",
+        help="segmentation model (default u2net; u2netp is fastest, birefnet-lite is strongest)",
+    )
+    remove_bg.add_argument(
+        "--select",
+        default=None,
+        metavar="X,Y",
+        help="keep only the object under this pixel (SAM model, ~375 MB download on first use)",
+    )
+    remove_bg.add_argument(
+        "--post-process",
+        action="store_true",
+        help="tighten the mask edges (morphological post-processing)",
+    )
+    remove_bg.set_defaults(func=cmd_image_remove_bg)
+
+    signature = image_sub.add_parser(
+        "extract-signature", help="lift a signature from a scan onto a transparent background"
+    )
+    signature.add_argument("source", help="scanned or photographed signature image")
+    signature.add_argument(
+        "--out",
+        default=None,
+        help="destination; defaults to <stem>.signature.png beside the source",
+    )
+    signature.add_argument(
+        "--threshold",
+        type=int,
+        default=None,
+        metavar="0-255",
+        help="manual ink cutoff; defaults to an automatic Otsu threshold",
+    )
+    signature.add_argument(
+        "--no-crop",
+        action="store_true",
+        help="keep the full image size instead of cropping to the ink",
+    )
+    signature.set_defaults(func=cmd_image_extract_signature)
+
     fonts = subparsers.add_parser("fonts", help="find and preview fonts")
     fonts_sub = fonts.add_subparsers(dest="fonts_command", required=True)
     find = fonts_sub.add_parser("search", help="search installed families by intent")
@@ -970,6 +1025,58 @@ def cmd_design_render(args: argparse.Namespace) -> int:
         print(f"  report: {report.report_path.relative_to(project.root)}")
     print("verdict: " + ("pass" if report.ok else "FAIL"))
     return EXIT_OK if report.ok else EXIT_FAILURE
+
+
+def cmd_image_remove_bg(args: argparse.Namespace) -> int:
+    """Remove an image's background, no project needed."""
+
+    select_point: tuple[int, int] | None = None
+    if args.select is not None:
+        try:
+            x_text, _, y_text = args.select.partition(",")
+            select_point = (int(x_text), int(y_text))
+        except ValueError:
+            print(f"error: --select expects X,Y, got {args.select!r}", file=sys.stderr)
+            return EXIT_FAILURE
+
+    try:
+        result = remove_background(
+            Path(args.source),
+            Path(args.out) if args.out else None,
+            model=args.model,
+            post_process=args.post_process,
+            select_point=select_point,
+        )
+    except CutoutError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    mode = "selective SAM" if result.selective else result.model
+    print(f"removed background with {mode}")
+    print(f"  source: {result.source}")
+    print(f"  output: {result.destination}")
+    return EXIT_OK
+
+
+def cmd_image_extract_signature(args: argparse.Namespace) -> int:
+    """Lift a signature onto a transparent background, no project needed."""
+
+    try:
+        result = extract_signature(
+            Path(args.source),
+            Path(args.out) if args.out else None,
+            threshold=args.threshold,
+            crop=not args.no_crop,
+        )
+    except CutoutError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"extracted signature (threshold {result.threshold}, {result.ink_pixels} ink pixels)")
+    print(f"  source: {result.source}")
+    print(f"  output: {result.destination}")
+    print(f"  cropped: {'yes' if result.cropped else 'no'}")
+    return EXIT_OK
 
 
 def cmd_fonts_search(args: argparse.Namespace) -> int:
