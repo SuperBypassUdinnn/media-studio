@@ -108,6 +108,11 @@ from .triposr import TripoSRError, image_to_mesh_project
 from .video import VideoError, qc_report, render_filmcraft
 from .video import handoff as video_handoff
 from .video import render as render_video
+from .video_cutout import (
+    VIDEO_CUTOUT_MODELS,
+    VideoCutoutError,
+    remove_background_video,
+)
 
 # A search class is not always the staging class: a stock photo belongs in the design set.
 STAGING_CLASS_FOR_KIND = {"image": "design", "video": "video", "audio": "audio", "music": "music"}
@@ -309,6 +314,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-recursive", action="store_true", help="only read the top level of a folder"
     )
     ingest_parser.set_defaults(func=cmd_video_ingest)
+
+    video_cutout = video_sub.add_parser(
+        "remove-bg",
+        help="remove the video background with SAM 2 into a transparent ProRes 4444 MOV",
+    )
+    video_cutout.add_argument("source", help="a video file to cut out")
+    video_cutout.add_argument(
+        "--out", type=Path, default=None, help="destination .mov file or folder"
+    )
+    video_cutout.add_argument(
+        "--select",
+        required=True,
+        metavar="X,Y",
+        help="point on the object to track, in source pixels (example: 640,360)",
+    )
+    video_cutout.add_argument(
+        "--frame", type=int, default=0, help="anchor frame carrying the prompt (default 0)"
+    )
+    video_cutout.add_argument(
+        "--model",
+        choices=sorted(VIDEO_CUTOUT_MODELS),
+        default="sam2.1-tiny",
+        help="SAM 2 checkpoint (default sam2.1-tiny; larger = better, slower)",
+    )
+    video_cutout.add_argument(
+        "--full-vram",
+        action="store_true",
+        help="keep all frames on the GPU (faster, needs several GB of VRAM)",
+    )
+    video_cutout.set_defaults(func=cmd_video_remove_bg)
 
     build_fc = video_sub.add_parser(
         "build", help="compile project.yaml manifest into a FilmCraft .fcproj timeline"
@@ -1620,6 +1655,43 @@ def cmd_video_ingest(args: argparse.Namespace) -> int:
 
     transcoded = sum(1 for result in results if not result.skipped)
     print(f"{transcoded} transcoded, {len(results) - transcoded} already Resolve-safe")
+    return EXIT_OK
+
+
+def cmd_video_remove_bg(args: argparse.Namespace) -> int:
+    """Remove a video background with SAM 2 into a transparent ProRes MOV."""
+
+    try:
+        select_x, _, select_y = args.select.partition(",")
+        select_point = (int(select_x), int(select_y))
+    except ValueError:
+        print(f"error: --select expects X,Y pixels, got {args.select!r}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    source = Path(args.source).expanduser()
+    destination = Path(args.out).expanduser() if args.out else None
+    # A bare --out is a folder: create it so the destination resolves inside it.
+    if destination is not None and destination.suffix != ".mov":
+        destination.mkdir(parents=True, exist_ok=True)
+
+    try:
+        result = remove_background_video(
+            source,
+            destination,
+            select_point=select_point,
+            anchor_frame=args.frame,
+            model=args.model,
+            full_vram=args.full_vram,
+        )
+    except VideoCutoutError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    size_mb = result.size_bytes / 1_000_000
+    print(f"removed video background with {result.model} ({result.device})")
+    print(f"  tracked:  {result.frames} frames from anchor {result.anchor_frame}")
+    print(f"  point:    {result.select_point[0]},{result.select_point[1]}")
+    print(f"  output:   {result.destination} ({size_mb:.1f} MB)")
     return EXIT_OK
 
 
