@@ -15,10 +15,13 @@ from media_studio.cutout import (
     CutoutError,
     _destination,
     _dilate,
+    _image_folder,
     _infer,
     _otsu_threshold,
     extract_signature,
+    extract_signature_folder,
     remove_background,
+    remove_background_folder,
 )
 
 #: rembg inference needs a cached model; skip those tests when it is absent.
@@ -328,3 +331,88 @@ class TestInferFallback:
                 remove_fn=self._remover([oom, RuntimeError("still out of memory")]),
             )
         assert recorder.calls == [None, ["CPUExecutionProvider"]]
+
+
+U2NETP_CACHE = Path.home() / ".rembg" / "models" / "u2netp" / "u2netp.onnx"
+NEEDS_U2NETP = pytest.mark.skipif(
+    not (HAS_REMBG and U2NETP_CACHE.is_file()), reason="u2netp model not cached"
+)
+
+
+class TestImageFolderListing:
+    def test_keeps_only_image_files_case_insensitively(self, tmp_path: Path) -> None:
+        for name in ("a.png", "b.JPG", "c.jpeg", "notes.txt", "clip.mp4"):
+            (tmp_path / name).write_bytes(b"x")
+        found = {p.name for p in _image_folder(tmp_path, None, recursive=True)}
+        assert found == {"a.png", "b.JPG", "c.jpeg"}
+
+    def test_recursive_walks_subfolders(self, tmp_path: Path) -> None:
+        (tmp_path / "a.png").write_bytes(b"x")
+        nested = tmp_path / "sub" / "deep"
+        nested.mkdir(parents=True)
+        (nested / "b.png").write_bytes(b"x")
+
+        recursive = [p.name for p in _image_folder(tmp_path, None, recursive=True)]
+        shallow = [p.name for p in _image_folder(tmp_path, None, recursive=False)]
+        assert recursive == ["a.png", "b.png"]
+        assert shallow == ["a.png"]
+
+    def test_missing_folder_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(CutoutError, match="not a folder"):
+            _image_folder(tmp_path / "nope", None, recursive=True)
+
+
+class TestExtractSignatureFolder:
+    def test_mirrors_the_input_tree_under_out(self, tmp_path: Path) -> None:
+        source_dir = tmp_path / "scans"
+        (source_dir / "sub").mkdir(parents=True)
+        _bimodal_image(source_dir / "a.png", ink=40, paper=200)
+        _bimodal_image(source_dir / "sub" / "b.png", ink=40, paper=200)
+        (source_dir / "notes.txt").write_text("ignored")
+
+        out_dir = tmp_path / "out"
+        results = extract_signature_folder(source_dir, out_dir)
+
+        assert [r.destination for r in results] == [
+            out_dir / "a.signature.png",
+            out_dir / "sub" / "b.signature.png",
+        ]
+        assert all(r.destination.is_file() for r in results)
+
+    def test_without_out_writes_beside_each_source(self, tmp_path: Path) -> None:
+        source_dir = tmp_path / "scans"
+        source_dir.mkdir()
+        _bimodal_image(source_dir / "a.png", ink=40, paper=200)
+
+        results = extract_signature_folder(source_dir, None)
+        assert results[0].destination == source_dir / "a.signature.png"
+
+    def test_no_recursive_skips_subfolders(self, tmp_path: Path) -> None:
+        source_dir = tmp_path / "scans"
+        (source_dir / "sub").mkdir(parents=True)
+        _bimodal_image(source_dir / "a.png", ink=40, paper=200)
+        _bimodal_image(source_dir / "sub" / "b.png", ink=40, paper=200)
+
+        results = extract_signature_folder(source_dir, None, recursive=False)
+        assert [r.source.name for r in results] == ["a.png"]
+
+
+class TestRemoveBackgroundFolder:
+    @NEEDS_U2NETP
+    def test_processes_every_image_and_mirrors_the_tree(self, tmp_path: Path) -> None:
+        source_dir = tmp_path / "photos"
+        (source_dir / "sub").mkdir(parents=True)
+        for name in ("a.png", "sub/b.png"):
+            canvas = _white_canvas((64, 64))
+            _draw_stroke(canvas, (30, 30, 160))
+            canvas.save(source_dir / name)
+
+        out_dir = tmp_path / "cut"
+        results = remove_background_folder(source_dir, out_dir, model="u2netp")
+
+        assert [r.destination for r in results] == [
+            out_dir / "a.nobg.png",
+            out_dir / "sub" / "b.nobg.png",
+        ]
+        assert all(r.destination.is_file() for r in results)
+        assert all(r.model == "u2netp" for r in results)

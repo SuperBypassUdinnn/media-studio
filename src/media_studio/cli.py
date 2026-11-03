@@ -25,7 +25,14 @@ from .blender import (
 from .blender import (
     inspect as inspect_model,
 )
-from .cutout import MODELS, CutoutError, extract_signature, remove_background
+from .cutout import (
+    MODELS,
+    CutoutError,
+    extract_signature,
+    extract_signature_folder,
+    remove_background,
+    remove_background_folder,
+)
 from .design import DesignError, validate_design
 from .design import render as render_design
 from .effectcraft import (
@@ -568,7 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
     remove_bg = image_sub.add_parser(
         "remove-bg", help="remove an image's background with AI segmentation"
     )
-    remove_bg.add_argument("source", help="image file to process")
+    remove_bg.add_argument("source", help="image file or folder to process")
     remove_bg.add_argument(
         "--out", default=None, help="destination; defaults to <stem>.nobg.png beside the source"
     )
@@ -589,12 +596,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="tighten the mask edges (morphological post-processing)",
     )
+    remove_bg.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="when the source is a folder, skip its subfolders",
+    )
     remove_bg.set_defaults(func=cmd_image_remove_bg)
 
     signature = image_sub.add_parser(
         "extract-signature", help="lift a signature from a scan onto a transparent background"
     )
-    signature.add_argument("source", help="scanned or photographed signature image")
+    signature.add_argument("source", help="signature image file or folder to process")
     signature.add_argument(
         "--out",
         default=None,
@@ -611,6 +623,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-crop",
         action="store_true",
         help="keep the full image size instead of cropping to the ink",
+    )
+    signature.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="when the source is a folder, skip its subfolders",
     )
     signature.set_defaults(func=cmd_image_extract_signature)
 
@@ -1039,44 +1056,79 @@ def cmd_image_remove_bg(args: argparse.Namespace) -> int:
             print(f"error: --select expects X,Y, got {args.select!r}", file=sys.stderr)
             return EXIT_FAILURE
 
+    source = Path(args.source)
+    out_dir = Path(args.out) if args.out else None
     try:
-        result = remove_background(
-            Path(args.source),
-            Path(args.out) if args.out else None,
-            model=args.model,
-            post_process=args.post_process,
-            select_point=select_point,
-        )
+        if source.is_dir():
+            results = remove_background_folder(
+                source,
+                out_dir,
+                model=args.model,
+                post_process=args.post_process,
+                recursive=not args.no_recursive,
+            )
+        else:
+            result = remove_background(
+                source,
+                out_dir,
+                model=args.model,
+                post_process=args.post_process,
+                select_point=select_point,
+            )
+            results = [result]
     except CutoutError as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
 
-    mode = "selective SAM" if result.selective else result.model
-    device = f" ({result.device})" if result.device != "gpu" else ""
-    print(f"removed background with {mode}{device}")
-    print(f"  source: {result.source}")
-    print(f"  output: {result.destination}")
+    if not results:
+        print(f"no images found in {source}")
+        return EXIT_OK
+
+    for result in results:
+        mode = "selective SAM" if result.selective else result.model
+        device = f" ({result.device})" if result.device != "gpu" else ""
+        print(f"removed background with {mode}{device}")
+        print(f"  source: {result.source}")
+        print(f"  output: {result.destination}")
     return EXIT_OK
 
 
 def cmd_image_extract_signature(args: argparse.Namespace) -> int:
     """Lift a signature onto a transparent background, no project needed."""
 
+    source = Path(args.source)
+    out_dir = Path(args.out) if args.out else None
     try:
-        result = extract_signature(
-            Path(args.source),
-            Path(args.out) if args.out else None,
-            threshold=args.threshold,
-            crop=not args.no_crop,
-        )
+        if source.is_dir():
+            results = extract_signature_folder(
+                source,
+                out_dir,
+                threshold=args.threshold,
+                crop=not args.no_crop,
+                recursive=not args.no_recursive,
+            )
+        else:
+            results = [
+                extract_signature(
+                    source,
+                    out_dir,
+                    threshold=args.threshold,
+                    crop=not args.no_crop,
+                )
+            ]
     except CutoutError as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
 
-    print(f"extracted signature (threshold {result.threshold}, {result.ink_pixels} ink pixels)")
-    print(f"  source: {result.source}")
-    print(f"  output: {result.destination}")
-    print(f"  cropped: {'yes' if result.cropped else 'no'}")
+    if not results:
+        print(f"no images found in {source}")
+        return EXIT_OK
+
+    for result in results:
+        print(f"extracted signature (threshold {result.threshold}, {result.ink_pixels} ink pixels)")
+        print(f"  source: {result.source}")
+        print(f"  output: {result.destination}")
+        print(f"  cropped: {'yes' if result.cropped else 'no'}")
     return EXIT_OK
 
 

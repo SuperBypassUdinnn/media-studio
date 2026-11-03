@@ -310,6 +310,97 @@ def extract_signature(
     )
 
 
+#: Image extensions the image commands treat as input.
+IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"})
+
+
+def _image_folder(
+    source_dir: Path,
+    destination_dir: Path | None,
+    recursive: bool,
+) -> list[Path]:
+    """List the image files under ``source_dir`` the commands would process.
+
+    Raises:
+        CutoutError: ``source_dir`` is not a directory.
+    """
+
+    if not source_dir.is_dir():
+        raise CutoutError(f"not a folder: {source_dir}")
+
+    pattern = "**/*" if recursive else "*"
+    return sorted(
+        candidate
+        for candidate in source_dir.glob(pattern)
+        if candidate.is_file() and candidate.suffix.lower() in IMAGE_SUFFIXES
+    )
+
+
+def _folder_target(
+    source_dir: Path,
+    destination_dir: Path | None,
+    candidate: Path,
+    suffix: str,
+) -> Path | None:
+    """The output file for one folder candidate, mirroring the input tree.
+
+    ``None`` keeps the output beside the source, which is what
+    ``_destination`` already implements for the single-file case. The path is
+    built in full because ``_destination``'s directory heuristic cannot see a
+    tree that does not exist yet.
+    """
+
+    if destination_dir is None:
+        return None
+    relative_parent = candidate.relative_to(source_dir).parent
+    return destination_dir / relative_parent / f"{candidate.stem}.{suffix}.png"
+
+
+def remove_background_folder(
+    source_dir: Path,
+    destination_dir: Path | None = None,
+    model: str = "u2net",
+    *,
+    post_process: bool = False,
+    recursive: bool = True,
+) -> list[RemoveResult]:
+    """Remove backgrounds from every image under ``source_dir``.
+
+    Non-image files are ignored, so a mixed folder of videos, sidecars and
+    documents is safe to point at. The output tree mirrors the input one.
+
+    Raises:
+        CutoutError: the folder is missing or one image fails.
+    """
+
+    results: list[RemoveResult] = []
+    for candidate in _image_folder(source_dir, destination_dir, recursive):
+        target = _folder_target(source_dir, destination_dir, candidate, "nobg")
+        results.append(remove_background(candidate, target, model, post_process=post_process))
+    return results
+
+
+def extract_signature_folder(
+    source_dir: Path,
+    destination_dir: Path | None = None,
+    *,
+    threshold: int | None = None,
+    crop: bool = True,
+    recursive: bool = True,
+) -> list[SignatureResult]:
+    """Extract signatures from every image under ``source_dir``.
+
+    Raises:
+        CutoutError: the folder is missing or one image has no ink.
+    """
+
+    results: list[SignatureResult] = []
+    for candidate in _image_folder(source_dir, destination_dir, recursive):
+        target = _folder_target(source_dir, destination_dir, candidate, "signature")
+        results.append(extract_signature(candidate, target, threshold=threshold, crop=crop))
+    return results
+
+
 def _dilate(mask: np.ndarray) -> np.ndarray:
     """One 4-neighbour dilation step, without a scipy dependency."""
 
