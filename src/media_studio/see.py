@@ -39,7 +39,7 @@ class PeekResult:
 
     source: Path
     kind: str
-    sheet: Path
+    sheet: Path | None
     facts: dict[str, str]
 
     @property
@@ -50,7 +50,8 @@ class PeekResult:
         lines = [f"peeked {name} ({self.kind})"]
         for key, value in self.facts.items():
             lines.append(f"  {key:<9} {value}")
-        lines.append(f"  sheet    {self.sheet}")
+        if self.sheet is not None:
+            lines.append(f"  sheet    {self.sheet}")
         return lines
 
 
@@ -270,6 +271,77 @@ def _peek_audio(source: Path, sheet_path: Path) -> tuple[str, dict[str, str]]:
     return "audio (waveform)", facts
 
 
+def _rendered_deliverable(root: Path, deliverable_id: str) -> Path | None:
+    """The rendered file for a deliverable, if one exists on disk."""
+
+    video_dir = root / "out" / "video"
+    if not video_dir.is_dir():
+        return None
+    for candidate in sorted(video_dir.glob(f"{deliverable_id}.*")):
+        if not candidate.stem.endswith("-sheet") and candidate.is_file():
+            return candidate
+    return None
+
+
+def peek_project(
+    source: Path,
+    destination: Path | None = None,
+    *,
+    columns: int = 4,
+    rows: int = 3,
+    width: int = 320,
+) -> PeekResult:
+    """Look at a project directory: deliverables, assets, and a render sheet.
+
+    Raises:
+        SeeError: the directory has no readable project.yaml, or the sheet
+            could not be written.
+    """
+
+    from .manifest import ManifestError, load_project
+
+    try:
+        project = load_project(source)
+    except ManifestError as error:
+        raise SeeError(f"cannot read project: {error}") from error
+
+    if destination is None:
+        sheet_path = project.root / "project.see.png"
+    elif destination.is_dir() or not destination.suffix:
+        destination.mkdir(parents=True, exist_ok=True)
+        sheet_path = destination / "project.see.png"
+    else:
+        sheet_path = destination
+
+    facts = {"project": project.slug, "title": project.title, "status": project.status}
+    first_render: Path | None = None
+    for deliverable in project.deliverables:
+        rendered = _rendered_deliverable(project.root, deliverable.id)
+        if rendered is not None and first_render is None:
+            first_render = rendered
+        state = f"not rendered ({deliverable.kind})"
+        if rendered is not None:
+            state = f"{rendered.name} ({deliverable.kind})"
+        facts[deliverable.id] = state
+
+    missing = 0
+    for asset_id, relative in sorted(project.assets.items()):
+        if not (project.root / relative).is_file():
+            missing += 1
+            facts[f"asset {asset_id}"] = f"missing: {relative}"
+    facts["assets"] = f"{len(project.assets)} declared, {missing} missing"
+
+    sheet: Path | None = sheet_path
+    if first_render is not None:
+        from .media import contact_sheet
+
+        contact_sheet(first_render, sheet_path, columns=columns, rows=rows, width=width)
+    else:
+        sheet = None
+
+    return PeekResult(source=source, kind="project", sheet=sheet, facts=facts)
+
+
 def peek(
     source: Path,
     destination: Path | None = None,
@@ -280,9 +352,16 @@ def peek(
 ) -> PeekResult:
     """Build a fact sheet plus a visual sheet for ``source``.
 
+    A directory containing ``project.yaml`` reports project state instead:
+    deliverables versus renders on disk, missing assets, and a contact sheet
+    of the first rendered video.
+
     Raises:
         SeeError: the file is missing, unreadable, or rendering failed.
     """
+
+    if source.is_dir():
+        return peek_project(source, destination, columns=columns, rows=rows, width=width)
 
     if not source.is_file():
         raise SeeError(f"no such file: {source}")

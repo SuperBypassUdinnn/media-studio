@@ -67,6 +67,7 @@ uv venv && uv pip install -e . pytest        # once, inside the checkout
   --select 850,280 --feather 2                         # SAM 2 alpha ProRes 4444
 .venv/bin/python -m media_studio.cli image remove-bg photo.jpg --model u2netp
 .venv/bin/python -m media_studio.cli see cutout.mov                       # facts + sheet
+.venv/bin/python -m media_studio.cli see ~/Projects/my-project            # project state
 bash scripts/selftest.sh
 ```
 

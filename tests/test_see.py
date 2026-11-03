@@ -130,3 +130,61 @@ class TestErrors:
     def test_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(SeeError, match="no such file"):
             peek(tmp_path / "ghost.mp4")
+
+
+def _project_with_render(tmp_path: Path) -> Path:
+    """A scaffolded project with one declared asset and one rendered video."""
+
+    from media_studio.project import scaffold_project
+
+    scaffold_project("demo", root=tmp_path)
+    root = tmp_path / "demo"
+    (root / "assets" / "video").mkdir(parents=True, exist_ok=True)
+    (root / "assets" / "video" / "clip.mp4").write_bytes(b"stub")
+    manifest = root / "project.yaml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "assets: {}",
+            "assets:\n  clip: assets/video/clip.mp4",
+        )
+    )
+    (root / "out" / "video").mkdir(parents=True, exist_ok=True)
+    _video(root / "out" / "video" / "master-16x9.mp4")
+    return root
+
+
+class TestPeekProject:
+    def test_reports_deliverable_state_and_sheet(self, tmp_path: Path) -> None:
+        root = _project_with_render(tmp_path)
+        result = peek(root)
+        assert result.kind == "project"
+        assert result.sheet == root / "project.see.png"
+        assert result.sheet is not None and result.sheet.is_file()
+        assert result.facts["project"] == "demo"
+        assert "master-16x9.mp4" in result.facts.get("master-16x9", "")
+
+    def test_out_folder_accepted(self, tmp_path: Path) -> None:
+        root = _project_with_render(tmp_path)
+        result = peek(root, tmp_path / "sheets")
+        assert result.sheet == tmp_path / "sheets" / "project.see.png"
+
+    def test_unrendered_deliverable_reported(self, tmp_path: Path) -> None:
+        from media_studio.project import scaffold_project
+
+        root = tmp_path / "blank"
+        scaffold_project("blank", root=tmp_path)
+        result = peek(root)
+        assert result.sheet is None
+        assert "not rendered" in result.facts.get("master-16x9", "")
+
+    def test_missing_asset_reported(self, tmp_path: Path) -> None:
+        root = _project_with_render(tmp_path)
+        (root / "assets" / "video" / "clip.mp4").unlink()
+        result = peek(root)
+        assert result.facts["assets"] == "1 declared, 1 missing"
+
+    def test_directory_without_manifest_raises(self, tmp_path: Path) -> None:
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        with pytest.raises(SeeError, match="cannot read project"):
+            peek(plain)
