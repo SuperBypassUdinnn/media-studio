@@ -88,6 +88,7 @@ from .presets import (
 )
 from .project import ProjectError, default_project_root, scaffold_project
 from .search import SEARCH_KINDS, SearchError, load_outcome, run_search, save_outcome
+from .see import SeeError, peek
 from .sources import module_named
 from .sources.base import Candidate, SourceError, http_fetch
 from .tools import CheckResult, DoctorReport, collect_toolchain, deep_checks, path_order_problem
@@ -819,6 +820,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="overwrite an existing composition scaffold"
     )
     motion_new.set_defaults(func=cmd_motion_new)
+
+    see = subparsers.add_parser(
+        "see", help="look at any media file: facts plus a visual sheet the agent can read"
+    )
+    see.add_argument("source", type=Path, help="any video, image, or audio file")
+    see.add_argument("--out", type=Path, default=None, help="sheet destination (file or folder)")
+    see.add_argument("--columns", type=int, default=4, help="sheet columns (default 4)")
+    see.add_argument("--rows", type=int, default=3, help="sheet rows (default 3)")
+    see.add_argument("--width", type=int, default=320, help="tile width in px (default 320)")
+    see.set_defaults(func=cmd_see)
 
     return parser
 
@@ -2199,6 +2210,26 @@ def cmd_motion_new(args: argparse.Namespace) -> int:
     except (ManifestError, EffectCraftError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
+
+
+def cmd_see(args: argparse.Namespace) -> int:
+    """Look at any media file: facts plus a visual sheet the agent can read."""
+
+    try:
+        result = peek(
+            args.source,
+            args.out,
+            columns=args.columns,
+            rows=args.rows,
+            width=args.width,
+        )
+    except SeeError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    for line in result.summary_lines:
+        print(line)
+    return EXIT_OK
 
 
 def cmd_motion_render(args: argparse.Namespace) -> int:
