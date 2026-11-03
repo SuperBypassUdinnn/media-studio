@@ -9,7 +9,10 @@ import pytest
 from PIL import Image, ImageDraw
 
 from media_studio.cutout import (
+    _REMBG_NAMES,
+    MODELS,
     CutoutError,
+    _destination,
     _dilate,
     _otsu_threshold,
     extract_signature,
@@ -171,6 +174,35 @@ class TestExtractSignature:
         source.write_bytes(b"not an image")
         with pytest.raises(CutoutError, match="cannot read image"):
             extract_signature(source)
+
+
+class TestModelNames:
+    def test_every_friendly_model_has_a_rembg_name(self) -> None:
+        assert set(_REMBG_NAMES) == set(MODELS)
+
+    def test_rembg_names_match_rembg_session_registry(self) -> None:
+        # Regression: new_session("human_seg") raised "No session class found";
+        # rembg's registry uses underscores and isnet-/birefnet- prefixes.
+        assert _REMBG_NAMES["human_seg"] == "u2net_human_seg"
+        assert _REMBG_NAMES["anime"] == "isnet-anime"
+        assert _REMBG_NAMES["general-use"] == "isnet-general-use"
+        assert _REMBG_NAMES["birefnet-lite"] == "birefnet-general-lite"
+
+
+class TestDestination:
+    def test_none_lands_beside_source(self) -> None:
+        source = Path("/somewhere/photo.jpg")
+        assert _destination(source, None, "nobg") == Path("/somewhere/photo.nobg.png")
+
+    def test_directory_out_gets_the_default_name(self, tmp_path: Path) -> None:
+        # Regression: a directory --out used to be passed to PIL as the file
+        # path and died with "unknown file extension".
+        target = _destination(Path("/x/photo.jpg"), tmp_path, "nobg")
+        assert target == tmp_path / "photo.nobg.png"
+
+    def test_explicit_file_is_kept(self, tmp_path: Path) -> None:
+        target = tmp_path / "custom.png"
+        assert _destination(Path("/x/photo.jpg"), target, "nobg") is target
 
 
 class TestRemoveBackgroundValidation:

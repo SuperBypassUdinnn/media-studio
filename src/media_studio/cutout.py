@@ -28,9 +28,8 @@ class CutoutError(RuntimeError):
     """Raised when a cutout operation cannot read or write an image."""
 
 
-#: Friendly model names mapped to rembg session names, with what each is for.
-#: Sizes are the one-time downloads rembg fetches into ~/.rembg/models/ on
-#: first use.
+#: Friendly model names with what each is for. Sizes are the one-time
+#: downloads rembg fetches into ~/.rembg/models/ on first use.
 MODELS: dict[str, str] = {
     "u2net": "general subjects (default, ~176 MB)",
     "u2netp": "lightweight general model (~5 MB)",
@@ -38,6 +37,18 @@ MODELS: dict[str, str] = {
     "anime": "anime characters (~170 MB)",
     "general-use": "stronger general segmentation (~170 MB)",
     "birefnet-lite": "highest quality edges (~930 MB)",
+}
+
+#: Friendly name -> rembg session name. rembg's session registry uses its own
+#: identifiers (u2net_human_seg, isnet-anime, ...), which do not match the
+#: friendly names above for everything except the u2net family.
+_REMBG_NAMES: dict[str, str] = {
+    "u2net": "u2net",
+    "u2netp": "u2netp",
+    "human_seg": "u2net_human_seg",
+    "anime": "isnet-anime",
+    "general-use": "isnet-general-use",
+    "birefnet-lite": "birefnet-general-lite",
 }
 
 #: The rembg session used when ``select_point`` asks SAM to isolate one object.
@@ -77,9 +88,11 @@ def _load(path: Path) -> Image.Image:
 
 
 def _destination(source: Path, destination: Path | None, suffix: str) -> Path:
-    if destination is not None:
-        return destination
-    return source.with_name(f"{source.stem}.{suffix}.png")
+    if destination is None:
+        return source.with_name(f"{source.stem}.{suffix}.png")
+    if destination.is_dir():
+        return destination / f"{source.stem}.{suffix}.png"
+    return destination
 
 
 def remove_background(
@@ -153,7 +166,7 @@ def _remove_with_session(
         kwargs["sam_prompt"] = sam_prompt
 
     try:
-        session = new_session(model)
+        session = new_session(_REMBG_NAMES.get(model, model))
         result = remove(image, session=session, **kwargs)
     except Exception as error:  # rembg raises bare RuntimeError variants
         raise CutoutError(f"background removal failed for {source}: {error}") from error
