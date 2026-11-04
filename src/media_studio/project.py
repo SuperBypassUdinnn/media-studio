@@ -30,6 +30,38 @@ TEMPLATE_SUBDIRECTORIES = (
 
 TEMPLATE_FILES = ("project.yaml", "README.md", ".gitignore")
 
+BRIEF_TEMPLATE = """\
+# Creative Brief: {{title}}
+
+## 1. Intent & Purpose
+<Concise statement of what is being produced and why>
+
+## 2. Target Audience & Platform
+- Primary Platform: <YouTube / Instagram Reels / Presentation / TikTok>
+- Aspect Ratio: <16:9 (1920x1080) | 9:16 (1080x1920) | 1:1 (1080x1080)>
+- Target Audience: <e.g., anime community, corporate stakeholders, general social>
+
+## 3. Style & Creative References
+- Mood / Energy: <e.g., high-octane, melancholic, minimalist, modern tech>
+- Reference Works: <links, paths, or visual references>
+- Typography & Brand Colors: <fonts, hex codes, or project brand tokens>
+
+## 4. Technical Constraints
+- Target Duration: <seconds or mm:ss>
+- Frame Rate: <24 fps (film/cinematic) | 30 fps (social/standard) | 60 fps (smooth AMV)>
+- Loudness Target: -14.0 LUFS (EBU R128 / YouTube standard)
+- True Peak Ceiling: -1.0 dBFS
+
+## 5. Success Criteria
+- [ ] Visual storytelling matches beat and pacing of audio.
+- [ ] Zero black frames or unlinked asset warnings.
+- [ ] Measured loudness within ±1.0 LUFS of target.
+- [ ] Contact sheet inspection confirms clean transitions.
+
+## 6. Execution Mode
+- Mode: <plan+result (default) | auto | draft-first>
+"""
+
 
 class ProjectError(RuntimeError):
     """Raised when a project cannot be created."""
@@ -39,9 +71,15 @@ class ProjectError(RuntimeError):
 class ScaffoldedProject:
     """Result of a successful scaffold."""
 
-    path: Path
+    root: Path
     slug: str
     title: str
+
+    @property
+    def path(self) -> Path:
+        """Backward-compatible alias for ``root``."""
+
+        return self.root
 
 
 def repository_root() -> Path:
@@ -119,6 +157,8 @@ def scaffold_project(
                 raise ProjectError(f"template file missing: {source}")
             rendered = _render(source.read_text(encoding="utf-8"), slug, resolved_title)
             (target / name).write_text(rendered, encoding="utf-8")
+        rendered_brief = _render(BRIEF_TEMPLATE, slug, resolved_title)
+        (target / "brief.md").write_text(rendered_brief, encoding="utf-8")
     except OSError as error:
         shutil.rmtree(target, ignore_errors=True)
         raise ProjectError(f"could not create {target}: {error}") from error
@@ -126,7 +166,7 @@ def scaffold_project(
         shutil.rmtree(target, ignore_errors=True)
         raise
 
-    return ScaffoldedProject(path=target, slug=slug, title=resolved_title)
+    return ScaffoldedProject(root=target, slug=slug, title=resolved_title)
 
 
 def _render(text: str, slug: str, title: str) -> str:

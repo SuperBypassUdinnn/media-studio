@@ -80,3 +80,15 @@ def test_scaffold_accepts_tilde_root(tmp_path: Path, monkeypatch: pytest.MonkeyP
     created = scaffold_project("tilde-project")
 
     assert created.path == tmp_path / "Projects" / "tilde-project"
+
+
+def test_scaffold_creates_brief_md(tmp_path: Path) -> None:
+    project = scaffold_project("test-brief", title="Test Brief Project", root=tmp_path)
+    brief_path = project.root / "brief.md"
+    assert brief_path.is_file()
+    content = brief_path.read_text()
+    assert "# Creative Brief: Test Brief Project" in content
+    assert "## 1. Intent & Purpose" in content
+    assert "## 4. Technical Constraints" in content
+    assert "-14.0 LUFS" in content
+    assert "## 6. Execution Mode" in content
