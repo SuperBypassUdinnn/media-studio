@@ -89,6 +89,7 @@ from .presets import (
     search as search_presets,
 )
 from .project import ProjectError, default_project_root, scaffold_project
+from .ramp import RAMP_CURVES, RampError, apply_speed_ramp
 from .search import SEARCH_KINDS, SearchError, load_outcome, run_search, save_outcome
 from .see import SeeError, peek
 from .sources import module_named
@@ -404,6 +405,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="scene score between 0 and 1 above which a cut is reported (default 0.3)",
     )
     scenes.set_defaults(func=cmd_video_scenes)
+
+    ramp_p = video_sub.add_parser(
+        "speed-ramp", help="apply non-linear velocity curves with optical flow interpolation"
+    )
+    ramp_p.add_argument("source", help="a video file to re-time")
+    ramp_p.add_argument(
+        "--curve",
+        choices=RAMP_CURVES,
+        default="fast_slow_fast",
+        help="velocity curve (default fast_slow_fast)",
+    )
+    ramp_p.add_argument(
+        "--slow-window",
+        nargs=2,
+        type=float,
+        required=True,
+        metavar=("START", "END"),
+        help="slow/freeze window in seconds, for example 1.5 3.0",
+    )
+    ramp_p.add_argument(
+        "--slow-factor",
+        type=float,
+        default=0.25,
+        help="playback multiplier inside the window (default 0.25)",
+    )
+    ramp_p.add_argument(
+        "--fast-factor",
+        type=float,
+        default=2.5,
+        help="playback multiplier outside the window for fast_slow_fast (default 2.5)",
+    )
+    ramp_p.add_argument(
+        "--optical-flow",
+        action="store_true",
+        default=True,
+        help="attempt motion-compensated interpolation first (default on)",
+    )
+    ramp_p.add_argument(
+        "--no-optical-flow",
+        action="store_false",
+        dest="optical_flow",
+        help="use blend frame interpolation instead of optical flow",
+    )
+    ramp_p.add_argument("--fps", type=int, default=60, help="output frame rate (default 60)")
+    ramp_p.add_argument(
+        "--out", type=Path, default=None, help="destination file (default beside the source)"
+    )
+    ramp_p.set_defaults(func=cmd_video_speed_ramp)
 
     build_fc = video_sub.add_parser(
         "build", help="compile project.yaml manifest into a FilmCraft .fcproj timeline"
@@ -1845,6 +1894,38 @@ def cmd_video_scenes(args: argparse.Namespace) -> int:
     for index, (start, end, start_s, end_s) in enumerate(ranges, start=1):
         end_text = f"{end_s:.3f}s" if end_s >= 0 else "end"
         print(f"  scene {index}: frames {start}-{end}  ({start_s:.3f}s - {end_text})")
+    return EXIT_OK
+
+
+def cmd_video_speed_ramp(args: argparse.Namespace) -> int:
+    """Apply a non-linear velocity curve to a video file."""
+
+    source = Path(args.source).expanduser()
+    destination = Path(args.out).expanduser() if args.out else None
+    slow_window = (float(args.slow_window[0]), float(args.slow_window[1]))
+
+    try:
+        result = apply_speed_ramp(
+            source,
+            destination,
+            curve=args.curve,
+            slow_window=slow_window,
+            slow_factor=args.slow_factor,
+            fast_factor=args.fast_factor,
+            optical_flow=args.optical_flow,
+            fps=args.fps,
+        )
+    except (IngestError, RampError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    size_mb = result.size_bytes / 1_000_000
+    fallback = " (blend fallback)" if result.fallback_used else ""
+    print(
+        f"speed ramp {result.source.name} -> {result.destination.name} "
+        f"({result.curve}, {result.fps} fps{fallback})"
+    )
+    print(f"  duration: {result.duration:.2f} s, size: {size_mb:.1f} MB, resolution: 1920x1080")
     return EXIT_OK
 
 
