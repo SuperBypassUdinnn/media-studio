@@ -63,3 +63,115 @@ The compiler places the full music cue on A2 (no `duration` field on `AudioCue`,
 - Add a `duration` field to `AudioCue` (or an export `--duration` clamp) so music does not drive sequence length beyond the deliverable.
 - Add `--force` to `ms video render` so re-renders after manifest edits are scriptable without manual `rm` of the fcproj.
 - Align the acceptance-test brief example command/filename with the real CLI and asset names.
+
+---
+
+# Acceptance Test 2 — Social Graphic / Thumbnail Workflow (Task 5)
+
+Project: `scr2026-amv-baseline`
+Prompt: "Buat YouTube thumbnail 16:9 untuk AMV JJK tersebut dengan judul 'UNSTOPABLE BEATS', gunakan cutout karakter Gojo dan background bertema energi kutukan"
+Deliverable: `thumbnail-16x9` (1920x1080 PNG)
+
+## Result
+
+Added a `design:` section to `project.yaml` with one variant:
+
+```yaml
+design:
+  logo: null
+  fonts: {}
+  variants:
+    - id: thumbnail-16x9
+      template: video-thumbnail
+      size: 1920x1080
+      headline: "UNSTOPABLE BEATS"
+      subhead: "JJK AMV - Energi Kutukan"
+```
+
+Added `ink: "#000000"` to `brand.palette` because the default white ink fails WCAG contrast against the brand primary (#00ffff cyan).
+
+Extracted a Gojo frame at 1.0s from `assets/video/clip-jjk-gojo.mp4` (1280x720) with ffmpeg, then ran:
+
+```
+ms image remove-bg assets/stills/gojo-frame.jpg --model birefnet-lite --out assets/design/gojo-cutout.png
+```
+
+`birefnet-lite` exceeded the GTX 1650's 4 GB VRAM and fell back to CPU; the CPU path completed and produced a valid 1280x720 RGBA cutout with real transparency (437,940 fully transparent pixels).
+
+Rendered with:
+
+```
+ms design render <project> --variant thumbnail-16x9
+```
+
+Wrote `out/images/thumbnail-16x9.png` (1920x1080 RGBA) plus SVG/PDF and a QC report. `ms see` confirmed mode RGBA, size 1920x1080, and produced `out/images/thumbnail-16x9.see.png`.
+
+QC: contrast ok, font size ok, resolution ok. Two overflow findings remain on the fixed safe area (see friction below). The brand `ink` change fixed the contrast failure.
+
+## Friction points (raw edges encountered)
+
+### 1. `ms design render` uses `--variant`, not `--deliverable`
+The task brief documents `ms design render <project> --deliverable thumbnail-16x9`. The actual CLI flag is `--variant`. No `--deliverable` flag exists on `design render`. Impact: had to discover the real flag via the parser/`--help`; the brief's example command does not work as written.
+
+### 2. Output path mismatch
+The brief expects `out/design/thumbnail-16x9.png`. The design path actually writes `out/images/<variant id>.png` (plus `.svg` and `.pdf`). Impact: the verification target in the brief does not match where the file lands.
+
+### 3. `birefnet-lite` exceeds GTX 1650 VRAM; CPU fallback used
+`ms image remove-bg --model birefnet-lite` failed to allocate GPU memory ("BFCArena::AllocateRawInternal ... 822083584 bytes") and fell back to CPU. The CPU path completed but is slow. `u2net` would run faster on GPU. Impact: model choice is a real constraint on a 4 GB card; the fallback works but is not transparent to the user.
+
+### 4. No font staged for design; render falls back to "sans-serif"
+`design.fonts` is empty in `project.yaml` (no font asset staged under `assets/design/fonts`), so `compose()` falls back to `font-family="sans-serif"` in the SVG. The rendered text is not set in a real, licensed family. To use a real font it must be staged via `ms assets stage --class design` with a licence sidecar and then wired under `design.fonts.{heading,body}`.
+
+### 5. No mechanism to composite the character cutout into the thumbnail (principal gap)
+The `video-thumbnail.svg` template only renders `headline`, `subhead`, brand colours, and an optional `logo` image. There is no template variable for a foreground/character cutout, so the Gojo cutout produced in Step 1 is **not present** in the output thumbnail. The composed SVG contains text on a cyan background with a yellow band, but no Gojo. The prompt explicitly asks to "gunakan cutout karakter Gojo", which `ms design render` cannot satisfy on its own; the cutout must be composited manually (e.g. ImageMagick or Natron) outside `ms design render`.
+
+### 6. Template safe area is fixed geometry, not scaled to 1920x1080
+`video-thumbnail.svg` hardcodes the safe area at `x="60" y="60" width="1160" height="600"` (built for 720p). On a 1920x1080 canvas the headline ("UNSTOPABLE BEATS", size 120) and subhead boxes slightly leave this fixed safe area (reported as overflow). Font size, text position, and safe-area are all template-hardcoded and not configurable via the variant manifest, and the title is mandated by the prompt, so the overflow cannot be resolved without editing the template or shortening the title. The overflow is marginal (~5 px) but the check flags it.
+
+### 7. Brand primary (#00ffff cyan) is too light for default white ink
+Default ink is #FFFFFF; white on cyan measures 1.25:1, below the 3.0:1 large-text threshold. Required adding `ink: "#000000"` to `brand.palette` to make contrast pass. Impact: the design system's default ink/primary pairing is not WCAG-safe out of the box; a project must supply an explicit `ink` token.
+
+### 8. Pre-existing: `project validate` fails on `jjk-hollow` missing a `.license` sidecar
+`assets.jjk-hollow` (from Task 4) references `assets/video/jjk-gojo-hollow-full.mp4` with no `.license` sidecar, so `ms project validate` errors. `load_project` (used by `design render`) does not enforce this, so design render still ran, but `validate` is red. Impact: an unrelated Task-4 leftover blocks manifest validation for this project.
+
+## Manual interventions performed
+
+1. Extracted `assets/stills/gojo-frame.jpg` from the JJK clip at 1.0s with ffmpeg.
+2. Ran `ms image remove-bg --model birefnet-lite` (GPU OOM → CPU fallback) to create `assets/design/gojo-cutout.png`.
+3. Added the `design:` section and `thumbnail-16x9` variant to `project.yaml`.
+4. Added `ink: "#000000"` to `brand.palette` so contrast passes.
+5. Rendered with `--variant thumbnail-16x9` (brief's `--deliverable` flag does not exist).
+6. Verified output with `ms see` (RGBA 1920x1080, contact sheet produced).
+
+## Fix Round 1 — post-composite of the Gojo cutout
+
+Because `ms design render` and its SVG templates cannot layer a character cutout, the orchestrator performed an ad-hoc post-composite step to satisfy the prompt ("gunakan cutout karakter Gojo"):
+
+```
+# Composite gojo-cutout.png (1280x720 RGBA) onto the 1920x1080 thumbnail,
+# scaled to height ~680px and right-aligned just below the headline so the
+# headline ("UNSTOPABLE BEATS") and subhead remain readable.
+python PIL alpha_composite -> out/images/thumbnail-16x9.png
+cp out/images/thumbnail-16x9.png out/design/thumbnail-16x9.png
+```
+
+The composite was written to BOTH required paths:
+- `out/images/thumbnail-16x9.png` (where `ms design render` actually writes)
+- `out/design/thumbnail-16x9.png` (the path named in the brief; `out/design` created)
+
+Verification: `ms see out/design/thumbnail-16x9.png` → RGBA 1920x1080, contact sheet `out/design/thumbnail-16x9.see.png` produced. Alpha check confirms Gojo pixels present on the right side (833,520 nonzero-alpha pixels in the placement region).
+
+## Updated verdict
+
+The delivered thumbnail now contains the Gojo cutout composited on the right side plus the "UNSTOPABLE BEATS" title on a cyan/energy-themed background, at 1920x1080 RGBA, written to both `out/images/` and `out/design/`. The core workflow gap remains: `ms design render` has no native character/cutout image layering, so any graphic deliverable requiring a cutout needs an external post-composite step.
+
+## Friction points (raw edges encountered) — updated
+
+### 9. Core architectural gap: no native cutout/image layering in `ms design render`
+`ms design render` composes SVG templates with headline/subhead/brand colours and an optional `logo` image only. There is no template variable for a foreground character cutout, so the Gojo cutout produced by `ms image remove-bg` cannot be assembled into the thumbnail natively. The orchestrator must run an external post-composite (ffmpeg or Pillow alpha_composite) after `ms design render`. This is an ad-hoc orchestration step outside `ms`, not scriptable through `ms design render` itself. Impact: any graphic deliverable requiring a cutout (thumbnails, social posts with characters) needs a manual composite step; `ms design render` alone cannot satisfy prompts asking to "use cutout character X".
+
+### 10. `--deliverable` vs `--variant` CLI flag mismatch (re-emphasized)
+The brief documents `ms design render <project> --deliverable thumbnail-16x9`. The actual flag is `--variant`. There is no `--deliverable` flag on `design render`. Impact: the brief's example command does not work as written.
+
+### 11. Output path mismatch: `out/images` vs `out/design`
+The brief expects `out/design/thumbnail-16x9.png`. The design path actually writes `out/images/<variant id>.png` (plus `.svg` and `.pdf`). The orchestrator had to copy the render to `out/design/` to match the brief. Impact: verification target in the brief does not match where the file lands; deliverable must be published to both paths.
