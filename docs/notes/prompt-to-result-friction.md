@@ -175,3 +175,129 @@ The brief documents `ms design render <project> --deliverable thumbnail-16x9`. T
 
 ### 11. Output path mismatch: `out/images` vs `out/design`
 The brief expects `out/design/thumbnail-16x9.png`. The design path actually writes `out/images/<variant id>.png` (plus `.svg` and `.pdf`). The orchestrator had to copy the render to `out/design/` to match the brief. Impact: verification target in the brief does not match where the file lands; deliverable must be published to both paths.
+
+---
+
+# Acceptance Test 3 — Motion Graphics Intro Sequence (Task 6)
+
+Project: `scr2026-amv-baseline`
+Prompt: "Buat title animation intro 5 detik dengan teks 'PROJECT GOJO', gaya anime minimalis futuristik"
+(i.e. "Make a 5-second title animation intro with text 'PROJECT GOJO', minimalist futuristic anime style").
+Deliverable: `out/motion/title-intro.mov` (ProRes 4444 RGBA, 1280x720, 30 fps, exactly 5.0 s)
+
+## Result
+
+Rendered via `ms motion title` (project path positional, `--text`, `--duration 5.0`, `--animation fade_in_up`, `--glow`, absolute `--out` ending in `.mov`):
+
+```
+ms motion title /home/superbypassudin/Projects/scr2026-amv-baseline \
+  --text "PROJECT GOJO" \
+  --duration 5.0 \
+  --animation fade_in_up \
+  --glow \
+  --out /home/superbypassudin/Projects/scr2026-amv-baseline/out/motion/title-intro.mov
+```
+
+Verdict: `pass`, exit 0. Artifacts: `title-intro.mov`, `title-intro.ecp`, `title-intro_compiled.ecproj`, `title-intro.json`, `title-intro.see.png`.
+
+Verified with `ms see` and ffprobe:
+
+| Check | Value | Target | Status |
+|---|---|---|---|
+| duration | 5.00 s | 5.0 s | ok |
+| resolution | 1280x720 | 1280x720 | ok |
+| fps | 30 | 30 | ok |
+| codec / pixel format | prores / yuva444p12le | ProRes 4444 with alpha | ok |
+| frames | 150 | 5.0 s × 30 fps | ok |
+| audio | none | none (title, no music) | ok |
+| contact sheet | title-intro.see.png | present | ok |
+
+Contact sheet shows "PROJECT GOJO" typography in white across frames on the checkered alpha background, confirming the title text is present and legible.
+
+## Friction points (raw edges encountered)
+
+### 1. `--out` must be an absolute path
+`ms motion title` reporting crashes on `relative_to` when `--out` is relative (observed in the Task 3 probe and again here). The CLI must receive an absolute path for the verdict to print and for `MotionResult.ok` to resolve. Impact: relative `--out` breaks reporting; users must compute an absolute path before invoking.
+
+### 2. `.mov` extension coercion required
+EffectCraft renames `.mp4` → `.mov` for ProRes RGBA output. `MotionResult.ok` is `false` unless `--out` uses `.mov`, so the CLI must coerce/validate the extension to `.mov` rather than silently failing on a user-supplied `.mp4`.
+
+### 3. `--text` carries the title; `--text`/`--out` are required flags
+The brief's example command style (positional text, `--style`) does not match the actual CLI (`--text TEXT`, `--out OUT`, `--animation ANIMATION`, `--duration DURATION`, `--glow`). No `--style` flag exists on `ms motion title`. Impact: brief examples do not work as written; flags must be discovered via `--help`.
+
+### 4. Headless renderer defaults to CPU; GPU is opt-in
+The EffectCraft headless engine renders on the CPU by default (`--gpu` to opt in). Observed peak VRAM ~176 MiB / 4096 MiB (~4%), so CPU is acceptable for titles, but GPU acceleration is not transparent and must be requested explicitly.
+
+## Manual interventions performed
+
+1. Ran `ms motion title` with the absolute `.mov` `--out` path exactly as specified in the key-context CLI format.
+2. Verified output with `ms see` (duration 5.00 s, 1280x720, prores yuva444p12le, contact sheet produced).
+3. Cross-checked with ffprobe (codec prores, pix_fmt yuva444p12le, 1280×720, 30/1 fps, duration 5.000000).
+
+## Verdict
+
+**Pass.** The 5-second "PROJECT GOJO" title intro rendered correctly as ProRes 4444 RGBA at 1280x720, 30 fps, exactly 5.0 s, with a contact sheet for visual inspection. No external post-processing was required (unlike Design, which needed a manual cutout composite).
+
+---
+
+## Final Synthesis: Prioritized Pipeline Evolutions (Phase 2 Roadmap)
+
+This synthesis consolidates all friction items recorded across Video (Task 4), Design (Task 5), and Motion (Task 6) acceptance tests, organized into three tiers for the Phase 2 roadmap of the `ms` CLI.
+
+### Tier 1 — Blocker / High Value
+
+These items block end-to-end scriptability or prevent the CLI from satisfying the user's prompt without external tooling.
+
+**1.1 Native image/cutout layering in `ms design render` (Task 5, #5/#9)**
+`ms design render` composes SVG templates with headline/subhead/brand colours and an optional `logo` image only. There is no template variable for a foreground character cutout, so the Gojo cutout produced by `ms image remove-bg` cannot be assembled into the thumbnail natively. The orchestrator had to run an external post-composite (Pillow alpha_composite) after `ms design render`. Any graphic deliverable requiring a cutout (thumbnails, social posts with characters) needs a manual composite step outside `ms`.
+- *Evolution:* Add a foreground/image layer variable (e.g. `cutout` or `foreground` asset) to the `video-thumbnail` SVG template and wire it under `design.variants[].image` so `ms design render` can layer cutouts natively.
+
+**1.2 `ms video render --force` (Task 4, #3)**
+`render` compiles to `out/<id>.fcproj`. After the first render that file exists; re-running `render` after any manifest change fails with the D46 guard ("already exists and may carry manual GUI edits") because `render` has no `--force` flag (unlike `build --force`). The user must manually `rm` the fcproj between render attempts. Not scriptable end-to-end.
+- *Evolution:* Add a `--force` flag to `ms video render` that overwrites the existing fcproj, making re-renders after manifest edits scriptable.
+
+**1.3 Template-adaptive safe areas (Task 5, #6)**
+`video-thumbnail.svg` hardcodes the safe area at `x="60" y="60" width="1160" height="600"` (built for 720p). On a 1920x1080 canvas the headline and subhead boxes slightly leave this fixed safe area. Font size, text position, and safe-area are all template-hardcoded and not configurable via the variant manifest. The overflow cannot be resolved without editing the template or shortening the title.
+- *Evolution:* Make safe-area geometry scale with the variant `size` (percentage-based or computed from canvas dimensions) and expose font size, text position, and safe-area as configurable variant fields.
+
+### Tier 2 — Workflow Smoothness
+
+These items are not blockers but require manual intervention, out-of-`ffmpeg` steps, or unreliable output that degrades the authoring experience.
+
+**2.1 `librosa` integration for true beat transients in `ms video beat-sync` (Task 4, #2)**
+`detect_beats()` imports `librosa`; it is not installed in the media-studio `.venv`, so detection falls back to `_ffmpeg_beat_fallback`, which emits a constant 128 BPM grid across the *entire* track (508 beat markers instead of real audio-transient detection). The grid happens to align well enough for this AMV but is not true beat-sync to the music's transients.
+- *Evolution:* Install `librosa` in the media-studio environment so `detect_beats()` performs real transient-based beat detection.
+
+**2.2 Unified `--deliverable` vs `--variant` flags (Task 4/#6 + Task 5/#1/#10)**
+The brief documents `ms design render <project> --deliverable thumbnail-16x9`, but the actual flag is `--variant`. Similarly `ms video render` uses `--deliverable`. The flag naming is inconsistent across subcommands, so brief examples do not work as written.
+- *Evolution:* Unify on a single flag name (`--deliverable` or `--variant`) across `video render`, `design render`, and related subcommands, and accept both as aliases during a transition period.
+
+**2.3 Automatic sequence length clipping to video track length (Task 4, #4)**
+The compiler places the full music cue on A2 (no `duration` field on `AudioCue`, and `file.exportMedia` has no duration clamp), so the sequence runs the full 238s track while the 15s of video ends at 15s, leaving ~223s of black video tail. The fix required an out-of-`ms` ffmpeg trim of the music plus a new license sidecar.
+- *Evolution:* Add a `duration` field to `AudioCue` (or an export `--duration` clamp) so music does not drive sequence length beyond the deliverable, automatically clipping the sequence to the video track length and avoiding music-tail overhang.
+
+### Tier 3 — CLI Hygiene
+
+These are small, low-effort fixes that remove paper cuts and make the CLI match its documentation.
+
+**3.1 Relative path normalization in `ms motion title` (Task 3/#1 + Task 6/#1)**
+`ms motion title` crashes on `relative_to` when `--out` is relative. The CLI should normalize a relative `--out` against the project root (or cwd) instead of crashing.
+- *Evolution:* Normalize relative `--out` paths to absolute before passing to EffectCraft reporting.
+
+**3.2 Automatic `.mov` extension coercion (Task 3/#2 + Task 6/#2)**
+EffectCraft emits ProRes 4444 with alpha and renames `.mp4` → `.mov`; `MotionResult.ok` is `false` unless `--out` uses `.mov`. Users supplying `.mp4` get a silent failure.
+- *Evolution:* Coerce the `--out` extension to `.mov` (or validate and warn) for ProRes/RGBA motion output so the reported verdict matches the emitted container.
+
+### Prioritization summary
+
+| Tier | Item | Source | Effort | Value |
+|---|---|---|---|---|
+| 1 | Native cutout/image layering in `ms design render` | Task 5 | High | High (unblocks cutout graphics) |
+| 1 | `ms video render --force` | Task 4 | Low | High (scriptable re-renders) |
+| 1 | Template-adaptive safe areas | Task 5 | Medium | Medium (fixes overflow) |
+| 2 | `librosa` for true beat transients | Task 4 | Medium | High (real beat-sync) |
+| 2 | Unified `--deliverable`/`--variant` flags | Task 4/5 | Low | Medium (CLI consistency) |
+| 2 | Auto clip sequence to video track length | Task 4 | Medium | High (no black tail) |
+| 3 | Relative path normalization in `ms motion title` | Task 3/6 | Low | Low |
+| 3 | Automatic `.mov` extension coercion | Task 3/6 | Low | Low |
+
