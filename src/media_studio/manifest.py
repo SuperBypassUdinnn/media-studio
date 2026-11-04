@@ -41,7 +41,7 @@ MANIFEST_KEYS = frozenset(
 DESIGN_KEYS = frozenset({"logo", "fonts", "variants"})
 VARIANT_KEYS = frozenset({"id", "template", "size", "headline", "subhead"})
 VIDEO_KEYS = frozenset({"shots", "voice", "music", "titles", "fade_in", "fade_out", "crossfade"})
-SHOT_KEYS = frozenset({"asset", "in", "duration", "transition"})
+SHOT_KEYS = frozenset({"asset", "in", "duration", "transition", "shot_type"})
 TITLE_KEYS = frozenset({"text", "start", "duration", "size", "colour", "position"})
 CUE_KEYS = frozenset({"asset", "in", "gain", "fade_in", "fade_out", "duck"})
 DELIVERABLE_KEYS = frozenset(
@@ -79,6 +79,7 @@ class Shot:
     in_point: float = 0.0
     duration: float | None = None
     transition: str = "cut"
+    shot_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -406,6 +407,7 @@ def _video(value: Any) -> VideoPlan | None:
                 in_point=_optional_float(entry.get("in"), "in") or 0.0,
                 duration=_optional_float(entry.get("duration"), "duration"),
                 transition=transition,
+                shot_type=str(entry["shot_type"]) if entry.get("shot_type") else None,
             )
         )
     if not shots:

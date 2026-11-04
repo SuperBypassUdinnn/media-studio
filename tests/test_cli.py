@@ -83,6 +83,16 @@ def test_video_cli_subparsers_registered() -> None:
         assert cmd in video_sub
 
 
+def test_video_parallax_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(["video", "parallax", "--help"])
+    assert raised.value.code == 0
+    out = capsys.readouterr().out
+    assert "usage: ms video parallax" in out
+    assert "--bg BG" in out
+    assert "--subject SUBJECT" in out
+
+
 def test_video_cmd_and_place_mock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

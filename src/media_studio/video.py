@@ -27,6 +27,7 @@ from .ingest import IngestError, probe_media
 from .ledger import read_sidecar
 from .manifest import AudioCue, Deliverable, Project, VideoPlan
 from .mlt import AudioPlan, Clip, Timeline, Title, ducking_from_speech, timeline_seconds
+from .parallax import ParallaxError, compose_parallax
 from .presets import PresetError, resolve_effects
 from .sidecar import UNKNOWN_SPDX
 
@@ -148,15 +149,39 @@ def build_timeline(
         raise VideoError(
             "project.yaml has no video.shots; add a video section naming the assets to cut together"
         )
-    clips = tuple(
-        Clip(
-            resource=_resolve_asset(project, shot.asset),
-            duration=_shot_duration(project, shot.asset, shot.duration),
-            in_point=shot.in_point,
-            transition=shot.transition,
+    clips: list[Clip] = []
+    for shot in plan.shots:
+        duration = _shot_duration(project, shot.asset, shot.duration)
+        if shot.shot_type == "parallax":
+            # A parallax shot is pre-composited into a scratch clip before the
+            # timeline is assembled; the declared asset is the subject cutout.
+            source = _resolve_asset(project, shot.asset)
+            scratch = scratch_directory(project.slug)
+            scratch.mkdir(parents=True, exist_ok=True)
+            composed = scratch / f"parallax-{Path(source).stem}.mov"
+            try:
+                compose_parallax(
+                    background=source,
+                    subject=source,
+                    duration=duration,
+                    destination=composed,
+                    fps=60,
+                    motion="push_in",
+                )
+            except ParallaxError as error:
+                raise VideoError(str(error)) from error
+            resource = composed
+        else:
+            resource = _resolve_asset(project, shot.asset)
+        clips.append(
+            Clip(
+                resource=resource,
+                duration=duration,
+                in_point=shot.in_point,
+                transition=shot.transition,
+            )
         )
-        for shot in plan.shots
-    )
+    clips = tuple(clips)
     clips, music_overrides, titles_from_presets = _apply_effects(project, plan, clips)
 
     width, height, fps = _geometry(deliverable)

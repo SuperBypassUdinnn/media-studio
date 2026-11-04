@@ -75,6 +75,7 @@ from .materials import (
 )
 from .media import MediaError, extract_stills, generate_proxy, probe
 from .natron import NatronError, composite_project
+from .parallax import ParallaxError, compose_parallax
 from .presets import (
     KINDS as PRESET_KINDS,
 )
@@ -366,6 +367,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="frames per propagation segment (default: sized to a 2 GB state budget)",
     )
     video_cutout.set_defaults(func=cmd_video_remove_bg)
+
+    parallax_p = video_sub.add_parser(
+        "parallax", help="compose 2.5D multi-plane parallax camera shots"
+    )
+    parallax_p.add_argument("--bg", type=Path, required=True, help="background plate")
+    parallax_p.add_argument(
+        "--subject", type=Path, required=True, help="RGBA subject cutout (alpha required)"
+    )
+    parallax_p.add_argument("--fg", type=Path, default=None, help="optional foreground layer")
+    parallax_p.add_argument(
+        "--duration", type=float, required=True, help="shot duration in seconds"
+    )
+    parallax_p.add_argument("--fps", type=int, default=60, help="output frame rate (default 60)")
+    parallax_p.add_argument(
+        "--resolution", default="1920x1080", help="output resolution WxH (default 1920x1080)"
+    )
+    parallax_p.add_argument("--motion", default="push_in", help="camera motion (default push_in)")
+    parallax_p.add_argument(
+        "--vignette",
+        type=float,
+        default=0.3,
+        help="vignette strength, 0 disables (default 0.3)",
+    )
+    parallax_p.add_argument("--out", type=Path, default=None, help="destination .mov file")
+    parallax_p.set_defaults(func=cmd_video_parallax)
 
     scenes = video_sub.add_parser(
         "scenes", help="list hard cuts so a SAM 2 prompt can be placed per scene"
@@ -1761,6 +1787,33 @@ def cmd_video_remove_bg(args: argparse.Namespace) -> int:
     print(f"  point:    {result.select_point[0]},{result.select_point[1]}")
     print(f"  feather:  {result.feather} px")
     print(f"  output:   {result.destination} ({size_mb:.1f} MB)")
+    return EXIT_OK
+
+
+def cmd_video_parallax(args: argparse.Namespace) -> int:
+    """Compose a 2.5D multi-plane parallax camera shot."""
+
+    try:
+        result = compose_parallax(
+            background=args.bg,
+            subject=args.subject,
+            foreground=args.fg,
+            destination=args.out,
+            duration=args.duration,
+            fps=args.fps,
+            resolution=args.resolution,
+            motion=args.motion,
+            vignette=args.vignette,
+        )
+    except ParallaxError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"composed {result.motion} parallax shot -> {result.destination}")
+    print(f"  resolution: {result.resolution} @ {result.fps} fps")
+    print(f"  duration:   {result.duration} s")
+    print(f"  layers:     {result.layers_composited}")
+    print(f"  size:       {result.size_bytes} bytes")
     return EXIT_OK
 
 
