@@ -55,6 +55,7 @@ from .fcproj import (
 from .filmcraft import FilmCraftError, FilmCraftRunner
 from .fonts import FontError, font_environment, inventory, specimen_sheet
 from .fonts import search as search_fonts
+from .impact import IMPACT_MODES, ImpactError, generate_impact_frames
 from .ingest import PROFILES, IngestError, ingest, ingest_folder, probe_media
 from .ledger import (
     ASSET_CLASSES,
@@ -503,6 +504,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", type=Path, default=None, help="destination path (default out/<stem>-proxy.mp4)"
     )
     proxy_p.set_defaults(func=cmd_video_proxy)
+
+    impact_p = video_sub.add_parser(
+        "impact-frame", help="generate transient impact frames for beat and clash hits"
+    )
+    impact_p.add_argument("source", help="a video file to sample at the beat")
+    impact_p.add_argument(
+        "--at", required=True, help="hit time: seconds (2.5) or frame count (f120)"
+    )
+    impact_p.add_argument(
+        "--frames", type=int, default=2, help="number of transient frames to render (1-10)"
+    )
+    impact_p.add_argument(
+        "--mode",
+        choices=sorted(IMPACT_MODES),
+        default="invert",
+        help="impact filter (default invert)",
+    )
+    impact_p.add_argument("--fps", type=int, default=60, help="output frame rate (default 60)")
+    impact_p.add_argument(
+        "--out", type=Path, default=None, help="destination .mov (default beside the source)"
+    )
+    impact_p.set_defaults(func=cmd_video_impact_frame)
 
     stills_p = video_sub.add_parser(
         "stills", help="extract review still frames from a deliverable or file"
@@ -1886,6 +1909,29 @@ def cmd_video_proxy(args: argparse.Namespace) -> int:
     except (ManifestError, FileNotFoundError, RuntimeError, MediaError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
+
+
+def cmd_video_impact_frame(args: argparse.Namespace) -> int:
+    """Generate transient impact frames at a beat or sword clash hit."""
+    source = Path(args.source).expanduser()
+    destination = Path(args.out).expanduser() if args.out else None
+    try:
+        result = generate_impact_frames(
+            source,
+            destination,
+            at=args.at,
+            frames=args.frames,
+            mode=args.mode,
+            fps=args.fps,
+        )
+    except (ImpactError, IngestError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    size_mb = result.size_bytes / 1_000_000
+    print(f"impact {result.mode}: {result.frames} frame(s) at {result.at_seconds:.3f}s")
+    print(f"  output: {result.destination} ({size_mb:.1f} MB)")
+    return EXIT_OK
 
 
 def cmd_video_stills(args: argparse.Namespace) -> int:
