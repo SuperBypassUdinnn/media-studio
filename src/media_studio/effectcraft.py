@@ -518,6 +518,16 @@ def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
                 if params.get(optional) is not None:
                     solid_params[optional] = params[optional]
             cmds.append({"id": "layer.newSolid", "params": solid_params})
+            if params.get("opacity") is not None:
+                layer_name = solid_params.get("name", "Solid")
+                raw_op = float(params["opacity"])
+                opacity_val = raw_op * 100.0 if raw_op <= 1.0 else raw_op
+                cmds.append(
+                    {
+                        "id": "layer.setTransform",
+                        "params": {"layers": [layer_name], "prop": "opacity", "value": opacity_val},
+                    }
+                )
 
     runner = EffectCraftRunner()
     runner.run_commands(cmds, empty=True, save_as=ecproj_path)
@@ -624,16 +634,6 @@ AMV_MOTION_PRESETS: dict[str, dict[str, Any]] = {
         "height": 1080,
         "duration": 3.0,
         "layers": [
-            {
-                "type": "solid",
-                "name": "backdrop",
-                "params": {
-                    "color": "#000000",
-                    "width": 1920,
-                    "height": 1080,
-                    "opacity": 0.35,
-                },
-            },
             {
                 "type": "text",
                 "name": "title",
