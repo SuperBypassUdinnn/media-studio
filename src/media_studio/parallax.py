@@ -262,7 +262,7 @@ def compose_parallax(
     if foreground is not None:
         filter_parts.append(_zoom_pan_filter("2", fg_t, duration, fps, width, height))
 
-    filter_parts.append(_overlay_pair("0xformed", "1xformed", "1"))
+    filter_parts.append(_overlay_pair("1xformed", "0xformed", "1"))
     if foreground is not None:
         filter_parts.append(_overlay_pair("2xformed", "o1", "2"))
         composite_label = "o2"
