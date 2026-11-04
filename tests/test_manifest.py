@@ -172,7 +172,7 @@ def test_video_titles_validate(project_root: Path) -> None:
         """
 slug: demo
 deliverables:
-  - {id: a, kind: video, resolution: 640x360}
+  - {id: a, kind: video, resolution: 1920x1080}
 assets:
   clip: assets/video/clip.mp4
 video:
@@ -255,3 +255,37 @@ def test_project_loudness_defaults_to_minus_14(project_root: Path) -> None:
     write_manifest(project_root, "slug: demo\ndeliverables:\n  - {id: a, kind: video}\n")
 
     assert load_project(project_root).loudness_lufs == -14.0
+
+
+def test_validate_deliverable_resolution_below_1080p_rejected(tmp_path: Path) -> None:
+    manifest_content = """\
+slug: test-res
+title: Test Resolution
+deliverables:
+  - id: sub-1080
+    kind: video
+    resolution: 1280x720
+"""
+    manifest_path = tmp_path / "project.yaml"
+    manifest_path.write_text(manifest_content)
+    project = load_project(tmp_path)
+    report = validate_project(project)
+    joined = "\n".join(report.errors)
+    assert "sub-1080: resolution 1280x720 is below the 1920x1080 minimum floor" in joined
+
+
+def test_validate_deliverable_preview_below_1080p_permitted(tmp_path: Path) -> None:
+    manifest_content = """\
+slug: test-preview
+title: Test Preview Resolution
+deliverables:
+  - id: draft-preview
+    kind: video
+    resolution: 960x540
+    preview: true
+"""
+    manifest_path = tmp_path / "project.yaml"
+    manifest_path.write_text(manifest_content)
+    project = load_project(tmp_path)
+    report = validate_project(project)
+    assert not any("below the 1920x1080 minimum floor" in err for err in report.errors)

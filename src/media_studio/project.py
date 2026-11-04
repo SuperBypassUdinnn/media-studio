@@ -38,7 +38,7 @@ BRIEF_TEMPLATE = """\
 
 ## 2. Target Audience & Platform
 - Primary Platform: <YouTube / Instagram Reels / Presentation / TikTok>
-- Aspect Ratio: <16:9 (1920x1080) | 9:16 (1080x1920) | 1:1 (1080x1080)>
+- Aspect Ratio: 16:9 (1920x1080)
 - Target Audience: <e.g., anime community, corporate stakeholders, general social>
 
 ## 3. Style & Creative References
@@ -48,7 +48,7 @@ BRIEF_TEMPLATE = """\
 
 ## 4. Technical Constraints
 - Target Duration: <seconds or mm:ss>
-- Frame Rate: <24 fps (film/cinematic) | 30 fps (social/standard) | 60 fps (smooth AMV)>
+- Frame Rate: 60 fps (smooth AMV / action standard)
 - Loudness Target: -14.0 LUFS (EBU R128 / YouTube standard)
 - True Peak Ceiling: -1.0 dBFS
 

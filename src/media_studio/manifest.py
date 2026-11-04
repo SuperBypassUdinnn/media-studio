@@ -45,7 +45,7 @@ SHOT_KEYS = frozenset({"asset", "in", "duration", "transition"})
 TITLE_KEYS = frozenset({"text", "start", "duration", "size", "colour", "position"})
 CUE_KEYS = frozenset({"asset", "in", "gain", "fade_in", "fade_out", "duck"})
 DELIVERABLE_KEYS = frozenset(
-    {"id", "kind", "container", "resolution", "fps", "duration", "loudness_lufs"}
+    {"id", "kind", "container", "resolution", "fps", "duration", "loudness_lufs", "preview"}
 )
 BRAND_KEYS = frozenset({"palette", "fonts"})
 BUDGET_KEYS = frozenset({"max_asset_bytes", "max_project_bytes", "require_cc0_music"})
@@ -68,6 +68,7 @@ class Deliverable:
     fps: float | None = None
     duration: float | None = None
     loudness_lufs: float | None = None
+    preview: bool = False
 
 
 @dataclass(frozen=True)
@@ -265,6 +266,7 @@ def _deliverables(value: Any) -> tuple[Deliverable, ...]:
                 fps=_optional_float(entry.get("fps"), "fps"),
                 duration=_optional_float(entry.get("duration"), "duration"),
                 loudness_lufs=_optional_float(entry.get("loudness_lufs"), "loudness_lufs"),
+                preview=bool(entry.get("preview", False)),
             )
         )
     return tuple(deliverables)
@@ -537,6 +539,18 @@ def validate_project(project: Project) -> ValidationReport:
             errors.append(
                 f"deliverable {deliverable.id}: resolution {deliverable.resolution!r} must be WxH"
             )
+        if (
+            deliverable.kind == "video"
+            and deliverable.resolution
+            and RESOLUTION_PATTERN.match(deliverable.resolution)
+            and not getattr(deliverable, "preview", False)
+        ):
+            width, height = parse_resolution(deliverable.resolution)
+            if width < 1920 or height < 1080:
+                errors.append(
+                    f"deliverable {deliverable.id}: resolution {deliverable.resolution} is below "
+                    "the 1920x1080 minimum floor (mark preview: true to permit)"
+                )
         if deliverable.duration is not None and deliverable.duration <= 0:
             errors.append(f"deliverable {deliverable.id}: duration must be positive")
         if deliverable.loudness_lufs is not None:
