@@ -36,6 +36,7 @@ from .cutout import (
 from .design import DesignError, validate_design
 from .design import render as render_design
 from .effectcraft import (
+    AMV_MOTION_PRESETS,
     MOTION_TEMPLATES,
     EffectCraftError,
     EffectCraftRunner,
@@ -43,6 +44,7 @@ from .effectcraft import (
     lyric_overlay,
     motion_project,
     new_composition,
+    render_amv_preset,
     title_sequence,
 )
 from .fcproj import (
@@ -868,11 +870,26 @@ def build_parser() -> argparse.ArgumentParser:
     motion_title.add_argument("--out", type=Path, required=True, help="output file path")
     motion_title.add_argument("--duration", type=float, default=3.0, help="duration in seconds")
     motion_title.add_argument("--animation", default="fade_in_up", help="animation preset name")
+    motion_title.add_argument(
+        "--preset",
+        choices=sorted(AMV_MOTION_PRESETS.keys()),
+        default=None,
+        help="AMV motion preset to render (overrides --animation/--font/--glow)",
+    )
     motion_title.add_argument("--font", default="Noto Sans", help="font family")
     motion_title.add_argument("--font-size", type=float, default=72.0, help="font size in points")
     motion_title.add_argument("--color", default="#FFFFFF", help="text color")
     motion_title.add_argument("--glow", action="store_true", help="enable glow effect")
     motion_title.add_argument("--glow-intensity", type=float, default=0.5, help="glow strength")
+    motion_title.add_argument(
+        "--width", type=int, default=1920, help="output width in pixels (default 1920)"
+    )
+    motion_title.add_argument(
+        "--height", type=int, default=1080, help="output height in pixels (default 1080)"
+    )
+    motion_title.add_argument(
+        "--fps", type=float, default=60.0, help="output frame rate (default 60)"
+    )
     motion_title.set_defaults(func=cmd_motion_title)
 
     motion_lyrics = motion_sub.add_parser("lyrics", help="render a lyric overlay track")
@@ -2442,18 +2459,29 @@ def cmd_motion_title(args: argparse.Namespace) -> int:
 
     try:
         project = load_project(args.project)
-        result = title_sequence(
-            text=args.text,
-            output=args.out,
-            ecp_path=args.out.with_suffix(".ecp"),
-            duration=args.duration,
-            animation=args.animation,
-            font=args.font,
-            font_size=args.font_size,
-            color=args.color,
-            glow=args.glow,
-            glow_intensity=args.glow_intensity,
-        )
+        if args.preset:
+            result = render_amv_preset(
+                preset_name=args.preset,
+                output=args.out,
+                text=args.text,
+                duration=args.duration,
+                fps=args.fps,
+                width=args.width,
+                height=args.height,
+            )
+        else:
+            result = title_sequence(
+                text=args.text,
+                output=args.out,
+                ecp_path=args.out.with_suffix(".ecp"),
+                duration=args.duration,
+                animation=args.animation,
+                font=args.font,
+                font_size=args.font_size,
+                color=args.color,
+                glow=args.glow,
+                glow_intensity=args.glow_intensity,
+            )
     except (ManifestError, EffectCraftError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE

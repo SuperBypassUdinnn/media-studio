@@ -7,6 +7,7 @@ keyframed properties, frame previews, and headless alpha ProRes 4444 / WebM VP9 
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -491,6 +492,14 @@ def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
                 if params.get(optional) is not None:
                     text_params[optional] = params[optional]
             cmds.append({"id": "layer.newText", "params": text_params})
+            # Apply outer glow when the layer requests it (AMV cyber titles,
+            # etc.). glow_intensity is recorded in the spec; the engine's
+            # outerGlow command carries no intensity parameter, so it is
+            # applied at the default strength.
+            if params.get("glow"):
+                layer_name = text_params.get("name")
+                if layer_name:
+                    cmds.append({"id": "layer.style.outerGlow", "params": {"layers": [layer_name]}})
         elif ltype == "image":
             image_path = params.get("path")
             if image_path:
@@ -597,6 +606,242 @@ def render(
         report_path=report_path,
         report=report,
     )
+
+
+# ---------------------------------------------------------------------------
+# AMV motion & typography presets (Task 5)
+# ---------------------------------------------------------------------------
+
+#: AMV-tailored motion graphics presets, all 1920x1080 at 60 fps.
+#: Each entry is a motion spec understood by :func:`build_ecp` / :func:`render`
+#: (composition geometry plus a list of text/solid layers). render_amv_preset
+#: deep-copies the chosen preset and injects text, duration, fps, width and
+#: height before rendering it as transparent ProRes 4444 RGBA.
+AMV_MOTION_PRESETS: dict[str, dict[str, Any]] = {
+    "amv-title-cyber": {
+        "fps": 60.0,
+        "width": 1920,
+        "height": 1080,
+        "duration": 3.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "backdrop",
+                "params": {
+                    "color": "#000000",
+                    "width": 1920,
+                    "height": 1080,
+                    "opacity": 0.35,
+                },
+            },
+            {
+                "type": "text",
+                "name": "title",
+                "params": {
+                    "text": "",
+                    "font": "Noto Sans",
+                    "font_size": 120.0,
+                    "color": "#00FFFF",
+                    "glow": True,
+                    "glow_intensity": 0.8,
+                    "tracking": 6.0,
+                    "position": [960.0, 540.0],
+                    "transparent": True,
+                },
+            },
+        ],
+    },
+    "amv-hud-accent": {
+        "fps": 60.0,
+        "width": 1920,
+        "height": 1080,
+        "duration": 3.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "grid-horizontal-1",
+                "params": {
+                    "color": "#00FFFF",
+                    "width": 1920,
+                    "height": 1,
+                    "opacity": 0.25,
+                    "position": [0.0, 270.0],
+                },
+            },
+            {
+                "type": "solid",
+                "name": "grid-horizontal-2",
+                "params": {
+                    "color": "#00FFFF",
+                    "width": 1920,
+                    "height": 1,
+                    "opacity": 0.25,
+                    "position": [0.0, 810.0],
+                },
+            },
+            {
+                "type": "solid",
+                "name": "grid-vertical-1",
+                "params": {
+                    "color": "#00FFFF",
+                    "width": 1,
+                    "height": 1080,
+                    "opacity": 0.25,
+                    "position": [640.0, 0.0],
+                },
+            },
+            {
+                "type": "solid",
+                "name": "grid-vertical-2",
+                "params": {
+                    "color": "#00FFFF",
+                    "width": 1,
+                    "height": 1080,
+                    "opacity": 0.25,
+                    "position": [1280.0, 0.0],
+                },
+            },
+            {
+                "type": "text",
+                "name": "crosshair-top-left",
+                "params": {
+                    "text": "[ + ]",
+                    "font": "Noto Sans",
+                    "font_size": 24.0,
+                    "color": "#00FFFF",
+                    "position": [40.0, 40.0],
+                    "transparent": True,
+                },
+            },
+            {
+                "type": "text",
+                "name": "crosshair-top-right",
+                "params": {
+                    "text": "[ + ]",
+                    "font": "Noto Sans",
+                    "font_size": 24.0,
+                    "color": "#00FFFF",
+                    "position": [1840.0, 40.0],
+                    "transparent": True,
+                },
+            },
+            {
+                "type": "text",
+                "name": "crosshair-bottom-left",
+                "params": {
+                    "text": "[ + ]",
+                    "font": "Noto Sans",
+                    "font_size": 24.0,
+                    "color": "#00FFFF",
+                    "position": [40.0, 1020.0],
+                    "transparent": True,
+                },
+            },
+            {
+                "type": "text",
+                "name": "crosshair-bottom-right",
+                "params": {
+                    "text": "[ + ]",
+                    "font": "Noto Sans",
+                    "font_size": 24.0,
+                    "color": "#00FFFF",
+                    "position": [1840.0, 1020.0],
+                    "transparent": True,
+                },
+            },
+        ],
+    },
+    "amv-drop-shutter": {
+        "fps": 60.0,
+        "width": 1920,
+        "height": 1080,
+        "duration": 3.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "shutter-left",
+                "params": {
+                    "color": "#000000",
+                    "width": 960,
+                    "height": 1080,
+                    "position": [0.0, 0.0],
+                    "animation": "shutter_open",
+                },
+            },
+            {
+                "type": "solid",
+                "name": "shutter-right",
+                "params": {
+                    "color": "#000000",
+                    "width": 960,
+                    "height": 1080,
+                    "position": [960.0, 0.0],
+                    "animation": "shutter_open",
+                },
+            },
+            {
+                "type": "text",
+                "name": "title",
+                "params": {
+                    "text": "",
+                    "font": "Noto Sans",
+                    "font_size": 140.0,
+                    "color": "#FFFFFF",
+                    "position": [960.0, 540.0],
+                    "transparent": True,
+                },
+            },
+        ],
+    },
+}
+
+
+def render_amv_preset(
+    preset_name: str,
+    output: Path,
+    *,
+    text: str = "",
+    duration: float = 3.0,
+    fps: float = 60.0,
+    width: int = 1920,
+    height: int = 1080,
+) -> MotionResult:
+    """Render one AMV motion preset as transparent ProRes 4444 RGBA.
+
+    Looks up ``preset_name`` in :data:`AMV_MOTION_PRESETS`, deep-copies the
+    preset spec, injects ``text`` into the ``title`` text layer (leaving
+    decorative text layers such as HUD crosshairs untouched) and overrides
+    ``duration``, ``fps``, ``width`` and ``height`` on the composition. The
+    spec is written as an ``.ecp`` next to ``output`` and rendered through
+    :func:`render`, producing ProRes 4444 with an alpha channel.
+
+    Raises:
+        EffectCraftError: ``preset_name`` is not a registered AMV preset.
+    """
+    if preset_name not in AMV_MOTION_PRESETS:
+        known = ", ".join(sorted(AMV_MOTION_PRESETS))
+        raise EffectCraftError(f"unknown AMV motion preset {preset_name!r}; choose one of: {known}")
+
+    preset = AMV_MOTION_PRESETS[preset_name]
+    spec = copy.deepcopy(dict(preset))
+    spec["width"] = int(width)
+    spec["height"] = int(height)
+    spec["fps"] = float(fps)
+    spec["duration"] = float(duration)
+    # Only inject --text into layers intended for custom text (the "title"
+    # layer). Decorative text layers such as the HUD crosshairs ("[ + ]") must
+    # keep their default text.
+    for layer in spec.get("layers", []):
+        if layer.get("type") == "text" and layer.get("name") == "title":
+            layer.setdefault("params", {})["text"] = text
+
+    _validate_spec(spec)
+    check_installation()
+
+    output = Path(output)
+    ecp_path = output.with_suffix(".ecp")
+    build_ecp(spec, ecp_path)
+    return render(ecp_path, output, fps=float(fps), transparent=True)
 
 
 def title_sequence(
