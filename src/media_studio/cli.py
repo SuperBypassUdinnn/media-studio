@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import __version__, ai, media
+from . import __version__, ai, audio, media
 from .blender import (
     EXPORT_FORMATS,
     BlenderError,
@@ -567,6 +567,21 @@ def build_parser() -> argparse.ArgumentParser:
     beat_p.add_argument("--audio", type=Path, required=True, help="audio file to analyze")
     beat_p.add_argument("--name", default="Beat", help="marker label name")
     beat_p.set_defaults(func=cmd_video_beat_sync)
+
+    beats_p = video_sub.add_parser(
+        "beats", help="analyze rhythm and write beat JSON next to the audio"
+    )
+    beats_p.add_argument("audio", type=Path, help="audio file to analyze")
+    beats_p.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="destination JSON (default: <audio-stem>.beats.json beside the audio)",
+    )
+    beats_p.add_argument(
+        "--window", type=float, default=0.5, help="analysis window in seconds (default 0.5)"
+    )
+    beats_p.set_defaults(func=cmd_video_beats)
 
     proxy_p = video_sub.add_parser(
         "proxy", help="render a 540p review proxy of a deliverable or file"
@@ -2357,6 +2372,30 @@ def cmd_video_beat_sync(args: argparse.Namespace) -> int:
         return EXIT_OK
     except Exception as error:
         print(f"error syncing beats: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def cmd_video_beats(args: argparse.Namespace) -> int:
+    """Analyze the rhythm of an audio file and write beat JSON."""
+    if not args.audio.is_file():
+        print(f"error: audio file not found: {args.audio}", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        result = audio.analyze_rhythm(args.audio, window=args.window)
+        out_path = args.out
+        if out_path is None:
+            out_path = args.audio.with_suffix(".beats.json")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(result, indent=2) + "\n")
+        high = sum(1 for section in result["sections"] if section["level"] == "high")
+        print(
+            f"bpm {result['bpm']}, {len(result['beats'])} beats "
+            f"({len(result['downbeats'])} downbeats), {high} high-energy section(s)"
+        )
+        print(f"wrote {out_path}")
+        return EXIT_OK
+    except audio.AudioError as error:
+        print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
 
 

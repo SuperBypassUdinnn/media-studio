@@ -123,6 +123,95 @@ def detect_beats(
         return _ffmpeg_beat_fallback(audio_path, min_bpm, max_bpm)
 
 
+def analyze_rhythm(
+    audio_path: Path,
+    *,
+    window: float = 0.5,
+) -> dict:
+    """
+    Analyze the rhythm of an audio file using librosa.
+
+    Returns a dict with keys: bpm, beats, downbeats, energy, window, duration,
+    sections. Times are rounded to 4 decimals and every numeric is a plain
+    Python float/int so the result is JSON-serializable.
+
+    Each section is a dict with keys: start, end (seconds), level ("high" |
+    "low"). Section boundaries fall on window multiples; a run is "high" when
+    its RMS energy is above the 60th percentile of all windows.
+    """
+    if not audio_path.exists():
+        raise AudioError(f"Audio file not found: {audio_path}")
+    try:
+        import librosa  # type: ignore[import]
+        import numpy as np  # type: ignore[import]
+    except ImportError as error:
+        raise AudioError(
+            f'librosa is not installed; install with: pip install -e ".[rhythm]" ({error})'
+        ) from error
+    try:
+        y, sr = librosa.load(str(audio_path), sr=None, mono=True)
+        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+        if len(beat_frames) == 0:
+            onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=512)
+            tempo, beat_frames = librosa.beat.beat_track(
+                onset_envelope=onset_env, sr=sr, hop_length=512
+            )
+        beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
+        bpm = float(np.ravel(tempo)[0])
+        beats = [round(float(t), 4) for t in beat_times]
+
+        hop_length = int(window * sr)
+        frame_length = 2 * hop_length
+        rms = librosa.feature.rms(y=y, hop_length=hop_length, frame_length=frame_length)[0]
+        energy = [round(float(v), 4) for v in rms.tolist()]
+        duration = round(len(y) / sr, 4)
+
+        sections: list[dict] = []
+        if energy:
+            threshold = float(np.percentile(energy, 60))
+            run_start = 0
+            run_high = energy[0] > threshold
+            for i in range(1, len(energy)):
+                high = energy[i] > threshold
+                if high != run_high:
+                    sections.append(
+                        {
+                            "start": round(run_start * window, 4),
+                            "end": round(i * window, 4),
+                            "level": "high" if run_high else "low",
+                        }
+                    )
+                    run_start = i
+                    run_high = high
+            sections.append(
+                {
+                    "start": round(run_start * window, 4),
+                    "end": round(len(energy) * window, 4),
+                    "level": "high" if run_high else "low",
+                }
+            )
+
+        downbeats: list[float] = []
+        if beats and energy:
+            highest_window_start = float(energy.index(max(energy))) * window
+            phase = min(range(len(beats)), key=lambda i: abs(beats[i] - highest_window_start))
+            downbeats = [round(float(t), 4) for t in beats[phase::4]]
+
+        return {
+            "bpm": round(bpm, 2),
+            "beats": beats,
+            "downbeats": downbeats,
+            "energy": energy,
+            "window": float(window),
+            "duration": duration,
+            "sections": sections,
+        }
+    except AudioError:
+        raise
+    except Exception as error:
+        raise AudioError(f"rhythm analysis failed for {audio_path}: {error}") from error
+
+
 def _ffmpeg_beat_fallback(
     audio_path: Path,
     min_bpm: float = 60.0,

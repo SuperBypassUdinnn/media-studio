@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -32,7 +33,8 @@ def test_measure_loudness_parses_json(tmp_path: Path):
         assert stats["threshold"] == -26.10
 
 
-def test_detect_beats_fallback_ffmpeg(tmp_path: Path):
+def test_detect_beats_fallback_ffmpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(sys.modules, "librosa", None)
     audio_file = tmp_path / "beat.wav"
     audio_file.write_bytes(b"RIFF....WAVE")
     probe_stdout = json.dumps({"format": {"duration": "3.0"}})
