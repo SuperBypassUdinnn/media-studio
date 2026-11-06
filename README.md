@@ -67,6 +67,11 @@ uv venv && uv pip install -e . pytest        # once, inside the checkout
   --select 850,280 --feather 2                         # SAM 2 alpha ProRes 4444
 .venv/bin/python -m media_studio.cli video beats music.wav --out beats.json
 .venv/bin/python -m media_studio.cli video beatfx shot.mp4 --beats beats.json --offset 3.5 --auto
+.venv/bin/python -m media_studio.cli video beatramp shot.mp4 --beats beats.json --offset 3.5
+.venv/bin/python -m media_studio.cli video edl generate beats.json shot*.mp4 --music music.wav --out edl.json
+.venv/bin/python -m media_studio.cli video edl render edl.json --out final.mp4
+.venv/bin/python -m media_studio.cli video lut search --style cinematic
+.venv/bin/python -m media_studio.cli video lut apply final.mp4 --lut cinematic-teal-orange.cube
 .venv/bin/python -m media_studio.cli image remove-bg photo.jpg --model u2netp
 .venv/bin/python -m media_studio.cli see cutout.mov                       # facts + sheet
 .venv/bin/python -m media_studio.cli see ~/Projects/my-project            # project state
