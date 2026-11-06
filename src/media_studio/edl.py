@@ -416,6 +416,33 @@ def _run_ffmpeg(argv: list[str]) -> None:
         raise EdlError(f"ffmpeg failed ({result.returncode}):\n{result.stderr.strip()[-2000:]}")
 
 
+def _stream_has_audio(video: Path) -> bool:
+    """Return True when *video* carries at least one audio stream."""
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+                str(video),
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise EdlError("ffprobe is not installed") from error
+    if result.returncode != 0:
+        return False
+    return bool(result.stdout.strip())
+
+
 def render_edl(
     doc: EdlDocument,
     *,
@@ -448,31 +475,40 @@ def render_edl(
             # Start the music at the first cut's music offset so it lines up
             # with the edit timeline; -shortest caps output to the video length.
             first_offset_s = doc.cuts[0].music_offset_ms / 1000 if doc.cuts else 0.0
-            _run_ffmpeg(
-                [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    str(concat_list),
-                    "-ss",
-                    f"{first_offset_s:.3f}",
-                    "-i",
-                    str(doc.music),
+            # Cuts rendered from audio-less sources produce a video-only concat
+            # stream; amix would fail with an unbound pad. Probe and map
+            # accordingly: amix only when the concat has its own audio.
+            concat_has_audio = _stream_has_audio(rendered[0]) if rendered else False
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_list),
+                "-ss",
+                f"{first_offset_s:.3f}",
+                "-i",
+                str(doc.music),
+            ]
+            if concat_has_audio:
+                cmd += [
                     "-filter_complex",
-                    "amix=inputs=2",
-                    "-c:v",
-                    "copy",
-                    "-shortest",
-                    str(out),
+                    "[0:a][1:a]amix=inputs=2[aout]",
+                    "-map",
+                    "0:v",
+                    "-map",
+                    "[aout]",
                 ]
-            )
+            else:
+                cmd += ["-map", "0:v", "-map", "1:a"]
+            cmd += ["-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest", str(out)]
+            _run_ffmpeg(cmd)
         else:
             _run_ffmpeg(
                 [
