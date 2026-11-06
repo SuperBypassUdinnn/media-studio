@@ -227,6 +227,74 @@ class TestRenderEdl:
         assert out.is_file()
         assert abs(probe_media(out).duration - 3.0) < 0.5
 
+    def test_render_applies_music_offset_via_ss(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        shot0 = tmp_path / "shot0.mp4"
+        shot0.touch()
+        shot1 = tmp_path / "shot1.mp4"
+        shot1.touch()
+        music = tmp_path / "music.wav"
+
+        doc = EdlDocument(
+            version=1,
+            music=str(music),
+            beats_json="",
+            total_duration_s=2.0,
+            cuts=[
+                EdlCut(
+                    id="cut-0",
+                    shot=str(shot0),
+                    in_ms=0,
+                    out_ms=1000,
+                    music_offset_ms=1000,
+                    beatfx=[],
+                    ramp=[],
+                    color_lut=None,
+                    notes="",
+                ),
+                EdlCut(
+                    id="cut-1",
+                    shot=str(shot1),
+                    in_ms=0,
+                    out_ms=1000,
+                    music_offset_ms=2000,
+                    beatfx=[],
+                    ramp=[],
+                    color_lut=None,
+                    notes="",
+                ),
+            ],
+        )
+
+        captured: list[list[str]] = []
+
+        def fake_run_ffmpeg(argv: list[str]) -> None:
+            captured.append(list(argv))
+            output = Path(argv[-1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.touch()
+
+        monkeypatch.setattr("media_studio.edl._run_ffmpeg", fake_run_ffmpeg)
+        monkeypatch.setattr(
+            "media_studio.edl.probe_media",
+            lambda path: type(
+                "MI", (), {"duration": 1.0, "width": 1920, "height": 1080, "has_audio": False}
+            )(),
+        )
+
+        out = tmp_path / "out.mp4"
+        render_edl(doc, out=out, fps=FPS, codec="h264")
+
+        mix_calls = [argv for argv in captured if "-f" in argv and "concat" in argv]
+        assert mix_calls, "expected a concat ffmpeg call"
+        argv = mix_calls[-1]
+        assert "-ss" in argv, f"-ss flag missing from {argv}"
+        ss_index = argv.index("-ss")
+        # First cut music_offset_ms=1000 -> 1.000 s
+        assert argv[ss_index + 1] == "1.000", f"unexpected -ss value: {argv[ss_index + 1]}"
+        assert "-shortest" in argv, f"-shortest missing from {argv}"
+
     @pytest.mark.slow
     def test_render_one_cut_with_beatfx(self, tmp_path: Path) -> None:
         source = _make_clip(tmp_path / "source.mp4")

@@ -445,6 +445,9 @@ def render_edl(
 
         if doc.music:
             # Mix music with amix/adelay at each cut's music_offset_ms.
+            # Start the music at the first cut's music offset so it lines up
+            # with the edit timeline; -shortest caps output to the video length.
+            first_offset_s = doc.cuts[0].music_offset_ms / 1000 if doc.cuts else 0.0
             _run_ffmpeg(
                 [
                     "ffmpeg",
@@ -458,12 +461,15 @@ def render_edl(
                     "0",
                     "-i",
                     str(concat_list),
+                    "-ss",
+                    f"{first_offset_s:.3f}",
                     "-i",
                     str(doc.music),
                     "-filter_complex",
                     "amix=inputs=2",
                     "-c:v",
                     "copy",
+                    "-shortest",
                     str(out),
                 ]
             )
