@@ -1197,6 +1197,18 @@ def build_parser() -> argparse.ArgumentParser:
     see.add_argument("--columns", type=int, default=4, help="sheet columns (default 4)")
     see.add_argument("--rows", type=int, default=3, help="sheet rows (default 3)")
     see.add_argument("--width", type=int, default=320, help="tile width in px (default 320)")
+    see.add_argument(
+        "--mode",
+        choices=["uniform", "scene", "beats"],
+        default="uniform",
+        help="frame sampling mode: uniform, scene, or beats (default uniform)",
+    )
+    see.add_argument(
+        "--scene-threshold",
+        type=float,
+        default=0.3,
+        help="scene-change threshold for scene mode (default 0.3)",
+    )
     see.set_defaults(func=cmd_see)
 
     return parser
@@ -2956,6 +2968,8 @@ def cmd_see(args: argparse.Namespace) -> int:
             columns=args.columns,
             rows=args.rows,
             width=args.width,
+            mode=args.mode,
+            scene_threshold=args.scene_threshold,
         )
     except SeeError as error:
         print(f"error: {error}", file=sys.stderr)

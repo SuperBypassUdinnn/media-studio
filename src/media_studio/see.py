@@ -13,6 +13,8 @@ same contract as ``ms video ingest`` and ``ms image remove-bg``.
 
 from __future__ import annotations
 
+import math
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,14 +161,37 @@ def _tile_grid(tiles: list[object], columns: int, rows: int) -> object:
 
 
 def _peek_video(
-    source: Path, info: MediaInfo, columns: int, rows: int, width: int, sheet_path: Path
+    source: Path,
+    info: MediaInfo,
+    columns: int,
+    rows: int,
+    width: int,
+    sheet_path: Path,
+    mode: str = "uniform",
+    scene_threshold: float = 0.3,
 ) -> tuple[str, dict[str, str]]:
+    """Build a video fact sheet; ``mode`` picks the frame sampling strategy."""
+
     facts = {
         "codec": f"{info.video_codec}, {info.resolution}",
         "fps": f"{info.fps:g}",
         "duration": f"{info.duration:.2f} s",
         "audio": info.audio_codec or "none",
     }
+    if mode == "uniform":
+        return _peek_video_uniform(source, facts, columns, rows, width, sheet_path)
+    if mode == "scene":
+        return _peek_video_scene(source, facts, columns, rows, width, sheet_path, scene_threshold)
+    if mode == "beats":
+        return _peek_video_beats(source, info, facts, columns, rows, width, sheet_path)
+    raise SeeError(f"unknown mode {mode!r}; expected uniform, scene, or beats")
+
+
+def _peek_video_uniform(
+    source: Path, facts: dict[str, str], columns: int, rows: int, width: int, sheet_path: Path
+) -> tuple[str, dict[str, str]]:
+    """Existing uniform contact-sheet behaviour, alpha-aware."""
+
     has_alpha = _pix_fmt_has_alpha(source)
     if has_alpha:
         frames = _extract_frames(source, sheet_path.parent / ".see-frames", columns * rows)
@@ -185,6 +210,186 @@ def _peek_video(
         contact_sheet(source, sheet_path, columns=columns, rows=rows, width=width)
         kind = "video"
     return kind, facts
+
+
+def _extract_frame_at(source: Path, time_s: float, out_path: Path, width: int) -> Path:
+    """Extract one frame at ``time_s`` seconds, scaled to ``width`` (aspect preserved)."""
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Truncate toward zero so a seek time rounded up never lands past the
+    # final frame of the file.
+    seek = math.floor(time_s * 1000) / 1000
+    _run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            f"{seek:.3f}",
+            "-i",
+            str(source),
+            "-vframes",
+            "1",
+            "-vf",
+            f"scale={width}:-1",
+            str(out_path),
+        ]
+    )
+    if not out_path.is_file():
+        raise SeeError(f"no frame extracted at {time_s}s from {source}")
+    return out_path
+
+
+def _evenly_spaced(values: list[float], capacity: int) -> list[float]:
+    """Return up to ``capacity`` values evenly spaced across ``values``."""
+
+    if len(values) <= capacity:
+        return list(values)
+    if capacity <= 1:
+        return [values[0]] if values else []
+    indices = [round(index * (len(values) - 1) / (capacity - 1)) for index in range(capacity)]
+    return [values[index] for index in indices]
+
+
+def _scene_change_timestamps(source: Path, threshold: float) -> list[float]:
+    """Detect scene-change timestamps with ffmpeg's select+showinfo filters."""
+
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "info",
+            "-i",
+            str(source),
+            "-vf",
+            f"select='gt(scene,{threshold:g})',showinfo",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise SeeError(f"ffmpeg scene detection failed:\n{completed.stderr.strip()[-800:]}")
+    return [float(value) for value in re.findall(r"pts_time:([\d.]+)", completed.stderr)]
+
+
+def _extract_audio_track(source: Path, out_path: Path) -> Path:
+    """Demux the source's audio to a WAV file for rhythm analysis."""
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-vn",
+            "-c:a",
+            "pcm_s16le",
+            str(out_path),
+        ]
+    )
+    return out_path
+
+
+def _tiles_at_times(
+    source: Path,
+    timestamps: list[float],
+    width: int,
+    sheet_path: Path,
+    has_alpha: bool,
+) -> list:
+    """Extract one scaled frame per timestamp and return them as sheet tiles."""
+
+    from PIL import Image
+
+    frame_dir = sheet_path.parent / ".see-frames"
+    tiles = []
+    for index, time_s in enumerate(timestamps):
+        frame_path = frame_dir / f"{index:06d}.png"
+        _extract_frame_at(source, time_s, frame_path, width)
+        frame = Image.open(frame_path)
+        if has_alpha:
+            tiles.append(_over_checkerboard(frame.convert("RGBA"), width))
+        else:
+            tiles.append(frame.convert("RGB"))
+    return tiles
+
+
+def _peek_video_scene(
+    source: Path,
+    facts: dict[str, str],
+    columns: int,
+    rows: int,
+    width: int,
+    sheet_path: Path,
+    threshold: float,
+) -> tuple[str, dict[str, str]]:
+    """Sample frames at ffmpeg scene-change timestamps."""
+
+    capacity = columns * rows
+    timestamps = _scene_change_timestamps(source, threshold)
+    facts["scene_threshold"] = f"{threshold:g}"
+    if not timestamps:
+        contact_sheet(source, sheet_path, columns=columns, rows=rows, width=width)
+        facts["scene_sampling"] = "none found; fell back to uniform"
+        return "video (scene, uniform fallback)", facts
+    chosen = _evenly_spaced(timestamps, capacity)
+    has_alpha = _pix_fmt_has_alpha(source)
+    tiles = _tiles_at_times(source, chosen, width, sheet_path, has_alpha)
+    sheet = _tile_grid(tiles, columns, rows)
+    sheet.save(sheet_path)
+    facts["scene_frames"] = str(len(chosen))
+    return "video (scene)", facts
+
+
+def _peek_video_beats(
+    source: Path,
+    info: MediaInfo,
+    facts: dict[str, str],
+    columns: int,
+    rows: int,
+    width: int,
+    sheet_path: Path,
+) -> tuple[str, dict[str, str]]:
+    """Sample frames on the audio rhythm grid from :func:`analyze_rhythm`."""
+
+    from .audio import analyze_rhythm
+
+    capacity = columns * rows
+    audio_path = sheet_path.parent / ".see-audio.wav"
+    try:
+        _extract_audio_track(source, audio_path)
+        rhythm = analyze_rhythm(audio_path)
+    except Exception as error:
+        contact_sheet(source, sheet_path, columns=columns, rows=rows, width=width)
+        facts["beat_sampling"] = f"unavailable ({error})"
+        return "video (beats, uniform fallback)", facts
+    finally:
+        audio_path.unlink(missing_ok=True)
+    beats = rhythm["beats"]
+    facts["bpm"] = str(round(rhythm["bpm"]))
+    facts["beats"] = str(len(beats))
+    chosen = _evenly_spaced(beats, capacity)
+    last_frame = max(0.0, info.duration - 1.0 / max(info.fps, 1.0))
+    chosen = [min(max(t, 0.0), last_frame) for t in chosen]
+    if not chosen:
+        contact_sheet(source, sheet_path, columns=columns, rows=rows, width=width)
+        facts["beat_sampling"] = "no beats detected; fell back to uniform"
+        return "video (beats, uniform fallback)", facts
+    has_alpha = _pix_fmt_has_alpha(source)
+    tiles = _tiles_at_times(source, chosen, width, sheet_path, has_alpha)
+    sheet = _tile_grid(tiles, columns, rows)
+    sheet.save(sheet_path)
+    return "video (beats)", facts
 
 
 def _peek_image(source: Path, width: int, sheet_path: Path) -> tuple[str, dict[str, str]]:
@@ -349,12 +554,19 @@ def peek(
     columns: int = 4,
     rows: int = 3,
     width: int = 320,
+    mode: str = "uniform",
+    scene_threshold: float = 0.3,
 ) -> PeekResult:
     """Build a fact sheet plus a visual sheet for ``source``.
 
     A directory containing ``project.yaml`` reports project state instead:
     deliverables versus renders on disk, missing assets, and a contact sheet
     of the first rendered video.
+
+    ``mode`` only applies to plain video files: ``uniform`` (the default,
+    unchanged behaviour), ``scene`` samples on ffmpeg scene changes, and
+    ``beats`` samples on the audio rhythm grid. For a project directory,
+    image, or audio the flag is ignored and behaviour is unchanged.
 
     Raises:
         SeeError: the file is missing, unreadable, or rendering failed.
@@ -376,7 +588,16 @@ def peek(
         video_like = False
 
     if video_like and source.suffix.lower() not in IMAGE_SUFFIXES:
-        kind, facts = _peek_video(source, info, columns, rows, width, sheet_path)
+        kind, facts = _peek_video(
+            source,
+            info,
+            columns,
+            rows,
+            width,
+            sheet_path,
+            mode=mode,
+            scene_threshold=scene_threshold,
+        )
     elif video_like:
         kind, facts = _peek_image(source, width, sheet_path)
     else:

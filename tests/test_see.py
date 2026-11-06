@@ -126,6 +126,87 @@ class TestPeekAudio:
         assert "loudness" in result.facts
 
 
+class TestPeekVideoModes:
+    def test_scene_mode_detects_hard_cut(self, tmp_path: Path) -> None:
+        clip = generate(
+            tmp_path / "cut.mp4",
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:size=320x240:rate=30:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=white:size=320x240:rate=30:duration=1",
+                "-filter_complex",
+                "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+                "-map",
+                "[v]",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        )
+        result = peek(clip, tmp_path / "sheet.png", mode="scene")
+        assert result.sheet.is_file() and result.sheet.stat().st_size > 0
+        assert "scene_frames" in result.facts
+
+    def test_scene_mode_static_clip_falls_back(self, tmp_path: Path) -> None:
+        clip = generate(
+            tmp_path / "static.mp4",
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                "color=red:size=320x240:rate=30:duration=2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        )
+        result = peek(clip, tmp_path / "sheet.png", mode="scene")
+        assert result.sheet.is_file() and result.sheet.stat().st_size > 0
+        assert result.facts["scene_sampling"] == "none found; fell back to uniform"
+
+    def test_beats_mode_on_video_with_audio(self, tmp_path: Path) -> None:
+        clip = generate(
+            tmp_path / "withaudio.mp4",
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=30:duration=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=140:duration=2",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+                "-shortest",
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        )
+        result = peek(clip, tmp_path / "sheet.png", mode="beats")
+        assert result.sheet.is_file() and result.sheet.stat().st_size > 0
+        assert "bpm" in result.facts
+
+    def test_beats_mode_without_audio_falls_back(self, tmp_path: Path) -> None:
+        clip = _video(tmp_path / "silent.mp4")
+        result = peek(clip, tmp_path / "sheet.png", mode="beats")
+        assert result.sheet.is_file() and result.sheet.stat().st_size > 0
+        assert "beat_sampling" in result.facts
+
+    def test_unknown_mode_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(SeeError, match="unknown mode"):
+            peek(_video(tmp_path / "clip.mp4"), mode="bogus")
+
+
 class TestErrors:
     def test_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(SeeError, match="no such file"):
