@@ -1,11 +1,11 @@
 """Beat-mapped micro-effects engine.
 
 Lineage: the beat-synced-edit cookbook (flash/shake/punch on percussive hits),
-extended with the chromatic RGB-split recipe from ``impact.py``. Each effect is
-rendered as one sequential ffmpeg pass over the clip so the windows stack:
-pass N reads pass N-1's output and re-applies every other effect's filter, so
-effects compose deterministically and a near-end window still runs to the end of
-the clip (its enable gate simply never opens past the last frame).
+extended with the chromatic RGB-split recipe from ``impact.py``. Each effect
+is rendered as one sequential ffmpeg pass: pass N reads pass N-1's output and
+applies that effect's
+filter, so effects compose deterministically and a near-end window still runs
+to the end of the clip (its enable gate simply never opens past the last frame).
 
 Pinned behaviour:
 

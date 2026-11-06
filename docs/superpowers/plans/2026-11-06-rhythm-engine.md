@@ -44,7 +44,7 @@
 - Consumes: nothing new (subprocess, pathlib only at module level; librosa imported lazily).
 - Produces: `audio.analyze_rhythm(audio_path: Path, *, window: float = 0.5) -> dict` returning exactly `{"bpm": float, "beats": list[float], "downbeats": list[float], "energy": list[float], "window": float, "duration": float, "sections": list[dict]}` where each section dict is `{"start": float, "end": float, "level": "high" | "low"}`. CLI writes this dict as JSON.
 
-- [ ] **Step 1: Fix the fallback test FIRST (before librosa exists)**
+- [x] **Step 1: Fix the fallback test FIRST (before librosa exists)**
 
 In `tests/test_ai_motion.py`, add `import sys` to the imports and change `test_detect_beats_fallback_ffmpeg` to force the ImportError path so it survives librosa being installed later:
 
@@ -55,12 +55,12 @@ def test_detect_beats_fallback_ffmpeg(tmp_path: Path, monkeypatch: pytest.Monkey
     # ... existing body unchanged ...
 ```
 
-- [ ] **Step 2: Run the fallback test to verify it still passes**
+- [x] **Step 2: Run the fallback test to verify it still passes**
 
 Run: `cd /home/superbypassudin/.clone/Github/SuperBypassUdinnn/media-studio && .venv/bin/python -m pytest tests/test_ai_motion.py -q`
 Expected: all pass (`None` in `sys.modules` makes `import librosa` raise ImportError).
 
-- [ ] **Step 3: Add the `rhythm` extra to pyproject.toml**
+- [x] **Step 3: Add the `rhythm` extra to pyproject.toml**
 
 After the `sam2` line in `[project.optional-dependencies]`:
 
@@ -71,7 +71,7 @@ rhythm = ["librosa>=0.11"]
 
 Then install: `.venv/bin/python -m pip install "librosa>=0.11"`.
 
-- [ ] **Step 4: Write failing tests in tests/test_rhythm.py**
+- [x] **Step 4: Write failing tests in tests/test_rhythm.py**
 
 Test cases (exact names and assertions):
 - `test_analyze_rhythm_requires_librosa(tmp_path, monkeypatch)`: `monkeypatch.setitem(sys.modules, "librosa", None)`; a dummy file at `tmp_path / "x.wav"`; `pytest.raises(AudioError, match=r"librosa")`.
@@ -79,12 +79,12 @@ Test cases (exact names and assertions):
 - `test_beats_json_roundtrip` — `json.dumps(json.loads(json.dumps(result)))` succeeds (pins the plain-float constraint).
 - `test_cli_beats_writes_json(tmp_path)`: real 4 s click wav; run `main(["video", "beats", str(wav), "--out", str(out)])`; exit code 0; file exists; parsed JSON has keys `bpm`, `beats`, `downbeats`, `energy`, `sections`.
 
-- [ ] **Step 5: Run tests to verify they fail**
+- [x] **Step 5: Run tests to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_rhythm.py -q`
 Expected: FAIL/ERROR (`AttributeError`/`ImportError` — `analyze_rhythm` not defined; CLI test fails on unknown subcommand).
 
-- [ ] **Step 6: Implement `analyze_rhythm` in src/media_studio/audio.py**
+- [x] **Step 6: Implement `analyze_rhythm` in src/media_studio/audio.py**
 
 Behavior contract (implementation details are the implementer's):
 - Lazy `import librosa` inside the function; `ImportError`/`ModuleNotFoundError` → `AudioError(f"librosa is not installed; install with: pip install -e \".[rhythm]\" ({error})")`.
@@ -92,7 +92,7 @@ Behavior contract (implementation details are the implementer's):
 - Downbeat heuristic (pinned): assume 4/4 — find the beat index nearest the highest-energy window start; `downbeats = beats[phase::4]` for that index `phase`.
 - Cast every numeric to Python `float`/`int` before returning (`float(np_value)`); round times to 4 decimals.
 
-- [ ] **Step 7: Wire the CLI subcommand**
+- [x] **Step 7: Wire the CLI subcommand**
 
 Subparser (after `beat_p.set_defaults(func=cmd_video_beat_sync)`):
 
@@ -102,17 +102,17 @@ ms video beats <audio> [--out PATH] [--window 0.5]
 
 `cmd_video_beats`: validate the audio file exists; call `analyze_rhythm`; write JSON to `--out` (default: `<audio-stem>.beats.json` beside the audio); print one line `bpm <bpm>, <n> beats (<m> downbeats), <k> high-energy section(s)` and the output path; catch `AudioError` → `error: ...` to stderr + `EXIT_FAILURE`.
 
-- [ ] **Step 8: Run the tests to verify they pass**
+- [x] **Step 8: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_rhythm.py tests/test_ai_motion.py -q`
 Expected: all pass (librosa path exercised for real on the click track; fallback test still green).
 
-- [ ] **Step 9: Lint, format, and e2e on real music**
+- [x] **Step 9: Lint, format, and e2e on real music**
 
 Run: `~/.local/bin/ruff check src/ tests/ && ~/.local/bin/ruff format src/media_studio/audio.py src/media_studio/cli.py tests/test_rhythm.py tests/test_ai_motion.py`
 E2E: `.venv/bin/ms video beats /home/superbypassudin/Projects/amv-demonslayer-3d/assets/audio/music-battle.wav --out /tmp/opencode/beats-battle.json` — exit 0; inspect the JSON: bpm plausible for the orchestral track, non-zero downbeats. Record the detected bpm in the report.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add pyproject.toml src/media_studio/audio.py src/media_studio/cli.py tests/test_rhythm.py tests/test_ai_motion.py
@@ -139,7 +139,7 @@ git commit -m "feat(audio): real rhythm analysis with librosa and ms video beats
   - `auto_schedule(beats: dict, *, offset: float, duration: float, max_per_second: int = 2) -> list[ScheduledEffect]`
   - `apply_effects(source: Path, destination: Path | None = None, effects: list[ScheduledEffect] = [], *, fps: float = 60.0, resolution: str = "1920x1080", codec: str = "h264") -> BeatFxResult`
 
-- [ ] **Step 1: Write failing tests in tests/test_beatfx.py**
+- [x] **Step 1: Write failing tests in tests/test_beatfx.py**
 
 Classes and pinned assertions:
 - `TestParseSchedule`: valid `[{time: 1.0, kind: "shake", params: {}}]` round-trips sorted by time; unknown kind raises `BeatFxError` with message containing `rgb`; negative time raises `BeatFxError` matching `r"non-negative"`; empty list is valid (zero effects).
@@ -148,12 +148,12 @@ Classes and pinned assertions:
 - `TestApplyEffects` (real ffmpeg, marked like `TestEndToEnd` in `tests/test_video_cutout.py`): build a 1 s 1920x1080 testsrc2 clip (`libx264`); effects `[{time: 0.2, kind: "flash"}, {time: 0.5, kind: "shake"}, {time: 0.93, kind: "punch", params: {"zoom": 1.08, "duration": 0.15}}]` (last one pins the near-end boundary case); assert destination exists, `size_bytes > 0`, ffprobe codec is `h264`, duration within 0.2 of 1.0; rerun with overlapping windows `[{time: 0.3, kind: "hue"}, {time: 0.4, kind: "flash"}]` → also succeeds (pins overlap composition).
 - `TestValidation`: resolution `1280x720` raises `BeatFxError` matching `r"below the 1920x1080 minimum floor"`; malformed resolution raises; unknown codec raises listing `h264`/`prores`; missing source raises with `no such file`.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_beatfx.py -q`
 Expected: FAIL (`ModuleNotFoundError: No module named 'media_studio.beatfx'`).
 
-- [ ] **Step 3: Implement src/media_studio/beatfx.py**
+- [x] **Step 3: Implement src/media_studio/beatfx.py**
 
 Module docstring explains the recipe lineage (beat-synced-edit cookbook, impact.py chromatic) and the sequential-pass design. Pinned behavior:
 - Resolution parsing/floor: same `re` pattern and floor semantics as `parallax.py` (`MIN 1920x1080`, message contains "below the 1920x1080 minimum floor").
@@ -163,12 +163,12 @@ Module docstring explains the recipe lineage (beat-synced-edit cookbook, impact.
 - `auto_schedule` policy (pinned, deterministic): local beats = `[b - offset for b in beats if offset <= b < offset + duration]`; empty → `BeatFxError` matching "no beats fall inside"; map each local beat to the energy of the window containing it; sort candidates by energy descending; greedily take candidates whose distance to every already-taken time >= 0.2 s, up to `int(duration * max_per_second)`; re-sort taken times ascending; assign kinds by cycling `["punch", "shake", "flash"]` (params defaults).
 - Destination: `None` → `<stem>.beatfx.mp4` beside source; dir → inside it; explicit file passthrough (mirror `_video_destination` in `video_cutout.py`).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_beatfx.py -q`
 Expected: all pass.
 
-- [ ] **Step 5: Wire the CLI subcommand**
+- [x] **Step 5: Wire the CLI subcommand**
 
 ```
 ms video beatfx <source> --beats PATH (--auto | --schedule PATH) [--offset 0.0] [--out PATH] [--fps 60] [--resolution 1920x1080] [--codec {h264,prores}] [--max-per-second 2]
@@ -176,16 +176,16 @@ ms video beatfx <source> --beats PATH (--auto | --schedule PATH) [--offset 0.0] 
 
 `cmd_video_beatfx`: load beats.json (`json.loads`; malformed → error), build the schedule (`--auto` from beats+offset+probed duration, or `--schedule` via `parse_schedule`), call `apply_effects`, print `applied <n> effect(s)` then one line per effect `<mm:ss> <kind>`, then the destination and size in MB; catch `(BeatFxError, IngestError, json.JSONDecodeError)` → stderr + `EXIT_FAILURE`.
 
-- [ ] **Step 6: Run tests and lint to verify they pass**
+- [x] **Step 6: Run tests and lint to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_beatfx.py tests/test_cli.py -q && ~/.local/bin/ruff check src/ tests/ && ~/.local/bin/ruff format src/media_studio/beatfx.py src/media_studio/cli.py tests/test_beatfx.py`
 Expected: all pass, ruff clean.
 
-- [ ] **Step 7: E2E on a real Demon Slayer shot**
+- [x] **Step 7: E2E on a real Demon Slayer shot**
 
 `.venv/bin/ms video beatfx /home/superbypassudin/Projects/amv-demonslayer-3d/assets/video/shot2-tengen-1080p60.mp4 --beats /tmp/opencode/beats-battle.json --offset 3.5 --auto --out /tmp/opencode/beatfx-e2e.mp4` — exit 0; verify with `.venv/bin/ms see /tmp/opencode/beatfx-e2e.mp4` and READ the produced sheet; report the effect list and sheet path.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/media_studio/beatfx.py src/media_studio/cli.py tests/test_beatfx.py
@@ -202,7 +202,7 @@ git commit -m "feat(video): beat-mapped micro-effects via ms video beatfx"
 - Consumes: the CLI surfaces from Tasks 1–2 (`ms video beats`, `ms video beatfx` with `--beats/--auto/--offset`).
 - Produces: workflow knowledge only; no code.
 
-- [ ] **Step 1: Update media-create SKILL.md**
+- [x] **Step 1: Update media-create SKILL.md**
 
 Additions (formal technical English, no emojis, commands must match the real CLI):
 1. New stage subsection **Rhythm & Density** (insert after Stage 4 — Asset Acquisition):
@@ -213,7 +213,7 @@ Additions (formal technical English, no emojis, commands must match the real CLI
 2. Gate 1 upgrade: for beat-synced video prompts the plan MUST include the cut list (per-cut timestamps) and the effect schedule (per-beat effect assignment) for user approval — EDL-first.
 3. CLI reference: add `ms video beats`, `ms video beatfx` under the Video section.
 
-- [ ] **Step 2: Update README quickstart**
+- [x] **Step 2: Update README quickstart**
 
 After the existing `ms video scenes` / `ms video remove-bg` lines add:
 
@@ -222,7 +222,7 @@ ms video beats music.wav --out beats.json
 ms video beatfx shot.mp4 --beats beats.json --offset 3.5 --auto
 ```
 
-- [ ] **Step 3: Verify the skill renders correctly and commit both repos**
+- [x] **Step 3: Verify the skill renders correctly and commit both repos**
 
 Run: `grep -c "video beats" ~/.agents/skills/media-create/SKILL.md` (>= 2), then:
 
