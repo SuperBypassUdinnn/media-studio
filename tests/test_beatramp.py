@@ -116,6 +116,20 @@ def test_map_override_changes_kind() -> None:
     assert downbeat.kind == "slow_snap"
 
 
+def test_offset_shifts_beat_times_to_shot_local() -> None:
+    beats = {
+        "beats": [0.5, 2.3, 2.8, 4.0],
+        "downbeats": [2.3],
+        "window": 0.5,
+        "energy": [0.1, 0.9],
+        "sections": [],
+    }
+    events = schedule_ramp_events(beats, offset=2.0, duration=2.0)
+    assert [(e.time, e.kind, e.trigger) for e in events] == [
+        (0.3, "fast_slow_fast", "downbeat"),
+    ]
+
+
 @pytest.mark.slow
 def test_apply_ramp_events_e2e(tmp_path: Path) -> None:
     source = tmp_path / "source.mp4"
@@ -138,6 +152,30 @@ def test_apply_ramp_events_e2e(tmp_path: Path) -> None:
     assert result.events == tuple(events)
     assert result.resolution == RESOLUTION
     assert result.fps == FPS
+
+
+@pytest.mark.slow
+def test_apply_ramp_events_changes_speed_for_fast_slow_fast(tmp_path: Path) -> None:
+    source = tmp_path / "source.mp4"
+    _make_clip(source, duration=2)
+    events = [RampEvent(time=0.5, kind="fast_slow_fast", trigger="downbeat")]
+    destination = tmp_path / "out.mp4"
+
+    apply_ramp_events(source, events, destination, fps=FPS, resolution=RESOLUTION)
+
+    assert abs(_video_duration(destination) - 2.0) > 0.1
+
+
+@pytest.mark.slow
+def test_apply_ramp_events_changes_speed_for_slow_snap(tmp_path: Path) -> None:
+    source = tmp_path / "source.mp4"
+    _make_clip(source, duration=2)
+    events = [RampEvent(time=0.5, kind="slow_snap", trigger="snare")]
+    destination = tmp_path / "out.mp4"
+
+    apply_ramp_events(source, events, destination, fps=FPS, resolution=RESOLUTION)
+
+    assert abs(_video_duration(destination) - 2.0) > 0.1
 
 
 def test_apply_ramp_events_rejects_below_floor_resolution(tmp_path: Path) -> None:

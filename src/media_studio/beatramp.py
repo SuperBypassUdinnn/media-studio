@@ -31,6 +31,16 @@ TRIGGER_MAP: dict[str, str] = {
 
 MIN_GAP_S: float = 0.5
 
+#: Per-kind speed-factor defaults forwarded to ``apply_speed_ramp``.
+#: ``fast_slow_fast`` uses outer=fast_factor / inner=slow_factor;
+#: ``slow_snap`` uses outer=1.0 (fixed) / inner=slow_factor (fast_factor ignored);
+#: ``flash_freeze`` uses outer=1.0 / inner=0.1 (both hardcoded in ramp.py).
+RAMP_SPEED_DEFAULTS: dict[str, dict[str, float]] = {
+    "fast_slow_fast": {"slow_factor": 0.4, "fast_factor": 2.5},
+    "slow_snap": {"slow_factor": 0.3, "fast_factor": 1.0},
+    "flash_freeze": {"slow_factor": 0.1, "fast_factor": 1.0},
+}
+
 RESOLUTION_PATTERN = re.compile(r"^\d{2,5}x\d{2,5}$")
 MIN_WIDTH = 1920
 MIN_HEIGHT = 1080
@@ -111,7 +121,15 @@ def schedule_ramp_events(
     sections = beats.get("sections") or []
     window = float(beats.get("window") or 1.0)
 
-    downbeat_set = set(downbeats)
+    def in_shot_window(time: float) -> bool:
+        return offset <= time < offset + duration
+
+    def local_time(time: float) -> float:
+        return time - offset
+
+    # Only beats inside the shot's music-time window are eligible.
+    in_window_beats = [b for b in rhythm_beats if in_shot_window(b)]
+    downbeat_set = set(b for b in downbeats if in_shot_window(b))
 
     high_sections = [s for s in sections if s.get("level") == "high"]
 
@@ -128,24 +146,27 @@ def schedule_ramp_events(
         current = sections[index]
         if previous.get("level") == "low" and current.get("level") == "high":
             peak = last_beat_before(current["start"])
-            if peak is not None:
+            if peak is not None and in_shot_window(peak):
                 build_peaks.append(peak)
 
-    snares: list[float] = [b for b in rhythm_beats if b not in downbeat_set and in_high_section(b)]
+    snares: list[float] = [
+        b for b in in_window_beats if b not in downbeat_set and in_high_section(b)
+    ]
 
     window_count = len(energy)
 
     def window_energy(time: float) -> float:
         if window_count == 0:
             return 0.0
-        index = min(max(int(time / window), 0), window_count - 1)
+        index = min(max(int(local_time(time) / window), 0), window_count - 1)
         return float(energy[index])
 
     PRIORITY = {"downbeat": 0, "snare": 1, "build_peak": 2}
 
     candidates: list[tuple[float, str, str]] = []
     for time in downbeats:
-        candidates.append((time, "downbeat", TRIGGER_MAP.get("downbeat", "fast_slow_fast")))
+        if in_shot_window(time):
+            candidates.append((time, "downbeat", TRIGGER_MAP.get("downbeat", "fast_slow_fast")))
     for time in snares:
         candidates.append((time, "snare", TRIGGER_MAP.get("snare", "slow_snap")))
     for time in build_peaks:
@@ -164,7 +185,13 @@ def schedule_ramp_events(
 
     events: list[RampEvent] = []
     for time, trigger, kind in taken:
-        events.append(RampEvent(time=time, kind=map.get(trigger, kind), trigger=trigger))
+        events.append(
+            RampEvent(
+                time=round(local_time(time), 4),
+                kind=map.get(trigger, kind),
+                trigger=trigger,
+            )
+        )
     return events
 
 
@@ -252,8 +279,7 @@ def apply_ramp_events(
                     output,
                     curve=event.kind,
                     slow_window=(max(0.0, event.time - 0.25), event.time + 0.25),
-                    slow_factor=1.0,
-                    fast_factor=1.0,
+                    **RAMP_SPEED_DEFAULTS[event.kind],
                     fps=int(fps),
                 )
             else:
