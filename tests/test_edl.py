@@ -14,11 +14,13 @@ from unittest.mock import patch
 
 import pytest
 
+from media_studio.cli import main
 from media_studio.edl import (
     EDL_VERSION,
     EdlCut,
     EdlDocument,
     EdlError,
+    check_sync,
     generate_edl,
     load_edl,
     preview_edl_cut,
@@ -377,3 +379,175 @@ class TestPreviewEdlCut:
         assert result == out
         assert out.is_file()
         assert abs(probe_media(out).duration - 1.0) < 0.3
+
+
+def _make_sync_doc(
+    offsets_ms: list[int],
+    *,
+    beats: dict | None = None,
+    total_duration_s: float = 3.0,
+) -> EdlDocument:
+    """Build an EdlDocument with cuts at the given music offsets (ms)."""
+
+    if beats is None:
+        beats = {"beats": [0.5, 1.0, 1.5, 2.0, 2.5], "duration": 3.0}
+    return EdlDocument(
+        version=1,
+        music="music.wav",
+        beats_json="beats.json",
+        total_duration_s=total_duration_s,
+        cuts=[
+            EdlCut(
+                id=f"cut-{i}",
+                shot=f"shot{i}.mp4",
+                in_ms=0,
+                out_ms=1000,
+                music_offset_ms=offset,
+                beatfx=[],
+                ramp=[],
+                color_lut=None,
+                notes="",
+            )
+            for i, offset in enumerate(offsets_ms)
+        ],
+    )
+
+
+def _write_beats(path: Path, beats: dict) -> Path:
+    path.write_text(json.dumps(beats), encoding="utf-8")
+    return path
+
+
+class TestCheckSync:
+    def test_perfect_alignment_is_synced(self) -> None:
+        beats = {"beats": [0.5, 1.0, 1.5, 2.0, 2.5], "duration": 3.0}
+        doc = _make_sync_doc([500, 1000, 1500], beats=beats)
+        report = check_sync(doc, beats)
+        assert report.cuts == 3
+        assert report.onsets == 5
+        assert report.tolerance == 0.1
+        assert report.share_on_onset == 1.0
+        assert report.median_distance == 0.0
+        assert report.p90_distance == 0.0
+        assert report.verdict == "synced"
+
+    def test_off_beat_is_unsynced(self) -> None:
+        beats = {"beats": [0.5, 1.0, 1.5, 2.0, 2.5], "duration": 3.0}
+        # Midpoints between onsets: distance 0.25 s > tolerance 0.1 s.
+        doc = _make_sync_doc([750, 1250, 1750], beats=beats)
+        report = check_sync(doc, beats)
+        assert report.share_on_onset == 0.0
+        assert report.verdict == "unsynced"
+
+    def test_too_few_points_is_inconclusive(self) -> None:
+        beats = {"beats": [0.5, 1.0, 1.5, 2.0, 2.5], "duration": 3.0}
+        doc = _make_sync_doc([500, 1000], beats=beats)
+        report = check_sync(doc, beats)
+        assert report.share_on_onset == 1.0
+        assert report.verdict == "inconclusive"
+
+    def test_too_few_onsets_is_inconclusive(self) -> None:
+        beats = {"beats": [0.5, 1.0], "duration": 3.0}
+        doc = _make_sync_doc([500, 1000, 1500], beats=beats)
+        report = check_sync(doc, beats)
+        assert report.verdict == "inconclusive"
+
+    def test_empty_cuts_raises_edl_error(self) -> None:
+        doc = _make_sync_doc([])
+        with pytest.raises(EdlError, match="no cuts in the EDL"):
+            check_sync(doc, {"beats": [0.5, 1.0, 1.5], "duration": 3.0})
+
+    def test_median_and_p90_on_known_distances(self) -> None:
+        # Onsets at every integer second; cuts sit 0.1..0.5 s after onset 0.
+        beats = {"beats": [float(i) for i in range(10)], "duration": 10.0}
+        doc = _make_sync_doc([100, 200, 300, 400, 500], beats=beats)
+        report = check_sync(doc, beats, tolerance=0.1)
+        assert report.median_distance == 0.3
+        assert report.p90_distance == 0.5
+
+    def test_zero_duration_falls_back_to_one(self) -> None:
+        # No beats duration and no EDL duration -> the 1.0 fallback.
+        beats = {"beats": [0.5, 1.0, 1.5, 2.0, 2.5]}
+        doc = _make_sync_doc([500, 1000, 1500], beats=beats, total_duration_s=0.0)
+        report = check_sync(doc, beats)
+        assert report.baseline == 1.0
+        # share 1.0 is not > baseline 1.0, and share <= baseline -> unsynced.
+        assert report.verdict == "unsynced"
+
+
+class TestCliSyncCheck:
+    def test_sync_check_synced(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _write_beats(
+            tmp_path / "beats.json",
+            {"beats": [0.5, 1.0, 1.5, 2.0, 2.5], "duration": 3.0},
+        )
+        doc = _make_sync_doc(
+            [500, 1000, 1500],
+            beats={"beats": [0.5, 1.0, 1.5, 2.0, 2.5], "duration": 3.0},
+        )
+        edl_path = tmp_path / "edl.json"
+        save_edl(doc, edl_path)
+
+        assert main(["video", "edl", "sync-check", str(edl_path)]) == 0
+        out = capsys.readouterr().out
+        assert "cuts 3" in out
+        assert "onsets 5" in out
+        assert "tolerance 0.1s" in out
+        assert "share on onset 1.0" in out
+        assert "verdict: synced" in out
+
+    def test_sync_check_missing_beats_errors(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        doc = _make_sync_doc([500, 1000, 1500])
+        edl_path = tmp_path / "edl.json"
+        save_edl(doc, edl_path)  # beats_json = "beats.json", absent beside the EDL
+
+        assert main(["video", "edl", "sync-check", str(edl_path)]) == 1
+        err = capsys.readouterr().err
+        assert "error:" in err
+        assert str(edl_path.parent / "beats.json") in err
+
+    def test_sync_check_fail_on_unsynced(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        beats_path = _write_beats(
+            tmp_path / "beats.json",
+            {"beats": [0.5, 1.0, 1.5, 2.0, 2.5], "duration": 3.0},
+        )
+        doc = _make_sync_doc(
+            [750, 1250, 1750],
+            beats={"beats": [0.5, 1.0, 1.5, 2.0, 2.5], "duration": 3.0},
+        )
+        edl_path = tmp_path / "edl.json"
+        save_edl(doc, edl_path)
+
+        assert (
+            main(
+                [
+                    "video",
+                    "edl",
+                    "sync-check",
+                    str(edl_path),
+                    "--beats",
+                    str(beats_path),
+                    "--fail-on-unsynced",
+                ]
+            )
+            == 1
+        )
+        out = capsys.readouterr().out
+        assert "verdict: unsynced" in out
+
+    def test_sync_check_bad_beats_json_errors(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        beats_path = tmp_path / "beats.json"
+        beats_path.write_text("{not valid json", encoding="utf-8")
+        doc = _make_sync_doc([500, 1000, 1500])
+        edl_path = tmp_path / "edl.json"
+        save_edl(doc, edl_path)
+
+        assert main(["video", "edl", "sync-check", str(edl_path), "--beats", str(beats_path)]) == 1
+        err = capsys.readouterr().err
+        assert "error:" in err

@@ -38,7 +38,14 @@ from .cutout import (
 )
 from .design import DesignError, validate_design
 from .design import render as render_design
-from .edl import EdlError, generate_edl, load_edl, preview_edl_cut, render_edl
+from .edl import (
+    EdlError,
+    check_sync,
+    generate_edl,
+    load_edl,
+    preview_edl_cut,
+    render_edl,
+)
 from .effectcraft import (
     AMV_MOTION_PRESETS,
     MOTION_TEMPLATES,
@@ -703,6 +710,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--fps", type=float, default=60.0, help="output frame rate (default 60)"
     )
     edl_preview.set_defaults(func=cmd_video_edl_preview)
+
+    edl_sync_check = edl_sub.add_parser(
+        "sync-check", help="check EDL cut points against the beat grid"
+    )
+    edl_sync_check.add_argument("edl", type=Path, help="EDL JSON file")
+    edl_sync_check.add_argument(
+        "--beats",
+        type=Path,
+        default=None,
+        help="beats JSON file (default: the EDL's beats_json next to the EDL)",
+    )
+    edl_sync_check.add_argument(
+        "--tolerance",
+        type=float,
+        default=0.1,
+        help="max seconds from an onset to count as on-beat (default 0.1)",
+    )
+    edl_sync_check.add_argument(
+        "--fail-on-unsynced",
+        action="store_true",
+        help="exit non-zero when the verdict is unsynced",
+    )
+    edl_sync_check.set_defaults(func=cmd_video_edl_sync_check)
 
     proxy_p = video_sub.add_parser(
         "proxy", help="render a 540p review proxy of a deliverable or file"
@@ -2760,6 +2790,33 @@ def cmd_video_edl_preview(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     print(str(destination))
+    return EXIT_OK
+
+
+def cmd_video_edl_sync_check(args: argparse.Namespace) -> int:
+    """Check EDL cut points against the beat grid and print a sync report."""
+    try:
+        doc = load_edl(args.edl)
+        beats_path = args.beats or (args.edl.parent / doc.beats_json)
+        if not beats_path.is_file():
+            raise EdlError(f"beats file not found: {beats_path}; pass --beats PATH")
+        beats = json.loads(beats_path.read_text(encoding="utf-8"))
+        report = check_sync(doc, beats, tolerance=args.tolerance)
+    except (EdlError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"cuts {report.cuts}")
+    print(f"onsets {report.onsets}")
+    print(f"tolerance {report.tolerance}s")
+    print(f"share on onset {report.share_on_onset}")
+    print(f"baseline {report.baseline}")
+    print(f"median distance {report.median_distance}s")
+    print(f"p90 distance {report.p90_distance}s")
+    print(f"verdict: {report.verdict}")
+
+    if args.fail_on_unsynced and report.verdict == "unsynced":
+        return EXIT_FAILURE
     return EXIT_OK
 
 

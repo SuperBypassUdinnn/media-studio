@@ -129,6 +129,83 @@ def save_edl(doc: EdlDocument, path: Path) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+@dataclass(frozen=True)
+class SyncReport:
+    """Authoritative cut-to-beat alignment report for an EDL document."""
+
+    cuts: int
+    onsets: int
+    tolerance: float
+    share_on_onset: float
+    baseline: float
+    median_distance: float
+    p90_distance: float
+    verdict: str  # "synced" | "unsynced" | "inconclusive"
+
+
+def _median(values: list[float]) -> float:
+    """Return the median of a non-empty list of numbers."""
+
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _p90(values: list[float]) -> float:
+    """Return the 90th percentile value of a non-empty list of numbers."""
+
+    ordered = sorted(values)
+    index = min(int(len(ordered) * 0.9), len(ordered) - 1)
+    return ordered[index]
+
+
+def check_sync(doc: EdlDocument, beats: dict, *, tolerance: float = 0.1) -> SyncReport:
+    """Check EDL cut points against the beat grid.
+
+    Returns a :class:`SyncReport` comparing each cut's music offset to the
+    nearest beat onset. Raises :class:`EdlError` when the EDL has no cuts.
+    """
+
+    if not doc.cuts:
+        raise EdlError("no cuts in the EDL")
+
+    points = sorted(cut.music_offset_ms / 1000 for cut in doc.cuts)
+    onsets = sorted(float(b) for b in beats["beats"])
+
+    distances = [min(abs(point - onset) for onset in onsets) for point in points]
+
+    on_onset = sum(1 for distance in distances if distance <= tolerance)
+    share_on_onset = on_onset / len(points)
+
+    duration = float(beats.get("duration") or doc.total_duration_s or 0.0)
+    if duration == 0.0:
+        # Only defensive branch: avoid a divide-by-zero with no duration info.
+        duration = 1.0
+    baseline = min(1.0, len(onsets) * 2 * tolerance / duration)
+
+    if len(points) < 3 or len(onsets) < 3:
+        verdict = "inconclusive"
+    elif share_on_onset > baseline and share_on_onset >= 0.5:
+        verdict = "synced"
+    elif share_on_onset <= baseline:
+        verdict = "unsynced"
+    else:
+        verdict = "inconclusive"
+
+    return SyncReport(
+        cuts=len(points),
+        onsets=len(onsets),
+        tolerance=float(tolerance),
+        share_on_onset=share_on_onset,
+        baseline=baseline,
+        median_distance=round(_median(distances), 4),
+        p90_distance=round(_p90(distances), 4),
+        verdict=verdict,
+    )
+
+
 def _slug(text: str) -> str:
     """Return a filesystem-safe slug for ``text``."""
 
