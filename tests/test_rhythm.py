@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import sys
 import wave
 from pathlib import Path
@@ -64,6 +65,7 @@ def test_analyze_rhythm_click_track(tmp_path: Path):
     result = analyze_rhythm(wav)
     assert 0.9 <= result["bpm"] / CLICK_BPM <= 1.1 or 3.5 <= len(result["beats"]) <= 9
     assert len(result["downbeats"]) <= len(result["beats"])
+    assert len(result["downbeats"]) == math.ceil(len(result["beats"]) / 4)
     assert set(result["downbeats"]) <= set(result["beats"])
     assert abs(result["duration"] - CLICK_DURATION) < 0.2
     assert len(result["sections"]) >= 1

@@ -194,7 +194,7 @@ def analyze_rhythm(
         downbeats: list[float] = []
         if beats and energy:
             highest_window_start = float(energy.index(max(energy))) * window
-            phase = min(range(len(beats)), key=lambda i: abs(beats[i] - highest_window_start))
+            phase = min(range(len(beats)), key=lambda i: abs(beats[i] - highest_window_start)) % 4
             downbeats = [round(float(t), 4) for t in beats[phase::4]]
 
         return {
