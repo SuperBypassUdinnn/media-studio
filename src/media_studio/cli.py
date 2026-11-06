@@ -13,6 +13,7 @@ from pathlib import Path
 from . import __version__, ai, audio, media
 from .acquire import AcquireError
 from .beatfx import BeatFxError, apply_effects, auto_schedule, parse_schedule
+from .beatramp import TRIGGER_MAP, BeatRampError, apply_ramp_events, schedule_ramp_events
 from .blender import (
     EXPORT_FORMATS,
     BlenderError,
@@ -623,6 +624,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-per-second", type=int, default=2, help="max effects per second (default 2)"
     )
     beatfx_p.set_defaults(func=cmd_video_beatfx)
+
+    beatramp_p = video_sub.add_parser(
+        "beatramp", help="apply beat-synced velocity ramps to a video clip"
+    )
+    beatramp_p.add_argument("source", help="a video file to process")
+    beatramp_p.add_argument(
+        "--beats", type=Path, required=True, help="beat JSON file (from ms video beats)"
+    )
+    beatramp_p.add_argument(
+        "--offset", type=float, default=0.0, help="seconds to subtract from beat times (default 0)"
+    )
+    beatramp_p.add_argument(
+        "--out", type=Path, default=None, help="destination file or folder (default beside source)"
+    )
+    beatramp_p.add_argument(
+        "--fps", type=float, default=60.0, help="output frame rate (default 60)"
+    )
+    beatramp_p.add_argument(
+        "--resolution", default="1920x1080", help="output resolution WxH (default 1920x1080)"
+    )
+    beatramp_p.add_argument(
+        "--codec", choices=("h264", "prores"), default="h264", help="encode codec (default h264)"
+    )
+    beatramp_p.add_argument(
+        "--max-per-second",
+        type=float,
+        default=1.0,
+        help="max ramp events per second (default 1)",
+    )
+    beatramp_p.add_argument(
+        "--map",
+        type=json.loads,
+        default=None,
+        help=(
+            "JSON trigger-to-kind override map "
+            "(default: downbeat->fast_slow_fast, snare->slow_snap, build_peak->flash_freeze)"
+        ),
+    )
+    beatramp_p.set_defaults(func=cmd_video_beatramp)
 
     proxy_p = video_sub.add_parser(
         "proxy", help="render a 540p review proxy of a deliverable or file"
@@ -2573,6 +2613,46 @@ def cmd_video_beatfx(args: argparse.Namespace) -> int:
     print(f"applied {len(result.effects)} effect(s)")
     for effect in result.effects:
         print(f"  {_format_mmss(effect.time)} {effect.kind}")
+    size_mb = result.size_bytes / (1024 * 1024)
+    print(f"wrote {result.destination} ({size_mb:.2f} MB)")
+    return EXIT_OK
+
+
+def cmd_video_beatramp(args: argparse.Namespace) -> int:
+    """Apply beat-synced velocity ramps to a video clip."""
+    source = Path(args.source)
+    if not source.is_file():
+        print(f"error: source file not found: {source}", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        beats = json.loads(Path(args.beats).read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    try:
+        schedule = schedule_ramp_events(
+            beats,
+            offset=args.offset,
+            duration=probe_media(source).duration,
+            map=args.map or TRIGGER_MAP,
+            max_per_second=args.max_per_second,
+        )
+        result = apply_ramp_events(
+            source,
+            schedule,
+            destination=args.out,
+            fps=args.fps,
+            resolution=args.resolution,
+            codec=args.codec,
+        )
+    except (BeatRampError, IngestError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"applied {len(result.events)} ramp event(s)")
+    for event in result.events:
+        print(f"  {_format_mmss(event.time)} {event.kind} ({event.trigger})")
     size_mb = result.size_bytes / (1024 * 1024)
     print(f"wrote {result.destination} ({size_mb:.2f} MB)")
     return EXIT_OK

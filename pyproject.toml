@@ -36,4 +36,4 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 testpaths = ["tests"]
 # Tests marked `network` hit live provider APIs and are opt-in: `pytest -m network`.
 addopts = "-q -m 'not network'"
-markers = ["network: requires outbound network access to a live provider"]
+markers = ["network: requires outbound network access to a live provider", "slow: real-ffmpeg end-to-end tests"]
