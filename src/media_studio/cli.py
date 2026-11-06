@@ -38,6 +38,7 @@ from .cutout import (
 )
 from .design import DesignError, validate_design
 from .design import render as render_design
+from .edl import EdlError, generate_edl, load_edl, preview_edl_cut, render_edl
 from .effectcraft import (
     AMV_MOTION_PRESETS,
     MOTION_TEMPLATES,
@@ -663,6 +664,43 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     beatramp_p.set_defaults(func=cmd_video_beatramp)
+
+    edl = video_sub.add_parser("edl", help="generate, render, and preview EDL cut plans")
+    edl_sub = edl.add_subparsers(dest="edl_command", required=True)
+
+    edl_generate = edl_sub.add_parser(
+        "generate", help="generate an EDL cut plan from shots and beats"
+    )
+    edl_generate.add_argument("beats", type=Path, help="beats JSON file (from ms video beats)")
+    edl_generate.add_argument("shots", nargs="+", type=Path, help="shot files to cut from")
+    edl_generate.add_argument("--music", type=Path, default=None, help="music track to mix")
+    edl_generate.add_argument(
+        "--duration", type=float, required=True, help="total duration in seconds"
+    )
+    edl_generate.add_argument(
+        "--out", type=Path, default=Path("edl.json"), help="destination EDL JSON (default edl.json)"
+    )
+    edl_generate.set_defaults(func=cmd_video_edl_generate)
+
+    edl_render = edl_sub.add_parser("render", help="render an EDL cut plan to a video file")
+    edl_render.add_argument("edl", type=Path, help="EDL JSON file")
+    edl_render.add_argument("--out", type=Path, default=None, help="destination video file")
+    edl_render.add_argument(
+        "--fps", type=float, default=60.0, help="output frame rate (default 60)"
+    )
+    edl_render.add_argument(
+        "--codec", choices=("h264", "prores"), default="h264", help="encode codec (default h264)"
+    )
+    edl_render.set_defaults(func=cmd_video_edl_render)
+
+    edl_preview = edl_sub.add_parser("preview", help="render a single EDL cut to a video file")
+    edl_preview.add_argument("edl", type=Path, help="EDL JSON file")
+    edl_preview.add_argument("--cut", required=True, help="cut id to preview")
+    edl_preview.add_argument("--out", type=Path, default=None, help="destination video file")
+    edl_preview.add_argument(
+        "--fps", type=float, default=60.0, help="output frame rate (default 60)"
+    )
+    edl_preview.set_defaults(func=cmd_video_edl_preview)
 
     proxy_p = video_sub.add_parser(
         "proxy", help="render a 540p review proxy of a deliverable or file"
@@ -2510,6 +2548,69 @@ def cmd_video_cut_by_transcript(args: argparse.Namespace) -> int:
     except FilmCraftError as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
+
+
+def _edl_duration(seconds: float) -> str:
+    total = round(seconds)
+    minutes, secs = divmod(total, 60)
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def cmd_video_edl_generate(args: argparse.Namespace) -> int:
+    """Generate an EDL cut plan from shots and beats."""
+    try:
+        doc = generate_edl(
+            args.shots,
+            args.beats,
+            args.music or Path(""),
+            total_duration_s=args.duration,
+            out=args.out,
+        )
+    except (EdlError, IngestError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"EDL v{doc.version}: {len(doc.cuts)} cut(s), {doc.total_duration_s:g}s total")
+    print("| ID | Shot | In | Out | Dur | Effects |")
+    print("|----|------|----|-----|-----|---------|")
+    for cut in doc.cuts:
+        duration_s = (cut.out_ms - cut.in_ms) / 1000
+        effects = ", ".join(cut.beatfx or cut.ramp or ["-"])
+        print(
+            f"| {cut.id} | {Path(cut.shot).name} | "
+            f"{_edl_duration(cut.in_ms / 1000)} | {_edl_duration(cut.out_ms / 1000)} | "
+            f"{duration_s:g}s | {effects} |"
+        )
+    print(f"wrote {args.out}")
+    return EXIT_OK
+
+
+def cmd_video_edl_render(args: argparse.Namespace) -> int:
+    """Render an EDL cut plan to a video file."""
+    try:
+        doc = load_edl(args.edl)
+        destination = args.out or args.edl.with_suffix(".mp4")
+        render_edl(doc, out=destination, fps=args.fps, codec=args.codec)
+    except (EdlError, IngestError, BeatFxError, BeatRampError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"rendered {len(doc.cuts)} cuts to {destination}")
+    return EXIT_OK
+
+
+def cmd_video_edl_preview(args: argparse.Namespace) -> int:
+    """Render a single EDL cut to a video file."""
+    try:
+        doc = load_edl(args.edl)
+        destination = args.out or Path(f"{args.cut}-preview.mp4")
+        preview_edl_cut(doc, args.cut, out=destination, fps=args.fps)
+    except (EdlError, IngestError, BeatFxError, BeatRampError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(str(destination))
+    return EXIT_OK
 
 
 def cmd_video_beat_sync(args: argparse.Namespace) -> int:
