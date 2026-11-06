@@ -474,6 +474,33 @@ class TestCheckSync:
         # share 1.0 is not > baseline 1.0, and share <= baseline -> unsynced.
         assert report.verdict == "unsynced"
 
+    def test_empty_beats_is_inconclusive(self) -> None:
+        # Empty onset list: no distance loop, inconclusive verdict, zeroed metrics.
+        beats = {"beats": [], "duration": 27.0}
+        doc = _make_sync_doc([500, 1000, 1500], beats=beats)
+        report = check_sync(doc, beats)
+        assert report.cuts == 3
+        assert report.onsets == 0
+        assert report.tolerance == 0.1
+        assert report.share_on_onset == 0.0
+        assert report.baseline == 0.0
+        assert report.median_distance == 0.0
+        assert report.p90_distance == 0.0
+        assert report.verdict == "inconclusive"
+
+    def test_missing_beats_key_is_inconclusive(self) -> None:
+        # Absent "beats" key: treated as empty, no KeyError, inconclusive verdict.
+        beats = {"duration": 27.0}
+        doc = _make_sync_doc([500, 1000, 1500], beats=beats)
+        report = check_sync(doc, beats)
+        assert report.cuts == 3
+        assert report.onsets == 0
+        assert report.share_on_onset == 0.0
+        assert report.baseline == 0.0
+        assert report.median_distance == 0.0
+        assert report.p90_distance == 0.0
+        assert report.verdict == "inconclusive"
+
 
 class TestCliSyncCheck:
     def test_sync_check_synced(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -551,3 +578,29 @@ class TestCliSyncCheck:
         assert main(["video", "edl", "sync-check", str(edl_path), "--beats", str(beats_path)]) == 1
         err = capsys.readouterr().err
         assert "error:" in err
+
+    def test_sync_check_empty_beats_is_inconclusive(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        beats_path = _write_beats(tmp_path / "beats.json", {"beats": [], "duration": 27.0})
+        doc = _make_sync_doc([500, 1000, 1500])
+        edl_path = tmp_path / "edl.json"
+        save_edl(doc, edl_path)
+
+        assert (
+            main(
+                [
+                    "video",
+                    "edl",
+                    "sync-check",
+                    str(edl_path),
+                    "--beats",
+                    str(beats_path),
+                ]
+            )
+            == 0
+        )
+        out = capsys.readouterr().out
+        assert "cuts 3" in out
+        assert "onsets 0" in out
+        assert "verdict: inconclusive" in out

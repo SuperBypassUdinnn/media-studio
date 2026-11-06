@@ -172,7 +172,21 @@ def check_sync(doc: EdlDocument, beats: dict, *, tolerance: float = 0.1) -> Sync
         raise EdlError("no cuts in the EDL")
 
     points = sorted(cut.music_offset_ms / 1000 for cut in doc.cuts)
-    onsets = sorted(float(b) for b in beats["beats"])
+    onsets = sorted(float(b) for b in beats.get("beats") or [])
+
+    if not onsets:
+        # No beat grid to align against: the check is inconclusive and no
+        # distance loop runs over an empty onset list.
+        return SyncReport(
+            cuts=len(points),
+            onsets=0,
+            tolerance=float(tolerance),
+            share_on_onset=0.0,
+            baseline=0.0,
+            median_distance=0.0,
+            p90_distance=0.0,
+            verdict="inconclusive",
+        )
 
     distances = [min(abs(point - onset) for onset in onsets) for point in points]
 
