@@ -65,6 +65,8 @@ uv venv && uv pip install -e . pytest        # once, inside the checkout
 .venv/bin/python -m media_studio.cli video scenes clip.mp4             # find hard cuts
 .venv/bin/python -m media_studio.cli video remove-bg clip.mp4 \
   --select 850,280 --feather 2                         # SAM 2 alpha ProRes 4444
+.venv/bin/python -m media_studio.cli video beats music.wav --out beats.json
+.venv/bin/python -m media_studio.cli video beatfx shot.mp4 --beats beats.json --offset 3.5 --auto
 .venv/bin/python -m media_studio.cli image remove-bg photo.jpg --model u2netp
 .venv/bin/python -m media_studio.cli see cutout.mov                       # facts + sheet
 .venv/bin/python -m media_studio.cli see ~/Projects/my-project            # project state
