@@ -2451,6 +2451,12 @@ def cmd_video_beatfx(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     try:
+        if args.auto and args.schedule is not None:
+            print(
+                "error: --auto and --schedule are mutually exclusive; pass exactly one",
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
         if args.auto:
             info = probe_media(source)
             schedule = auto_schedule(
@@ -2461,7 +2467,10 @@ def cmd_video_beatfx(args: argparse.Namespace) -> int:
             )
         else:
             if args.schedule is None:
-                print("error: --schedule is required when --auto is not set", file=sys.stderr)
+                print(
+                    "error: exactly one of --auto or --schedule is required",
+                    file=sys.stderr,
+                )
                 return EXIT_FAILURE
             with args.schedule.open("r", encoding="utf-8") as handle:
                 schedule = parse_schedule(json.loads(handle.read()))

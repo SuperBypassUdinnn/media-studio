@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -274,3 +275,112 @@ def test_video_proxy_without_render_fails(
     exit_code = main(["video", "proxy", str(tmp_path)])
     assert exit_code == 1
     assert "no rendered deliverable" in capsys.readouterr().err
+
+
+class TestBeatFxCommand:
+    def _make_clip(self, path: Path) -> Path:
+        """Render a 1 s 1920x1080 testsrc2 clip."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=1920x1080:rate=60:duration=1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(path),
+            ],
+            check=True,
+        )
+        return path
+
+    def test_neither_auto_nor_schedule_fails(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        source = self._make_clip(tmp_path / "source.mp4")
+        beats = tmp_path / "beats.json"
+        beats.write_text('{"beats": [0.1], "energy": [0.5], "window": 0.5}')
+        exit_code = main(["video", "beatfx", str(source), "--beats", str(beats)])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "error:" in err
+        assert "auto" in err and "schedule" in err
+
+    def test_both_auto_and_schedule_fail(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        source = self._make_clip(tmp_path / "source.mp4")
+        beats = tmp_path / "beats.json"
+        beats.write_text('{"beats": [0.1], "energy": [0.5], "window": 0.5}')
+        schedule = tmp_path / "schedule.json"
+        schedule.write_text('[{"time": 0.1, "kind": "flash", "params": {}}]')
+        exit_code = main(
+            [
+                "video",
+                "beatfx",
+                str(source),
+                "--beats",
+                str(beats),
+                "--auto",
+                "--schedule",
+                str(schedule),
+            ]
+        )
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "error:" in err
+        assert "auto" in err and "schedule" in err
+
+    def test_auto_run_succeeds(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        source = self._make_clip(tmp_path / "source.mp4")
+        beats = tmp_path / "beats.json"
+        beats.write_text('{"beats": [0.1, 0.3, 0.6], "energy": [0.5, 0.7, 0.3], "window": 0.5}')
+        dest = tmp_path / "out.mp4"
+        exit_code = main(
+            [
+                "video",
+                "beatfx",
+                str(source),
+                "--beats",
+                str(beats),
+                "--auto",
+                "--out",
+                str(dest),
+            ]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "applied" in out
+        assert str(dest) in out
+        assert dest.is_file()
+
+    def test_schedule_malformed_json_fails(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        source = self._make_clip(tmp_path / "source.mp4")
+        beats = tmp_path / "beats.json"
+        beats.write_text('{"beats": [0.1], "energy": [0.5], "window": 0.5}')
+        schedule = tmp_path / "schedule.json"
+        schedule.write_text("{not valid json")
+        exit_code = main(
+            [
+                "video",
+                "beatfx",
+                str(source),
+                "--beats",
+                str(beats),
+                "--schedule",
+                str(schedule),
+            ]
+        )
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "error:" in err

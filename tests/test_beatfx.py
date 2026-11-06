@@ -26,6 +26,7 @@ from media_studio.beatfx import (
     auto_schedule,
     parse_schedule,
 )
+from media_studio.ingest import probe_media
 
 FPS = 60.0
 RESOLUTION = "1920x1080"
@@ -156,7 +157,7 @@ class TestApplyEffects:
         assert result.size_bytes > 0
         codec, _ = self._ffprobe_video(result.destination)
         assert codec == "h264"
-        assert abs(result.duration - 1.0) < 0.2 if hasattr(result, "duration") else True
+        assert abs(probe_media(result.destination).duration - 1.0) < 0.2
 
     def test_overlapping_windows_succeed(self, tmp_path: Path) -> None:
         source = _make_clip(tmp_path / "source.mp4")
