@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, ai, audio, media
+from .beatfx import BeatFxError, apply_effects, auto_schedule, parse_schedule
 from .blender import (
     EXPORT_FORMATS,
     BlenderError,
@@ -582,6 +583,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--window", type=float, default=0.5, help="analysis window in seconds (default 0.5)"
     )
     beats_p.set_defaults(func=cmd_video_beats)
+
+    beatfx_p = video_sub.add_parser(
+        "beatfx", help="apply beat-mapped micro-effects to a video clip"
+    )
+    beatfx_p.add_argument("source", help="a video file to process")
+    beatfx_p.add_argument(
+        "--beats", type=Path, required=True, help="beat JSON file (from ms video beats)"
+    )
+    beatfx_p.add_argument(
+        "--auto", action="store_true", help="auto-schedule effects from the beats"
+    )
+    beatfx_p.add_argument(
+        "--schedule", type=Path, help="explicit schedule JSON file (list of effects)"
+    )
+    beatfx_p.add_argument(
+        "--offset", type=float, default=0.0, help="seconds to subtract from beat times (default 0)"
+    )
+    beatfx_p.add_argument(
+        "--out", type=Path, default=None, help="destination file or folder (default beside source)"
+    )
+    beatfx_p.add_argument("--fps", type=float, default=60.0, help="output frame rate (default 60)")
+    beatfx_p.add_argument(
+        "--resolution", default="1920x1080", help="output resolution WxH (default 1920x1080)"
+    )
+    beatfx_p.add_argument(
+        "--codec", choices=("h264", "prores"), default="h264", help="encode codec (default h264)"
+    )
+    beatfx_p.add_argument(
+        "--max-per-second", type=int, default=2, help="max effects per second (default 2)"
+    )
+    beatfx_p.set_defaults(func=cmd_video_beatfx)
 
     proxy_p = video_sub.add_parser(
         "proxy", help="render a 540p review proxy of a deliverable or file"
@@ -2397,6 +2429,61 @@ def cmd_video_beats(args: argparse.Namespace) -> int:
     except audio.AudioError as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
+
+
+def _format_mmss(seconds: float) -> str:
+    total = round(seconds)
+    minutes, secs = divmod(total, 60)
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def cmd_video_beatfx(args: argparse.Namespace) -> int:
+    """Apply beat-mapped micro-effects to a video clip."""
+    source = Path(args.source)
+    if not source.is_file():
+        print(f"error: source file not found: {source}", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        with args.beats.open("r", encoding="utf-8") as handle:
+            beats = json.loads(handle.read())
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    try:
+        if args.auto:
+            info = probe_media(source)
+            schedule = auto_schedule(
+                beats,
+                offset=args.offset,
+                duration=info.duration,
+                max_per_second=args.max_per_second,
+            )
+        else:
+            if args.schedule is None:
+                print("error: --schedule is required when --auto is not set", file=sys.stderr)
+                return EXIT_FAILURE
+            with args.schedule.open("r", encoding="utf-8") as handle:
+                schedule = parse_schedule(json.loads(handle.read()))
+
+        result = apply_effects(
+            source,
+            destination=args.out,
+            effects=schedule,
+            fps=args.fps,
+            resolution=args.resolution,
+            codec=args.codec,
+        )
+    except (BeatFxError, IngestError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"applied {len(result.effects)} effect(s)")
+    for effect in result.effects:
+        print(f"  {_format_mmss(effect.time)} {effect.kind}")
+    size_mb = result.size_bytes / (1024 * 1024)
+    print(f"wrote {result.destination} ({size_mb:.2f} MB)")
+    return EXIT_OK
 
 
 def cmd_motion_new(args: argparse.Namespace) -> int:
