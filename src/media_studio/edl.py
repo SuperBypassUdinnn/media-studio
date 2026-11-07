@@ -14,7 +14,7 @@ import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable  # noqa: UP035  (brief requires typing.Callable)
 
 from .beatfx import (
     BeatFxError,
@@ -29,6 +29,7 @@ from .beatramp import (
     schedule_ramp_events,
 )
 from .ingest import IngestError, probe_media
+from .scene import SceneError, sustained_scene_changes
 
 EDL_VERSION = 1
 
@@ -217,6 +218,86 @@ def check_sync(doc: EdlDocument, beats: dict, *, tolerance: float = 0.1) -> Sync
         median_distance=round(_median(distances), 4),
         p90_distance=round(_p90(distances), 4),
         verdict=verdict,
+    )
+
+
+@dataclass(frozen=True)
+class CutIntegrityFinding:
+    """One cut whose shot-local window spans a sustained scene boundary."""
+
+    cut_id: str
+    shot: str
+    timeline_start_s: float
+    window: str
+    boundary_s: float
+
+
+@dataclass(frozen=True)
+class CutIntegrityReport:
+    """check_cuts result: which cuts span sustained scene boundaries."""
+
+    cuts: int
+    spanning: int
+    threshold: float
+    verdict: str  # "clean" | "spanning"
+    findings: list[CutIntegrityFinding]
+
+
+def check_cuts(
+    doc: EdlDocument,
+    *,
+    threshold: float = 0.3,
+    margin_s: float = 0.02,
+    detector: Callable[..., list[float]] | None = None,
+) -> CutIntegrityReport:
+    """Check each EDL cut's shot-local window for sustained scene boundaries.
+
+    Detects boundaries once per unique shot (cached), then flags any cut whose
+    window [in_s, out_s] contains a sustained boundary strictly inside the
+    margin-expanded window. Returns a :class:`CutIntegrityReport`.
+    Raises EdlError when the EDL has no cuts or the detector fails.
+    """
+
+    if not doc.cuts:
+        raise EdlError("no cuts in the EDL")
+
+    if detector is None:
+        detector = sustained_scene_changes
+
+    boundaries_by_shot: dict[str, list[float]] = {}
+    findings: list[CutIntegrityFinding] = []
+    timeline_s = 0.0
+
+    for cut in doc.cuts:
+        shot = cut.shot
+        if shot not in boundaries_by_shot:
+            try:
+                boundaries_by_shot[shot] = sorted(detector(Path(shot), threshold=threshold))
+            except SceneError as error:
+                raise EdlError(str(error)) from error
+
+        in_s = cut.in_ms / 1000
+        out_s = cut.out_ms / 1000
+        inner = [b for b in boundaries_by_shot[shot] if in_s + margin_s < b < out_s - margin_s]
+        if inner:
+            findings.append(
+                CutIntegrityFinding(
+                    cut_id=cut.id,
+                    shot=shot,
+                    timeline_start_s=round(timeline_s, 3),
+                    window=f"{in_s:.3f}-{out_s:.3f}",
+                    boundary_s=round(inner[0], 3),
+                )
+            )
+        timeline_s += out_s - in_s
+
+    verdict = "clean" if not findings else "spanning"
+    return CutIntegrityReport(
+        cuts=len(doc.cuts),
+        spanning=len(findings),
+        threshold=float(threshold),
+        verdict=verdict,
+        findings=findings,
     )
 
 

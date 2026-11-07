@@ -40,6 +40,7 @@ from .design import DesignError, validate_design
 from .design import render as render_design
 from .edl import (
     EdlError,
+    check_cuts,
     check_sync,
     generate_edl,
     load_edl,
@@ -113,6 +114,7 @@ from .presets import (
 )
 from .project import ProjectError, default_project_root, scaffold_project
 from .ramp import RAMP_CURVES, RampError, apply_speed_ramp
+from .scene import SceneError
 from .search import SEARCH_KINDS, SearchError, load_outcome, run_search, save_outcome
 from .see import SeeError, peek
 from .sources import module_named
@@ -733,6 +735,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="exit non-zero when the verdict is unsynced",
     )
     edl_sync_check.set_defaults(func=cmd_video_edl_sync_check)
+
+    edl_check_cuts = edl_sub.add_parser(
+        "check-cuts", help="flag EDL cuts whose source window spans a scene boundary"
+    )
+    edl_check_cuts.add_argument("edl", type=Path, help="EDL JSON file")
+    edl_check_cuts.add_argument(
+        "--threshold",
+        type=float,
+        default=0.3,
+        help="ffmpeg scene score threshold (default 0.3)",
+    )
+    edl_check_cuts.add_argument(
+        "--margin",
+        type=float,
+        default=0.02,
+        help="margin seconds kept clear of each window edge (default 0.02)",
+    )
+    edl_check_cuts.add_argument(
+        "--fail-on-spanning",
+        action="store_true",
+        help="exit non-zero when the verdict is spanning",
+    )
+    edl_check_cuts.set_defaults(func=cmd_video_edl_check_cuts)
 
     proxy_p = video_sub.add_parser(
         "proxy", help="render a 540p review proxy of a deliverable or file"
@@ -2816,6 +2841,31 @@ def cmd_video_edl_sync_check(args: argparse.Namespace) -> int:
     print(f"verdict: {report.verdict}")
 
     if args.fail_on_unsynced and report.verdict == "unsynced":
+        return EXIT_FAILURE
+    return EXIT_OK
+
+
+def cmd_video_edl_check_cuts(args: argparse.Namespace) -> int:
+    """Check EDL cuts for windows spanning sustained scene boundaries."""
+    try:
+        doc = load_edl(args.edl)
+        report = check_cuts(doc, threshold=args.threshold, margin_s=args.margin)
+    except (EdlError, SceneError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"cuts {report.cuts}")
+    print(f"spanning {report.spanning}")
+    print(f"threshold {report.threshold}")
+    for finding in report.findings:
+        print(
+            f"  {finding.cut_id}  timeline {finding.timeline_start_s}s  "
+            f"{Path(finding.shot).name}  source {finding.window}s  "
+            f"boundary {finding.boundary_s}s"
+        )
+    print(f"verdict: {report.verdict}")
+
+    if args.fail_on_spanning and report.verdict == "spanning":
         return EXIT_FAILURE
     return EXIT_OK
 

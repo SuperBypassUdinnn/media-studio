@@ -20,6 +20,7 @@ from media_studio.edl import (
     EdlCut,
     EdlDocument,
     EdlError,
+    check_cuts,
     check_sync,
     generate_edl,
     load_edl,
@@ -28,6 +29,7 @@ from media_studio.edl import (
     save_edl,
 )
 from media_studio.ingest import probe_media
+from media_studio.scene import SceneError
 
 FPS = 60.0
 RESOLUTION = "1920x1080"
@@ -500,6 +502,182 @@ class TestCheckSync:
         assert report.median_distance == 0.0
         assert report.p90_distance == 0.0
         assert report.verdict == "inconclusive"
+
+
+class TestCheckCuts:
+    def _make_cut(self, cut_id: str, shot: str, in_ms: int, out_ms: int) -> EdlCut:
+        return EdlCut(
+            id=cut_id,
+            shot=shot,
+            in_ms=in_ms,
+            out_ms=out_ms,
+            music_offset_ms=in_ms,
+            beatfx=[],
+            ramp=[],
+            color_lut=None,
+            notes="",
+        )
+
+    def _make_doc(self, cuts: list[EdlCut]) -> EdlDocument:
+        return EdlDocument(
+            version=1,
+            music="m.wav",
+            beats_json="b.json",
+            total_duration_s=3.0,
+            cuts=cuts,
+        )
+
+    def test_flags_spanning_cut_with_timeline(self) -> None:
+        doc = self._make_doc(
+            [
+                self._make_cut("cut-0", "shot1.mp4", 0, 1000),
+                self._make_cut("cut-1", "shot2.mp4", 1000, 2000),
+            ]
+        )
+        detected = {"shot1.mp4": [0.5], "shot2.mp4": []}
+
+        def detector(source: Path, **kwargs: object) -> list[float]:
+            return detected[str(source)]
+
+        report = check_cuts(doc, detector=detector)
+        assert report.cuts == 2
+        assert report.spanning == 1
+        assert report.verdict == "spanning"
+        f = report.findings[0]
+        assert f.cut_id == "cut-0"
+        assert f.shot == "shot1.mp4"
+        assert f.timeline_start_s == 0.0
+        assert f.window == "0.000-1.000"
+        assert f.boundary_s == 0.5
+
+    def test_clean_when_boundaries_outside_windows(self) -> None:
+        doc = self._make_doc([self._make_cut("cut-0", "shot1.mp4", 0, 1000)])
+
+        def detector(source: Path, **kwargs: object) -> list[float]:
+            return [5.0]
+
+        report = check_cuts(doc, detector=detector)
+        assert report.cuts == 1
+        assert report.spanning == 0
+        assert report.verdict == "clean"
+        assert report.findings == []
+
+    def test_boundary_at_window_edge_respects_margin(self) -> None:
+        # cut window [0.0, 1.0], margin 0.02 -> (0.02, 0.98); edges excluded.
+        doc = self._make_doc([self._make_cut("cut-0", "shot1.mp4", 0, 1000)])
+        for boundary in (0.0, 0.02, 0.98, 1.0):
+
+            def detector(source: Path, b: float = boundary, **kwargs: object) -> list[float]:
+                return [b]
+
+            report = check_cuts(doc, detector=detector)
+            assert report.spanning == 0, f"boundary {boundary} should not be a finding"
+            assert report.verdict == "clean"
+
+    def test_boundary_inside_margin_is_a_finding(self) -> None:
+        doc = self._make_doc([self._make_cut("cut-0", "shot1.mp4", 0, 1000)])
+
+        def detector(source: Path, **kwargs: object) -> list[float]:
+            return [0.03]
+
+        report = check_cuts(doc, detector=detector)
+        assert report.spanning == 1
+        assert report.verdict == "spanning"
+
+    def test_empty_cuts_raises_edl_error(self) -> None:
+        doc = self._make_doc([])
+        with pytest.raises(EdlError, match="no cuts in the EDL"):
+            check_cuts(doc)
+
+    def test_detector_scene_error_wraps_into_edl_error(self) -> None:
+        doc = self._make_doc([self._make_cut("cut-0", "shot1.mp4", 0, 1000)])
+
+        def detector(source: Path, **kwargs: object) -> list[float]:
+            raise SceneError("boom")
+
+        with pytest.raises(EdlError, match="boom"):
+            check_cuts(doc, detector=detector)
+
+
+class TestCliCheckCuts:
+    def test_check_cuts_cli_clean(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        doc = EdlDocument(
+            version=1,
+            music="m.wav",
+            beats_json="b.json",
+            total_duration_s=3.0,
+            cuts=[
+                EdlCut(
+                    id="cut-0",
+                    shot="shot1.mp4",
+                    in_ms=0,
+                    out_ms=1000,
+                    music_offset_ms=0,
+                    beatfx=[],
+                    ramp=[],
+                    color_lut=None,
+                    notes="",
+                )
+            ],
+        )
+        edl_path = tmp_path / "edl.json"
+        save_edl(doc, edl_path)
+
+        with patch(
+            "media_studio.edl.sustained_scene_changes",
+            lambda source, **kw: [],
+        ):
+            assert main(["video", "edl", "check-cuts", str(edl_path)]) == 0
+        out = capsys.readouterr().out
+        assert "cuts 1" in out
+        assert "spanning 0" in out
+        assert out.rstrip().endswith("verdict: clean")
+
+    def test_check_cuts_cli_fail_on_spanning(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        doc = EdlDocument(
+            version=1,
+            music="m.wav",
+            beats_json="b.json",
+            total_duration_s=3.0,
+            cuts=[
+                EdlCut(
+                    id="cut-0",
+                    shot="shot1.mp4",
+                    in_ms=0,
+                    out_ms=1000,
+                    music_offset_ms=0,
+                    beatfx=[],
+                    ramp=[],
+                    color_lut=None,
+                    notes="",
+                )
+            ],
+        )
+        edl_path = tmp_path / "edl.json"
+        save_edl(doc, edl_path)
+
+        with patch(
+            "media_studio.edl.sustained_scene_changes",
+            lambda source, **kw: [0.5],
+        ):
+            assert (
+                main(
+                    [
+                        "video",
+                        "edl",
+                        "check-cuts",
+                        str(edl_path),
+                        "--fail-on-spanning",
+                    ]
+                )
+                == 1
+            )
+            assert main(["video", "edl", "check-cuts", str(edl_path)]) == 0
+        out = capsys.readouterr().out
+        assert "spanning 1" in out
+        assert "verdict: spanning" in out
 
 
 class TestCliSyncCheck:
