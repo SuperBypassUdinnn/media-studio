@@ -691,6 +691,11 @@ def build_parser() -> argparse.ArgumentParser:
     edl_generate.add_argument(
         "--out", type=Path, default=Path("edl.json"), help="destination EDL JSON (default edl.json)"
     )
+    edl_generate.add_argument(
+        "--scene-aware",
+        action="store_true",
+        help="keep every cut inside one scene (splits multi-scene shots into several cuts)",
+    )
     edl_generate.set_defaults(func=cmd_video_edl_generate)
 
     edl_render = edl_sub.add_parser("render", help="render an EDL cut plan to a video file")
@@ -2770,6 +2775,7 @@ def cmd_video_edl_generate(args: argparse.Namespace) -> int:
             args.music or Path(""),
             total_duration_s=args.duration,
             out=args.out,
+            scene_aware=args.scene_aware,
         )
     except (EdlError, IngestError, json.JSONDecodeError) as error:
         print(f"error: {error}", file=sys.stderr)

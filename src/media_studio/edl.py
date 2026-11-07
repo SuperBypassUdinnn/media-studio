@@ -29,7 +29,7 @@ from .beatramp import (
     schedule_ramp_events,
 )
 from .ingest import IngestError, probe_media
-from .scene import SceneError, sustained_scene_changes
+from .scene import SceneError, scene_segments, sustained_scene_changes
 
 EDL_VERSION = 1
 
@@ -332,6 +332,9 @@ def generate_edl(
     *,
     total_duration_s: float,
     out: Path,
+    scene_aware: bool = False,
+    scene_threshold: float = 0.3,
+    detector: Callable[..., list[float]] | None = None,
 ) -> EdlDocument:
     """Generate an EDL document filling ``total_duration_s`` with shots.
 
@@ -339,6 +342,13 @@ def generate_edl(
     ``total_duration_s`` using ``beats.json`` section energy to target cut
     density, and populates ``beatfx``/``ramp`` from auto-scheduling using
     ``music_offset_ms / 1000`` as the offset.
+
+    With ``scene_aware=True`` (opt-in), sustained scene boundaries are detected
+    per shot and every emitted cut lies entirely inside one scene segment, so
+    a multi-scene shot can yield more than one cut. A segment tail shorter than
+    ``_MIN_CUT_S`` is skipped. This is intentional ("split the multi-scene cut
+    so each part lands on its own beat"). When ``scene_aware=False`` (default)
+    behavior is unchanged byte-for-byte and the detector is never called.
     """
 
     shots = [Path(s) for s in shots]
@@ -375,21 +385,11 @@ def generate_edl(
     music_time = 0.0
     cut_counter = 0
 
-    for cut_counter, shot in enumerate(shot_infos):
-        if remaining <= 0:
-            break
-        density = _density_for_section(_current_section(sections, music_time))
-        # One cut per shot, capped by density, remaining time, and shot length.
-        cut_s = min(density, remaining, shot["duration"])
-        cut_s = max(_MIN_CUT_S, min(cut_s, _MAX_CUT_S))
-        if cut_s > remaining:
-            cut_s = remaining
-
-        in_ms = 0
-        out_ms = round(cut_s * 1000)
+    def emit_cut(shot: Path, in_s: float, out_s: float) -> None:
+        nonlocal remaining, music_time, cut_counter
+        cut_s = out_s - in_s
         music_offset_ms = round(music_time * 1000)
         offset_s = music_time
-
         beatfx_shorthand = []
         try:
             effects = auto_schedule(
@@ -400,7 +400,6 @@ def generate_edl(
             )
             beatfx_shorthand = _schedule_shorthand(effects, cut_s)
         except BeatFxError:
-            # No beats fall inside this cut window; leave beatfx empty.
             pass
         ramp_shorthand = []
         try:
@@ -416,9 +415,9 @@ def generate_edl(
         cuts.append(
             EdlCut(
                 id=f"cut-{cut_counter}",
-                shot=str(shot["path"]),
-                in_ms=in_ms,
-                out_ms=out_ms,
+                shot=str(shot),
+                in_ms=round(in_s * 1000),
+                out_ms=round(out_s * 1000),
                 music_offset_ms=music_offset_ms,
                 beatfx=beatfx_shorthand,
                 ramp=ramp_shorthand,
@@ -426,8 +425,48 @@ def generate_edl(
                 notes="",
             )
         )
+        cut_counter += 1
         music_time += cut_s
         remaining -= cut_s
+
+    if scene_aware:
+        detector = detector or sustained_scene_changes
+        boundaries_by_shot: dict[str, list[float]] = {}
+        for shot in shot_infos:
+            try:
+                boundaries_by_shot[str(shot["path"])] = sorted(
+                    detector(Path(shot["path"]), threshold=scene_threshold)
+                )
+            except SceneError as error:
+                raise EdlError(str(error)) from error
+        for shot in shot_infos:
+            if remaining <= 0:
+                break
+            for seg_start, seg_end in scene_segments(
+                shot["duration"], boundaries_by_shot[str(shot["path"])]
+            ):
+                cursor = seg_start
+                while remaining > 0 and (seg_end - cursor) >= _MIN_CUT_S:
+                    density = _density_for_section(_current_section(sections, music_time))
+                    cut_s = min(density, remaining, seg_end - cursor)
+                    cut_s = max(_MIN_CUT_S, min(cut_s, _MAX_CUT_S))
+                    if cut_s > (seg_end - cursor):
+                        cut_s = seg_end - cursor
+                    if cut_s > remaining:
+                        cut_s = remaining
+                    emit_cut(shot["path"], cursor, cursor + cut_s)
+                    cursor += cut_s
+    else:
+        for shot in shot_infos:
+            if remaining <= 0:
+                break
+            density = _density_for_section(_current_section(sections, music_time))
+            # One cut per shot, capped by density, remaining time, and shot length.
+            cut_s = min(density, remaining, shot["duration"])
+            cut_s = max(_MIN_CUT_S, min(cut_s, _MAX_CUT_S))
+            if cut_s > remaining:
+                cut_s = remaining
+            emit_cut(shot["path"], 0.0, cut_s)
 
     doc = EdlDocument(
         version=EDL_VERSION,

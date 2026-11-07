@@ -198,6 +198,161 @@ class TestGenerateEdl:
 
         assert len(doc.cuts) == 1
 
+    def test_scene_aware_splits_multi_scene_shot(self, tmp_path: Path) -> None:
+        shots = [tmp_path / "shot.mp4"]
+        beats = {"sections": [], "duration": 1.6}
+        beats_json = tmp_path / "beats.json"
+        beats_json.write_text(json.dumps(beats))
+        music = tmp_path / "music.wav"
+
+        def fake_probe(path: Path):
+            return type(
+                "MI",
+                (),
+                {"duration": 2.0, "width": 1920, "height": 1080, "has_audio": False},
+            )()
+
+        boundaries = {str(shots[0]): [0.8]}
+
+        def detector(source: Path, **kwargs: object) -> list[float]:
+            return boundaries[str(source)]
+
+        with patch("media_studio.edl.probe_media", side_effect=fake_probe):
+            doc = generate_edl(
+                shots,
+                beats_json,
+                music,
+                total_duration_s=1.6,
+                out=tmp_path / "edl.json",
+                scene_aware=True,
+                detector=detector,
+            )
+
+        assert len(doc.cuts) == 2
+        for cut in doc.cuts:
+            in_s = cut.in_ms / 1000
+            out_s = cut.out_ms / 1000
+            assert not (in_s + 0.02 < 0.8 < out_s - 0.02)
+        assert any(cut.in_ms > 0 for cut in doc.cuts)
+
+    def test_scene_aware_default_path_never_calls_detector(self, tmp_path: Path) -> None:
+        shots = [tmp_path / "shot.mp4"]
+        beats = {"sections": [], "duration": 3.0}
+        beats_json = tmp_path / "beats.json"
+        beats_json.write_text(json.dumps(beats))
+        music = tmp_path / "music.wav"
+
+        def fake_probe(path: Path):
+            return type(
+                "MI",
+                (),
+                {"duration": 1.0, "width": 1920, "height": 1080, "has_audio": False},
+            )()
+
+        called: list[str] = []
+
+        def detector(source: Path, **kwargs: object) -> list[float]:
+            called.append(str(source))
+            raise AssertionError("detector must not be called when scene_aware=False")
+
+        with patch("media_studio.edl.probe_media", side_effect=fake_probe):
+            doc = generate_edl(
+                shots,
+                beats_json,
+                music,
+                total_duration_s=3.0,
+                out=tmp_path / "edl.json",
+                scene_aware=False,
+                detector=detector,
+            )
+
+        assert called == []
+        assert len(doc.cuts) == 1
+
+    def test_scene_aware_respects_density_cap(self, tmp_path: Path) -> None:
+        shots = [tmp_path / "shot.mp4"]
+        beats = {
+            "sections": [{"start": 0.0, "end": 3.0, "level": "high"}],
+            "duration": 3.0,
+        }
+        beats_json = tmp_path / "beats.json"
+        beats_json.write_text(json.dumps(beats))
+        music = tmp_path / "music.wav"
+
+        def fake_probe(path: Path):
+            return type(
+                "MI",
+                (),
+                {"duration": 3.0, "width": 1920, "height": 1080, "has_audio": False},
+            )()
+
+        def detector(source: Path, **kwargs: object) -> list[float]:
+            return []
+
+        with patch("media_studio.edl.probe_media", side_effect=fake_probe):
+            doc = generate_edl(
+                shots,
+                beats_json,
+                music,
+                total_duration_s=1.0,
+                out=tmp_path / "edl.json",
+                scene_aware=True,
+                detector=detector,
+            )
+
+        assert len(doc.cuts) == 2
+        for cut in doc.cuts:
+            duration_s = (cut.out_ms - cut.in_ms) / 1000
+            assert 0.2 <= duration_s <= 2.0
+
+
+class TestCliGenerateEdlSceneAware:
+    def test_scene_aware_cli_more_cuts_than_shots(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        shot = tmp_path / "shot.mp4"
+        beats = {"sections": [], "duration": 1.6}
+        beats_json = tmp_path / "beats.json"
+        beats_json.write_text(json.dumps(beats))
+        music = tmp_path / "music.wav"
+        out = tmp_path / "edl.json"
+
+        def fake_probe(path: Path):
+            return type(
+                "MI",
+                (),
+                {"duration": 2.0, "width": 1920, "height": 1080, "has_audio": False},
+            )()
+
+        with (
+            patch("media_studio.edl.probe_media", side_effect=fake_probe),
+            patch(
+                "media_studio.edl.sustained_scene_changes",
+                lambda source, **kw: [0.8],
+            ),
+        ):
+            code = main(
+                [
+                    "video",
+                    "edl",
+                    "generate",
+                    str(beats_json),
+                    str(shot),
+                    "--music",
+                    str(music),
+                    "--duration",
+                    "1.6",
+                    "--out",
+                    str(out),
+                    "--scene-aware",
+                ]
+            )
+
+        assert code == 0
+        assert out.is_file()
+        doc = load_edl(out)
+        assert len(doc.cuts) > 1  # more cuts than the single shot
+
 
 class TestRenderEdl:
     @pytest.mark.slow
