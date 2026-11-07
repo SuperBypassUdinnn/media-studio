@@ -541,7 +541,13 @@ def _render_cut(
     #    snaps both boundaries to keyframes, so on long-GOP sources (a re-encoded
     #    mine pool carries a keyframe only at frame 0) the trimmed duration drifts
     #    from the requested window and downstream ramp windows can fall outside
-    #    the clip. Input seek keeps the trim fast; `-t` bounds the output duration.
+    #    the clip. `-t` is pulled back by half a frame: a plain `-t` includes the
+    #    frame landing exactly on the boundary, so every cut gained up to one
+    #    surplus frame and the error compounded across a beat-locked edit into
+    #    seconds of A/V drift, while `-frames:v` bounds the count correctly but
+    #    leaves the concatenated file with sparse PTS gaps. The half-frame epsilon
+    #    yields exactly the intended frame count and a clean constant-rate timeline.
+    trim_end_s = max(1.0 / fps, duration_s - 0.5 / fps)
     _run_ffmpeg(
         [
             "ffmpeg",
@@ -554,7 +560,7 @@ def _render_cut(
             "-i",
             str(source),
             "-t",
-            f"{duration_s:.3f}",
+            f"{trim_end_s:.6f}",
             "-an",
             "-c:v",
             "libx264",

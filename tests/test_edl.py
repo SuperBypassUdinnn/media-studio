@@ -454,6 +454,58 @@ class TestRenderEdl:
         assert argv[ss_index + 1] == "1.000", f"unexpected -ss value: {argv[ss_index + 1]}"
         assert "-shortest" in argv, f"-shortest missing from {argv}"
 
+    def test_trim_pulls_back_half_a_frame(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The trim duration is pulled back by half a frame so the boundary frame is
+        # excluded: a plain `-t` includes it, gaining up to a frame per cut and
+        # drifting a beat-locked edit out of A/V sync over dozens of cuts.
+        shot = tmp_path / "shot.mp4"
+        shot.touch()
+        doc = EdlDocument(
+            version=1,
+            music="",
+            beats_json="",
+            total_duration_s=0.523,
+            cuts=[
+                EdlCut(
+                    id="cut-0",
+                    shot=str(shot),
+                    in_ms=0,
+                    out_ms=523,
+                    music_offset_ms=0,
+                    beatfx=[],
+                    ramp=[],
+                    color_lut=None,
+                    notes="",
+                )
+            ],
+        )
+
+        captured: list[list[str]] = []
+
+        def fake_run_ffmpeg(argv: list[str]) -> None:
+            captured.append(list(argv))
+            output = Path(argv[-1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.touch()
+
+        monkeypatch.setattr("media_studio.edl._run_ffmpeg", fake_run_ffmpeg)
+        monkeypatch.setattr(
+            "media_studio.edl.probe_media",
+            lambda path: type(
+                "MI", (), {"duration": 1.0, "width": 1920, "height": 1080, "has_audio": False}
+            )(),
+        )
+
+        render_edl(doc, out=tmp_path / "out.mp4", fps=FPS, codec="h264")
+
+        trim_calls = [argv for argv in captured if "-ss" in argv and str(shot) in argv]
+        assert trim_calls, "expected a trim ffmpeg call"
+        argv = trim_calls[0]
+        assert "-t" in argv, f"-t missing from trim: {argv}"
+        assert argv[argv.index("-t") + 1] == f"{0.523 - 0.5 / FPS:.6f}", argv
+
     @pytest.mark.slow
     def test_render_one_cut_with_beatfx(self, tmp_path: Path) -> None:
         source = _make_clip(tmp_path / "source.mp4")
