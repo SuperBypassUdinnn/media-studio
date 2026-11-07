@@ -537,7 +537,11 @@ def _render_cut(
     if info.width < 1920 or info.height < 1080:
         raise EdlError("below the 1920x1080 minimum floor")
 
-    # 1. Trim clip to [in_ms, out_ms].
+    # 1. Trim clip to [in_ms, out_ms]. Re-encode instead of `-c copy`: stream copy
+    #    snaps both boundaries to keyframes, so on long-GOP sources (a re-encoded
+    #    mine pool carries a keyframe only at frame 0) the trimmed duration drifts
+    #    from the requested window and downstream ramp windows can fall outside
+    #    the clip. Input seek keeps the trim fast; `-t` bounds the output duration.
     _run_ffmpeg(
         [
             "ffmpeg",
@@ -547,12 +551,21 @@ def _render_cut(
             "-y",
             "-ss",
             f"{cut.in_ms / 1000:.3f}",
-            "-to",
-            f"{cut.out_ms / 1000:.3f}",
             "-i",
             str(source),
-            "-c",
-            "copy",
+            "-t",
+            f"{duration_s:.3f}",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "14",
+            "-preset",
+            "fast",
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            f"{fps:g}",
             str(cut_path),
         ]
     )
