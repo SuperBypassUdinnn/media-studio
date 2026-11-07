@@ -37,7 +37,7 @@ def _require_key() -> str:
     if not key:
         raise SourceUnavailable(
             f"pixabay needs {KEY_NAME}, which is not set; run "
-            "`bash ~/.clone/Github/media-studio/scripts/keys-wizard.sh`"
+            "`bash scripts/keys-wizard.sh` in the media-studio repository"
         )
     return key
 

@@ -38,7 +38,7 @@ def search(query: str, kind: str, limit: int, fetch: Fetcher) -> list[Candidate]
     if not key:
         raise SourceUnavailable(
             f"jamendo needs {KEY_NAME}, which is not set; run "
-            "`bash ~/.clone/Github/media-studio/scripts/keys-wizard.sh`"
+            "`bash scripts/keys-wizard.sh` in the media-studio repository"
         )
     url = build_url(
         API,
