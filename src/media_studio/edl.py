@@ -12,9 +12,10 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable  # noqa: UP035  (brief requires typing.Callable)
+from typing import Any
 
 from .beatfx import (
     BeatFxError,
