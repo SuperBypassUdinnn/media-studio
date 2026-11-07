@@ -35,9 +35,12 @@ class ShotCandidate:
 
 
 def _slug(text: str) -> str:
-    """Return a filesystem-safe slug for ``text``."""
+    """Return a filesystem-safe slug for ``text`` (keeps ``[a-z0-9]``)."""
 
-    return "".join(ch if ch.isalnum() else "-" for ch in text).strip("-") or "shots"
+    return (
+        "".join(ch if ch.isascii() and ch.isalnum() else "-" for ch in text.lower()).strip("-")
+        or "shots"
+    )
 
 
 def mine_shots(
@@ -53,6 +56,10 @@ def mine_shots(
     source = Path(source)
     if not source.is_file():
         raise ShotsError(f"no such file: {source}")
+    if max_duration_s <= 0:
+        raise ShotsError("max_duration_s must be > 0")
+    if min_duration_s > max_duration_s:
+        raise ShotsError("min_duration_s must be <= max_duration_s")
 
     try:
         info = probe_media(source)
@@ -71,18 +78,21 @@ def mine_shots(
     candidates: list[ShotCandidate] = []
     for start, end in kept:
         seg_dur = end - start
-        if seg_dur <= max_duration_s:
-            windows = [(start, end)]
-            motions = [motion_score(source, start, end, samples=samples)]
-        else:
-            windows = []
-            motions = []
-            step = max_duration_s / 2.0
-            pos = start
-            while pos + max_duration_s <= end + 1e-9:
-                windows.append((pos, pos + max_duration_s))
-                motions.append(motion_score(source, pos, pos + max_duration_s, samples=samples))
-                pos += step
+        try:
+            if seg_dur <= max_duration_s:
+                windows = [(start, end)]
+                motions = [motion_score(source, start, end, samples=samples)]
+            else:
+                windows = []
+                motions = []
+                step = max_duration_s / 2.0
+                pos = start
+                while pos + max_duration_s <= end + 1e-9:
+                    windows.append((pos, pos + max_duration_s))
+                    motions.append(motion_score(source, pos, pos + max_duration_s, samples=samples))
+                    pos += step
+        except SceneError as error:
+            raise ShotsError(str(error)) from error
         best_index = max(range(len(motions)), key=lambda i: motions[i])
         window_start, window_end = windows[best_index]
         motion = motions[best_index]

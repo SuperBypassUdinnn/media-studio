@@ -15,6 +15,7 @@ import pytest
 
 from media_studio.cli import main
 from media_studio.ingest import probe_media
+from media_studio.scene import SceneError
 from media_studio.shots import (
     ShotCandidate,
     ShotsError,
@@ -168,7 +169,42 @@ class TestMineShotsPure:
         )
 
         with pytest.raises(ShotsError, match="no usable scenes"):
-            mine_shots(source, min_duration_s=20.0, max_duration_s=2.0)
+            mine_shots(source, min_duration_s=20.0, max_duration_s=20.0)
+
+    def test_motion_scene_error_wrapped_as_shots_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "source.mp4"
+        source.touch()
+
+        monkeypatch.setattr("media_studio.shots.probe_media", lambda p: _fake_probe(10.0))
+        monkeypatch.setattr("media_studio.shots.sustained_scene_changes", lambda src, **kw: [5.0])
+
+        def failing_motion(src: Path, start: float, end: float, *, samples: int = 4) -> float:
+            raise SceneError("no frames sampled")
+
+        monkeypatch.setattr("media_studio.shots.motion_score", failing_motion)
+
+        with pytest.raises(ShotsError, match="no frames sampled"):
+            mine_shots(source, min_duration_s=0.3, max_duration_s=2.0)
+
+    def test_non_positive_max_duration_raises_shots_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "source.mp4"
+        source.touch()
+        monkeypatch.setattr("media_studio.shots.probe_media", lambda p: _fake_probe(10.0))
+        with pytest.raises(ShotsError, match="max_duration_s must be > 0"):
+            mine_shots(source, max_duration_s=0.0)
+
+    def test_min_greater_than_max_raises_shots_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "source.mp4"
+        source.touch()
+        monkeypatch.setattr("media_studio.shots.probe_media", lambda p: _fake_probe(10.0))
+        with pytest.raises(ShotsError, match="min_duration_s must be <= max_duration_s"):
+            mine_shots(source, min_duration_s=3.0, max_duration_s=2.0)
 
 
 class TestWriteLoadCandidates:
