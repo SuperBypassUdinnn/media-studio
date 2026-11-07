@@ -19,6 +19,7 @@ from media_studio.scene import (
     SCENE_THRESHOLD,
     SceneError,
     _mean_abs_diff,
+    motion_score,
     scene_segments,
     sustained_scene_changes,
 )
@@ -179,3 +180,64 @@ def test_flash_is_filtered_not_sustained(tmp_path: Path) -> None:
 
     times = sustained_scene_changes(clip)
     assert 1.0 not in times, f"flash at 1s was not filtered: {times}"
+
+
+def test_motion_score_rejects_empty_window() -> None:
+    with pytest.raises(SceneError, match="empty motion window"):
+        motion_score(Path("x.mp4"), 2.0, 1.0)
+    with pytest.raises(SceneError, match="empty motion window"):
+        motion_score(Path("x.mp4"), 1.0, 1.0, samples=1)
+    with pytest.raises(SceneError, match="empty motion window"):
+        motion_score(Path("x.mp4"), 1.0, 1.0, samples=0)
+
+
+@pytest.mark.slow
+def test_motion_score_moving_half_greater(tmp_path: Path) -> None:
+    # A 2 s clip: static color first half, moving testsrc2 second half.
+    seg1 = tmp_path / "static.mp4"
+    seg2 = tmp_path / "moving.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=red:size=640x480:rate={int(FPS)}:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(seg1),
+        ],
+        check=True,
+    )
+    _make_clip(seg2, duration=1)
+    concat = tmp_path / "concat.txt"
+    concat.write_text(f"file '{seg1}'\nfile '{seg2}'\n", encoding="utf-8")
+    clip = tmp_path / "changed.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat),
+            "-c",
+            "copy",
+            str(clip),
+        ],
+        check=True,
+    )
+
+    second = motion_score(clip, 1.0, 2.0, samples=4)
+    assert second > 0, f"moving half motion score not > 0: {second}"

@@ -117,6 +117,7 @@ from .ramp import RAMP_CURVES, RampError, apply_speed_ramp
 from .scene import SceneError
 from .search import SEARCH_KINDS, SearchError, load_outcome, run_search, save_outcome
 from .see import SeeError, peek
+from .shots import ShotsError, mine_shots, render_candidates, write_candidates
 from .sources import module_named
 from .sources.base import Candidate, SourceError, http_fetch
 from .tools import CheckResult, DoctorReport, collect_toolchain, deep_checks, path_order_problem
@@ -817,6 +818,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", type=Path, default=None, help="destination directory (default out/<stem>-stills)"
     )
     stills_p.set_defaults(func=cmd_video_stills)
+
+    shots = video_sub.add_parser("shots", help="mine a long source into shot candidates")
+    shots_sub = shots.add_subparsers(dest="shots_command", required=True)
+
+    shots_mine = shots_sub.add_parser(
+        "mine", help="split a source into one-scene shot candidates and rank them by motion"
+    )
+    shots_mine.add_argument("source", type=Path, help="a long source video to mine")
+    shots_mine.add_argument(
+        "--out",
+        type=Path,
+        default=Path("shots-mined"),
+        help="output directory (default shots-mined)",
+    )
+    shots_mine.add_argument(
+        "--threshold", type=float, default=0.3, help="scene-change threshold (default 0.3)"
+    )
+    shots_mine.add_argument(
+        "--min-duration",
+        type=float,
+        default=0.5,
+        help="drop scenes shorter than this (default 0.5)",
+    )
+    shots_mine.add_argument(
+        "--max-duration",
+        type=float,
+        default=2.5,
+        help="max candidate window in seconds (default 2.5)",
+    )
+    shots_mine.add_argument(
+        "--samples", type=int, default=4, help="frames sampled per motion score (default 4)"
+    )
+    shots_mine.add_argument("--scale", default="1920x1080", help="render size (default 1920x1080)")
+    shots_mine.add_argument(
+        "--top", type=int, default=24, help="render only the top N candidates (default 24)"
+    )
+    shots_mine.add_argument(
+        "--no-render", action="store_true", help="write candidates.json only, render nothing"
+    )
+    shots_mine.set_defaults(func=cmd_video_shots_mine)
 
     cut_p = video_sub.add_parser(
         "cut-by-transcript",
@@ -2432,6 +2473,65 @@ def cmd_video_stills(args: argparse.Namespace) -> int:
     except (ManifestError, FileNotFoundError, RuntimeError, MediaError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
+
+
+def cmd_video_shots_mine(args: argparse.Namespace) -> int:
+    """Mine a long source into ranked one-scene shot candidates."""
+
+    source = Path(args.source).expanduser()
+    out_dir = Path(args.out).expanduser()
+
+    if args.top < 1:
+        print("error: --top must be >= 1", file=sys.stderr)
+        return EXIT_FAILURE
+    if args.min_duration <= 0 or args.max_duration < args.min_duration:
+        print(
+            "error: --min-duration must be > 0 and --max-duration must be >= --min-duration",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+
+    try:
+        candidates = mine_shots(
+            source,
+            threshold=args.threshold,
+            min_duration_s=args.min_duration,
+            max_duration_s=args.max_duration,
+            samples=args.samples,
+        )
+    except (ShotsError, SceneError, IngestError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    try:
+        write_candidates(candidates, out_dir / "candidates.json")
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    rendered_paths: list[Path] = []
+    if not args.no_render:
+        try:
+            rendered_paths = render_candidates(candidates[: args.top], out_dir, scale=args.scale)
+        except ShotsError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return EXIT_FAILURE
+
+    source_name = Path(candidates[0].source).name
+    print(f"source {source_name}  candidates {len(candidates)}")
+    print("| # | in | out | dur | motion | path |")
+    print("|---|----|-----|-----|--------|------|")
+    for index, candidate in enumerate(candidates):
+        path_text = rendered_paths[index].name if index < len(rendered_paths) else source_name
+        print(
+            f"| {candidate.rank} | {candidate.in_s:.3f} | {candidate.out_s:.3f} | "
+            f"{candidate.duration_s:.3f} | {candidate.motion} | {path_text} |"
+        )
+
+    print(f"wrote {out_dir / 'candidates.json'}")
+    if not args.no_render:
+        print(f"rendered {len(rendered_paths)} clip(s) to {out_dir}")
+    return EXIT_OK
 
 
 def cmd_video_cmd(args: argparse.Namespace) -> int:

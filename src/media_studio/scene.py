@@ -11,6 +11,7 @@ candidate was a FLASH (the picture returns), so it is filtered out.
 
 from __future__ import annotations
 
+import itertools
 import re
 import subprocess
 from dataclasses import dataclass
@@ -173,3 +174,36 @@ def scene_segments(duration_s: float, boundaries: list[float]) -> list[tuple[flo
     if duration_s > start:
         segments.append((start, duration_s))
     return segments
+
+
+def motion_score(
+    source: Path,
+    start_s: float,
+    end_s: float,
+    *,
+    samples: int = 4,
+    width: int = 64,
+) -> float:
+    """Mean consecutive-frame grayscale difference over ``[start_s, end_s]``.
+
+    Returns 0-255; higher means more motion between sampled frames.
+    """
+
+    if end_s <= start_s:
+        raise SceneError("empty motion window")
+    if samples < 2:
+        raise SceneError("empty motion window")
+
+    frame_times = [start_s + i * (end_s - start_s) / (samples - 1) for i in range(samples)]
+    frames = [_gray_frame(source, t, width=width) for t in frame_times]
+
+    diffs: list[float] = []
+    for a, b in itertools.pairwise(frames):
+        if not a or not b:
+            continue
+        diffs.append(_mean_abs_diff(a, b))
+
+    if not diffs:
+        raise SceneError("no frames sampled in [start, end]")
+
+    return round(sum(diffs) / len(diffs), 4)
