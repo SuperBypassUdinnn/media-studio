@@ -7,6 +7,12 @@ select filter), compare the frame at ``t - CONFIRM_BEFORE_S`` with the frame at
 ``t + CONFIRM_AFTER_S``. If the two frames differ beyond ``FLASH_DIFF_THRESHOLD``
 the change is SUSTAINED (a new picture that holds). If they are similar, the
 candidate was a FLASH (the picture returns), so it is filtered out.
+
+A candidate at the very head of the clip (``t <= before_s``) is never SUSTAINED:
+the "before" frame would be the clip's own first frame, so there is no preceding
+picture inside the clip to cut from. A mined window frequently keeps the outgoing
+shot's single-frame impact flash at frame 0, which would otherwise read as an
+internal sustained boundary and wrongly flag every cut that starts there.
 """
 
 from __future__ import annotations
@@ -122,6 +128,16 @@ def _mean_abs_diff(a: bytes, b: bytes) -> float:
     return float(sum(abs(x - y) for x, y in zip(a[:n], b[:n], strict=False)) / n)
 
 
+def is_head_candidate(t: float, *, before_s: float = CONFIRM_BEFORE_S) -> bool:
+    """True when ``t`` is so close to the clip head that no earlier frame exists.
+
+    Such a candidate is the clip's entry point (often the outgoing shot's
+    single-frame impact flash), never an internal sustained cut.
+    """
+
+    return t - before_s <= 0.0
+
+
 def classify_scene_changes(
     source: Path,
     *,
@@ -138,9 +154,12 @@ def classify_scene_changes(
 
     changes: list[SceneChange] = []
     for t in candidates:
-        before = max(0.0, t - before_s)
+        if is_head_candidate(t, before_s=before_s):
+            # The candidate sits at the clip head; see the module docstring.
+            changes.append(SceneChange(time_s=t, sustained=False, diff=0.0))
+            continue
         after = t + after_s
-        a = _gray_frame(source, before)
+        a = _gray_frame(source, t - before_s)
         b = _gray_frame(source, after)
         if not a or not b:
             changes.append(SceneChange(time_s=t, sustained=True, diff=0.0))

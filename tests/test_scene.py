@@ -19,6 +19,7 @@ from media_studio.scene import (
     SCENE_THRESHOLD,
     SceneError,
     _mean_abs_diff,
+    is_head_candidate,
     motion_score,
     scene_segments,
     sustained_scene_changes,
@@ -68,6 +69,16 @@ def test_constants_are_sensible() -> None:
     assert CONFIRM_AFTER_S == 0.25
     assert FLASH_DIFF_THRESHOLD == 12.0
     assert MAX_SCENE_CANDIDATES == 2000
+
+
+def test_is_head_candidate_boundary() -> None:
+    # A candidate closer to the head than one CONFIRM_BEFORE_S window has no
+    # preceding frame inside the clip: frame 0 is the clip's own entry.
+    assert is_head_candidate(0.0, before_s=0.1) is True
+    assert is_head_candidate(0.042, before_s=0.1) is True
+    assert is_head_candidate(0.1, before_s=0.1) is True
+    assert is_head_candidate(0.101, before_s=0.1) is False
+    assert is_head_candidate(1.0, before_s=0.1) is False
 
 
 def _make_clip(path: Path, *, duration: int = 2) -> Path:
@@ -180,6 +191,43 @@ def test_flash_is_filtered_not_sustained(tmp_path: Path) -> None:
 
     times = sustained_scene_changes(clip)
     assert 1.0 not in times, f"flash at 1s was not filtered: {times}"
+
+
+@pytest.mark.slow
+def test_head_flash_is_not_sustained(tmp_path: Path) -> None:
+    # A mined clip whose frame 0 is the outgoing shot's single-frame impact
+    # flash, then the new scene holds: the head boundary must not be reported.
+    clip = tmp_path / "head_flash.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x480:rate=60:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=white:size=640x480:rate=60:duration=2",
+            "-filter_complex",
+            "overlay=enable='between(t,0,0.017)'",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-frames:v",
+            "120",
+            str(clip),
+        ],
+        check=True,
+    )
+
+    times = sustained_scene_changes(clip)
+    assert all(t >= 0.5 for t in times), f"head flash not filtered: {times}"
 
 
 def test_motion_score_rejects_empty_window() -> None:
