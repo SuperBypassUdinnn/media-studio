@@ -13,6 +13,7 @@ import pytest
 import media_studio.cli as cli_module
 from media_studio.cli import main
 from media_studio.filmcraft import CommandResult
+from media_studio.svg_kit import build_spec, write_svg
 from media_studio.tools import ToolSpec, ToolStatus
 
 
@@ -384,3 +385,112 @@ class TestBeatFxCommand:
         assert exit_code == 1
         err = capsys.readouterr().err
         assert "error:" in err
+        assert "auto" in err and "schedule" in err
+
+
+def test_design_svg_build_writes_the_file(tmp_path):
+    spec = tmp_path / "spec.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "canvas": {"width": 100, "height": 100},
+                "elements": [{"type": "rect", "width": 10, "height": 10}],
+            }
+        )
+    )
+    code = main(["design", "svg", "build", "--spec", str(spec), "--out", str(tmp_path / "out.svg")])
+    assert code == 0 and (tmp_path / "out.svg").is_file()
+
+
+def test_design_svg_build_rejects_a_bad_spec(tmp_path, capsys):
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"elements": [{"type": "hexagon"}]}))
+    assert main(["design", "svg", "build", "--spec", str(spec)]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_design_svg_trace_writes_svg_and_prints_layers(tmp_path, capsys):
+    png = tmp_path / "logo.png"
+    subprocess.run(
+        ["magick", "-size", "40x30", "xc:red", str(png)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    svg = tmp_path / "logo.svg"
+    code = main(["design", "svg", "trace", str(png), "--out", str(svg)])
+    assert code == 0 and svg.is_file()
+    assert "layer" in capsys.readouterr().out
+
+
+def test_design_svg_compare_prints_metrics_and_returns_zero(tmp_path, capsys):
+    source = tmp_path / "source.png"
+    subprocess.run(
+        [
+            "magick",
+            "-size",
+            "200x200",
+            "xc:white",
+            "-fill",
+            "#1e3a8a",
+            "-draw",
+            "rectangle 80,80 119,119",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    svg = write_svg(
+        build_spec(
+            {
+                "canvas": {"width": 200, "height": 200},
+                "elements": [
+                    {"type": "rect", "x": 80, "y": 80, "width": 40, "height": 40, "fill": "#1e3a8a"}
+                ],
+            }
+        ),
+        tmp_path / "base.svg",
+    )
+    code = main(
+        [
+            "design",
+            "svg",
+            "compare",
+            str(source),
+            str(svg),
+            "--out",
+            str(tmp_path / "sheet.png"),
+            "--json",
+            str(tmp_path / "report.json"),
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "pixel_diff_pct" in out and "rmse" in out
+    assert "sheet" in out
+    assert (tmp_path / "report.json").is_file()
+
+
+def test_design_svg_compare_fail_above_returns_one(tmp_path, capsys):
+    source = tmp_path / "source.png"
+    subprocess.run(
+        ["magick", "-size", "200x200", "xc:white", str(source)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    svg = write_svg(
+        build_spec(
+            {
+                "canvas": {"width": 200, "height": 200},
+                "elements": [
+                    {"type": "rect", "x": 0, "y": 0, "width": 200, "height": 200, "fill": "#1e3a8a"}
+                ],
+            }
+        ),
+        tmp_path / "base.svg",
+    )
+    code = main(["design", "svg", "compare", str(source), str(svg), "--fail-above", "0"])
+    assert code == 1
+    assert "error:" not in capsys.readouterr().err

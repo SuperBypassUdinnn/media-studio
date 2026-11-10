@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,6 +114,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("effectcraft-cli", ("--version",), True, "motion graphics engine"),
     ToolSpec("kdenlive", ("--version",), False, "manual timeline handoff (legacy)"),
     ToolSpec("git", ("--version",), False, "project versioning"),
+    ToolSpec(
+        "vtracer",
+        (sys.executable, "-c", "import vtracer"),
+        False,
+        "colour tracing (optional extra 'vector')",
+    ),
 )
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -137,6 +144,38 @@ def collect_toolchain(
 
     statuses: list[ToolStatus] = []
     for spec in specs:
+        # A probe whose first element is sys.executable checks a Python module
+        # (for example ``vtracer``); run it directly rather than resolving
+        # spec.name as a binary, since a same-named executable may exist.
+        if spec.probe and spec.probe[0] == sys.executable:
+            probe_cmd = [sys.executable, *spec.probe[1:]]
+            try:
+                completed = run(
+                    probe_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=PROBE_TIMEOUT_SECONDS,
+                    check=False,
+                )
+                if completed.returncode == 0:
+                    version = first_line(completed.stdout or "") or None
+                else:
+                    version = None
+            except (OSError, subprocess.SubprocessError):
+                completed = None
+                version = None
+            statuses.append(
+                ToolStatus(
+                    spec=spec,
+                    path=(
+                        sys.executable
+                        if (completed is not None and completed.returncode == 0)
+                        else None
+                    ),
+                    version=version,
+                )
+            )
+            continue
         path = which(spec.name)
         if path is None:
             statuses.append(ToolStatus(spec=spec, path=None, version=None))
@@ -150,7 +189,10 @@ def collect_toolchain(
                 timeout=PROBE_TIMEOUT_SECONDS,
                 check=False,
             )
-            version = first_line(completed.stdout or completed.stderr or "") or None
+            if completed.returncode == 0:
+                version = first_line(completed.stdout or "") or None
+            else:
+                version = None
         except (OSError, subprocess.SubprocessError):
             version = None
         statuses.append(ToolStatus(spec=spec, path=path, version=version))
