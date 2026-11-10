@@ -331,10 +331,39 @@ def render_variant(
             f"export is {actual[0]}x{actual[1]}, expected {variant.width}x{variant.height}"
         )
 
+    finish = {
+        "trim": variant.trim,
+        "pad": variant.pad,
+        "profile": variant.profile,
+        "final_size": [variant.width, variant.height],
+    }
+    if variant.trim or variant.pad or variant.profile is not None:
+        command: list[str] = ["magick", str(png_path)]
+        if variant.trim:
+            command.extend(["-trim", "+repage"])
+        if variant.pad:
+            command.extend(["-bordercolor", "none", "-border", str(variant.pad)])
+        if variant.profile == "srgb":
+            command.extend(["-colorspace", "sRGB"])
+        command.append(str(png_path))
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0 or not png_path.is_file():
+            problems.append(
+                f"magick could not finish {variant.id}: {completed.stderr.strip()[:2000]}"
+            )
+        else:
+            finish["final_size"] = list(_png_size(png_path))
+
     return {
         "id": variant.id,
         "template": variant.template,
         "size": [variant.width, variant.height],
+        "finish": finish,
         "export": {
             "svg": str(svg_path.relative_to(project.root)),
             "png": str(png_path.relative_to(project.root)),
@@ -419,6 +448,11 @@ def validate_design(project: Project) -> list[str]:
             load_template(variant.template)
         except DesignError as error:
             problems.append(f"design.variants[{variant.id}]: {error}")
+        if not 0 <= variant.pad <= 1000:
+            problems.append(
+                f"design.variants[{variant.id}]: pad {variant.pad} "
+                "is outside the allowed range 0 to 1000"
+            )
         if not variant.headline and not variant.subhead:
             problems.append(f"design.variants[{variant.id}]: needs a headline or a subhead")
     for role, asset_id in project.design.fonts.items():

@@ -15,7 +15,7 @@ import pytest
 from media_studio import design, fonts
 from media_studio.cli import main
 from media_studio.ledger import stage_asset
-from media_studio.manifest import load_project
+from media_studio.manifest import ManifestError, load_project
 from media_studio.project import scaffold_project
 
 DEJAVU = Path("/usr/share/fonts/TTF/DejaVuSans.ttf")
@@ -38,11 +38,11 @@ design:
     body: font-heading
   variants:
     - {{id: post, template: social-post, size: 1080x1080,
-       headline: "{headline}", subhead: "{subhead}"}}
+       headline: "{headline}", subhead: "{subhead}"{variant_extra}}}
 """
 
 
-def build_project(tmp_path: Path, **overrides: str) -> Path:
+def build_project(tmp_path: Path, variant_extra: str = "", **overrides: str) -> Path:
     root = scaffold_project("design-demo", root=tmp_path).path
     project = load_project(root)
 
@@ -79,6 +79,9 @@ def build_project(tmp_path: Path, **overrides: str) -> Path:
         "ink": "#FFFFFF",
         "headline": "Kerja Rapi",
         "subhead": "Subhead",
+        # The extra keys are appended inside the variant flow mapping, so a
+        # leading comma separates them from subhead when present.
+        "variant_extra": f", {variant_extra}" if variant_extra else "",
     }
     values.update(overrides)
     manifest = MANIFEST.format(**values)
@@ -187,6 +190,41 @@ def test_cli_renders_and_reports(tmp_path: Path, capsys: pytest.CaptureFixture[s
 
     assert main(["design", "render", str(root), "--check-only"]) == 0
     assert "verdict: pass" in capsys.readouterr().out
+
+
+def test_trim_and_pad_shrink_then_reframe_the_png(tmp_path: Path) -> None:
+    project = load_project(build_project(tmp_path, variant_extra="trim: true, pad: 12"))
+    report = design.render(project)
+    finish = report.variants[0]["finish"]
+    assert finish["trim"] is True and finish["pad"] == 12
+    w, h = finish["final_size"]
+    assert w <= 1080 and h <= 1080  # trimmed content plus 2x12 border never exceeds canvas
+
+
+def test_finish_key_value_validation_rejects_bad_input(tmp_path: Path) -> None:
+    # pad: -4 produces a manifest problem via validate_design
+    problems = design.validate_design(
+        load_project(build_project(tmp_path, variant_extra="pad: -4"))
+    )
+    assert any("pad" in problem for problem in problems)
+
+
+def test_finish_profile_is_recorded(tmp_path: Path) -> None:
+    project = load_project(build_project(tmp_path, variant_extra="profile: srgb"))
+    report = design.render(project)
+    assert report.variants[0]["finish"]["profile"] == "srgb"
+
+
+def test_finish_profile_adobe_rgb_raises_at_load(tmp_path: Path) -> None:
+    root = build_project(tmp_path, variant_extra="profile: adobe-rgb")
+    with pytest.raises(ManifestError, match="adobe-rgb"):
+        load_project(root)
+
+
+def test_finish_trim_yes_raises_at_load(tmp_path: Path) -> None:
+    root = build_project(tmp_path, variant_extra='trim: "yes"')
+    with pytest.raises(ManifestError, match="yes"):
+        load_project(root)
 
 
 def test_contrast_ratio_matches_known_values() -> None:

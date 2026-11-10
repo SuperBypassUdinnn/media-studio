@@ -39,7 +39,18 @@ MANIFEST_KEYS = frozenset(
     }
 )
 DESIGN_KEYS = frozenset({"logo", "fonts", "variants"})
-VARIANT_KEYS = frozenset({"id", "template", "size", "headline", "subhead"})
+VARIANT_KEYS = frozenset(
+    {
+        "id",
+        "template",
+        "size",
+        "headline",
+        "subhead",
+        "trim",
+        "pad",
+        "profile",
+    }
+)
 VIDEO_KEYS = frozenset({"shots", "voice", "music", "titles", "fade_in", "fade_out", "crossfade"})
 SHOT_KEYS = frozenset({"asset", "in", "duration", "transition", "shot_type"})
 TITLE_KEYS = frozenset({"text", "start", "duration", "size", "colour", "position"})
@@ -129,6 +140,9 @@ class VariantSpec:
     height: int
     headline: str = ""
     subhead: str = ""
+    trim: bool = False
+    pad: int = 0
+    profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -339,6 +353,9 @@ def _design(value: Any) -> DesignSpec | None:
                 height=height,
                 headline=str(entry.get("headline") or ""),
                 subhead=str(entry.get("subhead") or ""),
+                trim=_variant_bool(entry.get("trim", False), "trim", str(entry["id"])),
+                pad=_variant_int(entry.get("pad", 0), "pad", str(entry["id"])),
+                profile=_variant_profile(entry.get("profile"), "profile", str(entry["id"])),
             )
         )
     if not variants:
@@ -368,6 +385,30 @@ def _size(value: str, variant_id: str) -> tuple[int, int]:
         return parse_resolution(value)
     except ManifestError as error:
         raise ManifestError(f"design variant {variant_id!r}: {error}") from error
+
+
+def _variant_bool(value: Any, field_name: str, variant_id: str) -> bool:
+    if not isinstance(value, bool):
+        raise ManifestError(
+            f"design variant {variant_id!r}: {field_name} must be a boolean, got {value!r}"
+        )
+    return value
+
+
+def _variant_int(value: Any, field_name: str, variant_id: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ManifestError(
+            f"design variant {variant_id!r}: {field_name} must be a whole number, got {value!r}"
+        )
+    return value
+
+
+def _variant_profile(value: Any, field_name: str, variant_id: str) -> str | None:
+    if value is not None and value != "srgb":
+        raise ManifestError(
+            f"design variant {variant_id!r}: {field_name} must be 'srgb' or unset, got {value!r}"
+        )
+    return value
 
 
 def _effects(value: Any) -> tuple[dict[str, Any], ...]:

@@ -17,10 +17,11 @@ from pathlib import Path
 
 import yaml
 
+from . import design
 from .ledger import classify_license
 
 PRESET_DIRECTORY = "presets"
-KINDS = ("transition", "video-effect", "audio-effect", "title")
+KINDS = ("transition", "video-effect", "audio-effect", "title", "design")
 PARAMETER_TYPES = ("number", "integer", "string")
 PLACEHOLDER = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 # Keys that place an effect rather than configure it.
@@ -262,6 +263,18 @@ def validate_recipe(recipe: Recipe) -> list[str]:
         problems.append(f"{recipe.id}: an audio-effect recipe needs implementation.audio")
     if recipe.kind == "title" and not recipe.implementation.get("title"):
         problems.append(f"{recipe.id}: a title recipe needs implementation.title")
+    if recipe.kind == "design":
+        template = recipe.implementation.get("template")
+        if not template:
+            problems.append(f"{recipe.id}: a design recipe needs implementation.template")
+        elif not (design.template_directory() / f"{template}.svg").is_file():
+            problems.append(
+                f"{recipe.id}: design template {template!r} is missing from "
+                f"{design.template_directory()}"
+            )
+        size = recipe.implementation.get("size")
+        if size is not None and not re.match(r"^\d+x\d+$", str(size)):
+            problems.append(f"{recipe.id}: implementation.size must be WxH, got {size!r}")
 
     seen: set[str] = set()
     for parameter in recipe.parameters:

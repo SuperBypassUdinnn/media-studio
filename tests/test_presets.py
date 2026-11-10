@@ -9,14 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from media_studio import media
+from media_studio import design, media
 from media_studio.cli import main
 from media_studio.ledger import stage_asset
-from media_studio.manifest import load_project
+from media_studio.manifest import Project, load_project
 from media_studio.mlt import Clip, Timeline, Title
 from media_studio.presets import (
     KINDS,
     PresetError,
+    Recipe,
     load_recipes,
     resolve_effects,
     search,
@@ -348,6 +349,47 @@ video:
 {effects}"""
     (root / "project.yaml").write_text(manifest, encoding="utf-8")
     return root
+
+
+def _project_from_recipe(root: Path, recipe: Recipe) -> Project:
+    """Write a minimal project.yaml for one design recipe and load it.
+
+    The test project needs no staged assets: design templates render without a logo or fonts
+    (compose falls back to sans-serif and drops the logo image).
+    """
+
+    root.mkdir(parents=True, exist_ok=True)
+    template = recipe.implementation["template"]
+    size = recipe.implementation["size"]
+    values = {parameter.name: parameter.default for parameter in recipe.parameters}
+    headline = str(values.get("headline", ""))
+    subhead = str(values.get("subhead", ""))
+    manifest = (
+        f"slug: {root.name}\n"
+        f"title: {root.name}\n"
+        f"design:\n"
+        f"  variants:\n"
+        f"    - {{id: post, template: {template}, size: {size}, "
+        f'headline: "{headline}", subhead: "{subhead}"}}\n'
+    )
+    (root / "project.yaml").write_text(manifest, encoding="utf-8")
+    return load_project(root)
+
+
+def test_every_design_recipe_renders_through_the_design_path(tmp_path: Path) -> None:
+    recipes = [r for r in load_recipes().values() if r.kind == "design"]
+    assert {r.id for r in recipes} >= {
+        "design-social-post",
+        "design-story",
+        "design-poster-a3",
+        "design-video-thumbnail",
+    }
+    for recipe in recipes:
+        assert validate_recipe(recipe) == [], validate_recipe(recipe)
+        project = _project_from_recipe(tmp_path / recipe.id, recipe)
+        report = design.render(project)
+        assert report.ok, report.problems
+        assert (project.root / "out/images/post.png").is_file()
 
 
 def test_a_video_effect_reaches_the_planned_clip(tmp_path: Path) -> None:

@@ -1,0 +1,21 @@
+id: design-social-post
+title: Social post
+kind: design
+engine: inkscape
+intent: [social, instagram, post]
+applies_to: [design]
+summary: A square social-post design built on the social-post template.
+implementation:
+  template: social-post
+  size: 1080x1080
+parameters:
+  - name: headline
+    type: string
+    default: "Headline"
+    description: The main message on the post.
+  - name: subhead
+    type: string
+    default: "Subhead"
+    description: The supporting line below the headline.
+license: CC0-1.0
+provenance: media-studio templates/design/social-post.svg; 1080x1080 verified by test

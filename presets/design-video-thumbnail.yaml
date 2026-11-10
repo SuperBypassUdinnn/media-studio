@@ -1,0 +1,21 @@
+id: design-video-thumbnail
+title: Video thumbnail
+kind: design
+engine: inkscape
+intent: [thumbnail, youtube]
+applies_to: [design]
+summary: A YouTube video-thumbnail design built on the video-thumbnail template.
+implementation:
+  template: video-thumbnail
+  size: 1280x720
+parameters:
+  - name: headline
+    type: string
+    default: "Headline"
+    description: The main message on the thumbnail.
+  - name: subhead
+    type: string
+    default: "Subhead"
+    description: The supporting line below the headline.
+license: CC0-1.0
+provenance: media-studio templates/design/video-thumbnail.svg; 1280x720 verified by test
