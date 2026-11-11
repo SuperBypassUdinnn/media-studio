@@ -57,7 +57,8 @@ def test_xml_has_one_producer_and_entry_per_clip() -> None:
     assert profile.get("width") == "320"
     assert profile.get("display_aspect_num") == "16"
     assert profile.get("display_aspect_den") == "9"
-    assert profile.get("sample_aspect_num") is None  # 1:1 here drops qtblend composites
+    assert profile.get("sample_aspect_num") == "1"
+    assert profile.get("sample_aspect_den") == "1"
     assert root.find("tractor").get("out") == "95"  # 4.0s at 24fps, inclusive
 
 
@@ -271,10 +272,15 @@ def test_titles_get_their_own_track_and_a_blend() -> None:
     properties = {
         element.get("name"): element.text for element in title_producer.findall("property")
     }
-    assert properties["mlt_service"] == "qtext"
-    assert properties["argument"] == "Opening"
-    assert properties["size"] == "48"
-    assert properties["bgcolour"] == "#00000000"  # transparent, so the shot shows through
+    assert properties["mlt_service"] == "kdenlivetitle"
+    scene = ElementTree.fromstring(properties["xmldata"])
+    content = scene.find(".//content")
+    assert content is not None
+    assert content.text == "Opening"
+    assert content.get("font-pixel-size") == "48"
+    background = scene.find("background")
+    assert background is not None
+    assert background.get("color") == "0,0,0,0"  # transparent, so the shot shows through
 
     video_track = next(
         element for element in root.findall("tractor") if element.get("id") == "video_track"

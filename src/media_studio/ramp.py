@@ -126,7 +126,7 @@ def _build_filter_graph(segments: list[SpeedSegment], *, fps: int, optical_flow:
 
     for i, segment in enumerate(segments):
         links.append(
-            f"[s{i}]trim=start={segment.start_time}:{segment.end_time},"
+            f"[s{i}]trim=start={segment.start_time}:end={segment.end_time},"
             f"setpts=(PTS-STARTPTS)/{segment.speed_factor}[s{i}p]"
         )
 
