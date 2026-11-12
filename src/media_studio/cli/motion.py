@@ -10,6 +10,7 @@ from pathlib import Path
 from media_studio.effectcraft import (
     AMV_MOTION_PRESETS,
     MOTION_TEMPLATES,
+    PROMO_MOTION_PRESETS,
     EffectCraftError,
     EffectCraftRunner,
     lower_third,
@@ -17,6 +18,7 @@ from media_studio.effectcraft import (
     motion_project,
     new_composition,
     render_amv_preset,
+    render_promo_preset,
     title_sequence,
 )
 from media_studio.manifest import ManifestError, load_project
@@ -42,10 +44,11 @@ def register_motion_parser(subparsers: argparse._SubParsersAction) -> None:
     motion_title.add_argument("--animation", default="fade_in_up", help="animation preset name")
     motion_title.add_argument(
         "--preset",
-        choices=sorted(AMV_MOTION_PRESETS.keys()),
+        choices=sorted({*AMV_MOTION_PRESETS, *PROMO_MOTION_PRESETS}),
         default=None,
-        help="AMV motion preset to render (overrides --animation/--font/--glow)",
+        help="motion preset to render (AMV or promo; overrides --animation/--font/--glow)",
     )
+    motion_title.add_argument("--subtext", default="", help="secondary text for promo presets")
     motion_title.add_argument("--font", default="Noto Sans", help="font family")
     motion_title.add_argument("--font-size", type=float, default=72.0, help="font size in points")
     motion_title.add_argument("--color", default="#FFFFFF", help="text color")
@@ -191,15 +194,28 @@ def cmd_motion_title(args: argparse.Namespace) -> int:
     try:
         project = load_fn(args.project)
         if args.preset:
-            result = render_amv_preset(
-                preset_name=args.preset,
-                output=args.out,
-                text=args.text,
-                duration=args.duration,
-                fps=args.fps,
-                width=args.width,
-                height=args.height,
-            )
+            if args.preset in PROMO_MOTION_PRESETS:
+                result = render_promo_preset(
+                    preset_name=args.preset,
+                    output=args.out,
+                    text=args.text,
+                    subtext=args.subtext,
+                    project=project,
+                    width=args.width,
+                    height=args.height,
+                    fps=args.fps,
+                    duration=args.duration,
+                )
+            else:
+                result = render_amv_preset(
+                    preset_name=args.preset,
+                    output=args.out,
+                    text=args.text,
+                    duration=args.duration,
+                    fps=args.fps,
+                    width=args.width,
+                    height=args.height,
+                )
         else:
             result = title_sequence(
                 text=args.text,

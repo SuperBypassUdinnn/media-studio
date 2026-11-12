@@ -65,7 +65,7 @@ CUE_KEYS = frozenset(
 DELIVERABLE_KEYS = frozenset(
     {"id", "kind", "container", "resolution", "fps", "duration", "loudness_lufs", "preview"}
 )
-BRAND_KEYS = frozenset({"palette", "fonts"})
+BRAND_KEYS = frozenset({"palette", "fonts", "references", "voice", "safe_zones"})
 BUDGET_KEYS = frozenset({"max_asset_bytes", "max_project_bytes", "require_cc0_music"})
 # Integrated loudness outside this window is almost always a manifest mistake.
 LOUDNESS_RANGE = (-40.0, -5.0)
@@ -194,11 +194,32 @@ class DesignSpec:
 
 
 @dataclass(frozen=True)
+class ReferencePack:
+    """Product, spokesperson and style-board asset references for a brand kit."""
+
+    product: tuple[str, ...] = field(default_factory=tuple)
+    spokesperson: tuple[str, ...] = field(default_factory=tuple)
+    style_board: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class BrandVoice:
+    """Voice-over engine, voice id and rate for a project brand."""
+
+    engine: str
+    voice_id: str
+    rate: str
+
+
+@dataclass(frozen=True)
 class Brand:
     """Colour and type tokens every design path reads."""
 
     palette: dict[str, str] = field(default_factory=dict)
     fonts: dict[str, str] = field(default_factory=dict)
+    references: ReferencePack = field(default_factory=ReferencePack)
+    voice: BrandVoice | None = None
+    safe_zones: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -345,7 +366,62 @@ def _brand(value: Any) -> Brand:
     return Brand(
         palette={str(key): str(colour) for key, colour in palette.items()},
         fonts={str(key): str(name) for key, name in fonts.items()},
+        references=_reference_pack(value.get("references")),
+        voice=_brand_voice(value.get("voice")),
+        safe_zones=_safe_zones(value.get("safe_zones")),
     )
+
+
+def _reference_pack(value: Any) -> ReferencePack:
+    if value in (None, {}):
+        return ReferencePack()
+    if not isinstance(value, dict):
+        raise ManifestError("brand.references must be a mapping of role to asset ids")
+
+    def _ids(key: str) -> tuple[str, ...]:
+        if key not in value:
+            return ()
+        raw = value[key]
+        if raw is None:
+            return ()
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raise ManifestError(f"brand.references.{key} must be a list of asset ids")
+        return tuple(raw)
+
+    return ReferencePack(
+        product=_ids("product"),
+        spokesperson=_ids("spokesperson"),
+        style_board=_ids("style_board"),
+    )
+
+
+def _brand_voice(value: Any) -> BrandVoice | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ManifestError("brand.voice must be a mapping of engine, voice_id and rate")
+    engine = str(value.get("engine") or "")
+    voice_id = str(value.get("voice_id") or "")
+    rate = str(value.get("rate") or "")
+    if not engine or not voice_id:
+        raise ManifestError("brand.voice.engine and brand.voice.voice_id are required")
+    return BrandVoice(engine=engine, voice_id=voice_id, rate=rate)
+
+
+def _safe_zones(value: Any) -> dict[str, dict[str, int]]:
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict):
+        raise ManifestError("brand.safe_zones must be a mapping of zone to margins")
+    zones: dict[str, dict[str, int]] = {}
+    for name, margins in value.items():
+        if not isinstance(margins, dict):
+            raise ManifestError(f"brand.safe_zones.{name} must be a mapping of margins")
+        zones[str(name)] = {
+            str(key): _optional_int(val, f"brand.safe_zones.{name}.{key}")
+            for key, val in margins.items()
+        }
+    return zones
 
 
 def _budget(value: Any) -> Budget:
@@ -744,6 +820,18 @@ def validate_project(project: Project) -> ValidationReport:
                     f"design.variants[{variant.id}]: image asset {variant.image!r} is not "
                     "declared under assets:"
                 )
+
+    for role in ("product", "spokesperson", "style_board"):
+        for asset_id in getattr(project.brand.references, role):
+            if asset_id not in project.assets:
+                errors.append(
+                    f"brand.references.{role}: asset {asset_id!r} is not declared under assets:"
+                )
+
+    for name, margins in project.brand.safe_zones.items():
+        for key, value in margins.items():
+            if value < 0:
+                errors.append(f"brand.safe_zones.{name}.{key}: margin {value} must be non-negative")
 
     if not project.deliverables:
         warnings.append("no deliverables declared; renders have nothing to produce")

@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from media_studio.manifest import (
+    BrandVoice,
     ManifestError,
+    ReferencePack,
     load_project,
     resolve_project,
     validate_project,
@@ -289,3 +291,113 @@ deliverables:
     project = load_project(tmp_path)
     report = validate_project(project)
     assert not any("below the 1920x1080 minimum floor" in err for err in report.errors)
+
+
+def test_brand_references_voice_and_safe_zones_parse(project_root: Path) -> None:
+    """brand.references, brand.voice and brand.safe_zones load into Brand."""
+
+    write_manifest(
+        project_root,
+        """
+slug: demo
+deliverables:
+  - {id: a, kind: video, resolution: 1920x1080}
+brand:
+  palette: {primary: "#0B3D2E", accent: "#C8A24A", ink: "#101010"}
+  fonts: {heading: Inter, body: Inter}
+  references:
+    product: [product-cutout, product-angle-hero]
+    spokesperson: [host-front]
+    style_board: [ref-mood-01]
+  voice:
+    engine: edge-tts
+    voice_id: id-ID-ArdiNeural
+    rate: "+5%"
+  safe_zones:
+    reel_9x16: {top: 220, bottom: 380, left: 60, right: 140}
+""",
+    )
+
+    project = load_project(project_root)
+
+    assert project.brand.references == ReferencePack(
+        product=("product-cutout", "product-angle-hero"),
+        spokesperson=("host-front",),
+        style_board=("ref-mood-01",),
+    )
+    assert project.brand.voice == BrandVoice(
+        engine="edge-tts", voice_id="id-ID-ArdiNeural", rate="+5%"
+    )
+    assert project.brand.safe_zones == {
+        "reel_9x16": {"top": 220, "bottom": 380, "left": 60, "right": 140}
+    }
+    assert project.brand.palette["primary"] == "#0B3D2E"
+
+
+def test_brand_without_optional_fields_still_loads(project_root: Path) -> None:
+    """Existing manifests without references/voice/safe_zones still pass."""
+
+    write_manifest(
+        project_root,
+        """
+slug: demo
+deliverables:
+  - {id: a, kind: video, resolution: 1920x1080}
+brand:
+  palette: {primary: "#0B3D2E"}
+  fonts: {heading: Inter}
+""",
+    )
+
+    project = load_project(project_root)
+
+    assert project.brand.references == ReferencePack()
+    assert project.brand.voice is None
+    assert project.brand.safe_zones == {}
+
+    report = validate_project(project)
+    assert report.ok, report.errors
+
+
+def test_brand_references_unknown_asset_is_rejected(project_root: Path) -> None:
+    """A referenced asset id that is not declared under assets: is a validation error."""
+
+    write_manifest(
+        project_root,
+        """
+slug: demo
+deliverables:
+  - {id: a, kind: video, resolution: 1920x1080}
+brand:
+  references:
+    product: [product-cutout, missing-asset]
+""",
+    )
+
+    report = validate_project(load_project(project_root))
+
+    assert not report.ok
+    joined = "\n".join(report.errors)
+    assert "asset 'missing-asset' is not declared under assets" in joined
+
+
+def test_brand_references_known_asset_is_valid(project_root: Path) -> None:
+    """A referenced asset id declared under assets: validates cleanly."""
+
+    write_manifest(
+        project_root,
+        """
+slug: demo
+deliverables:
+  - {id: a, kind: video, resolution: 1920x1080}
+assets:
+  product-cutout: assets/design/product-cutout.png
+brand:
+  references:
+    product: [product-cutout]
+""",
+    )
+
+    report = validate_project(load_project(project_root))
+
+    assert report.ok, report.errors

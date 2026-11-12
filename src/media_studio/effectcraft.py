@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from media_studio.manifest import Project
+
 logger = logging.getLogger(__name__)
 
 # Prefer effectcraft-cli (headless engine) over the GUI binary
@@ -794,6 +796,350 @@ AMV_MOTION_PRESETS: dict[str, dict[str, Any]] = {
         ],
     },
 }
+
+
+#: Default colour tokens used when no project brand is supplied.
+PROMO_DEFAULT_PALETTE: dict[str, str] = {
+    "primary": "#3b82f6",
+    "accent": "#22d3ee",
+    "ink": "#f8fafc",
+}
+PROMO_DEFAULT_FONT = "Noto Sans"
+
+#: Promo-tailored motion graphics presets. Geometry is expressed as fractions of
+#: the canvas (positions, widths, heights and font sizes in ``[0, 1]``) so every
+#: preset scales cleanly from ``width`` and ``height`` for both 1080x1920 (9:16)
+#: and 1920x1080 (16:9). Colours and fonts reference brand tokens
+#: (``{primary}``, ``{accent}``, ``{ink}``, ``{heading}``, ``{body}``) which
+#: :func:`render_promo_preset` resolves from ``project.brand`` when a project is
+#: supplied, falling back to the defaults above otherwise.
+PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
+    "promo-hook-slam": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 3.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "hook-pill",
+                "params": {
+                    "color": "{accent}",
+                    "opacity": 0.10,
+                    "width": 0.92,
+                    "height": 0.06,
+                    "position": [0.5, 0.28],
+                },
+            },
+            {
+                "type": "text",
+                "name": "title",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.075,
+                    "color": "{ink}",
+                    "position": [0.5, 0.42],
+                },
+            },
+        ],
+    },
+    "promo-kinetic-callout": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 3.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "accent-rule",
+                "params": {
+                    "color": "{accent}",
+                    "width": 0.005,
+                    "height": 0.35,
+                    "position": [0.17, 0.42],
+                },
+            },
+            {
+                "type": "text",
+                "name": "title",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.055,
+                    "color": "{ink}",
+                    "position": [0.25, 0.40],
+                },
+            },
+            {
+                "type": "text",
+                "name": "subhead",
+                "text_role": "subtext",
+                "params": {
+                    "text": "{subtext}",
+                    "font": "{body}",
+                    "font_size": 0.030,
+                    "color": "{primary}",
+                    "position": [0.25, 0.49],
+                },
+            },
+        ],
+    },
+    "promo-metric-badge": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 3.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "badge-pill",
+                "params": {
+                    "color": "{primary}",
+                    "opacity": 0.92,
+                    "width": 0.70,
+                    "height": 0.17,
+                    "position": [0.5, 0.40],
+                },
+            },
+            {
+                "type": "text",
+                "name": "counter",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.130,
+                    "color": "{ink}",
+                    "position": [0.5, 0.40],
+                },
+            },
+            {
+                "type": "text",
+                "name": "unit",
+                "text_role": "subtext",
+                "params": {
+                    "text": "{subtext}",
+                    "font": "{body}",
+                    "font_size": 0.040,
+                    "color": "{ink}",
+                    "position": [0.5, 0.57],
+                },
+            },
+        ],
+    },
+    "promo-lower-third-clean": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 4.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "accent-bar",
+                "params": {
+                    "color": "{accent}",
+                    "width": 0.014,
+                    "height": 0.15,
+                    "position": [0.12, 0.78],
+                },
+            },
+            {
+                "type": "text",
+                "name": "name",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.050,
+                    "color": "{ink}",
+                    "position": [0.18, 0.74],
+                },
+            },
+            {
+                "type": "text",
+                "name": "role",
+                "text_role": "subtext",
+                "params": {
+                    "text": "{subtext}",
+                    "font": "{body}",
+                    "font_size": 0.030,
+                    "color": "{primary}",
+                    "position": [0.18, 0.81],
+                },
+            },
+        ],
+    },
+    "promo-cta-endcard": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 4.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "cta-pill",
+                "params": {
+                    "color": "{primary}",
+                    "opacity": 0.95,
+                    "width": 0.60,
+                    "height": 0.10,
+                    "position": [0.5, 0.62],
+                },
+            },
+            {
+                "type": "text",
+                "name": "cta",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.060,
+                    "color": "{ink}",
+                    "position": [0.5, 0.62],
+                },
+            },
+            {
+                "type": "text",
+                "name": "url",
+                "text_role": "subtext",
+                "params": {
+                    "text": "{subtext}",
+                    "font": "{body}",
+                    "font_size": 0.035,
+                    "color": "{ink}",
+                    "position": [0.5, 0.72],
+                },
+            },
+        ],
+    },
+}
+
+
+def _promo_palette(project: Project | None) -> dict[str, str]:
+    """Return the project brand palette, or an empty dict when unset."""
+
+    if project is not None and project.brand.palette:
+        return dict(project.brand.palette)
+    return {}
+
+
+def _promo_fonts(project: Project | None) -> dict[str, str]:
+    """Return the project brand fonts, or an empty dict when unset."""
+
+    if project is not None and project.brand.fonts:
+        return dict(project.brand.fonts)
+    return {}
+
+
+def _resolve_token(value: str, palette: dict[str, str]) -> str:
+    """Resolve a ``{token}`` colour reference against the brand palette."""
+
+    if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+        token = value[1:-1]
+        return palette.get(token, PROMO_DEFAULT_PALETTE.get(token, value))
+    return value
+
+
+def _resolve_font_role(value: str, fonts: dict[str, str]) -> str:
+    """Resolve a ``{role}`` font reference against the brand fonts."""
+
+    if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+        role = value[1:-1]
+        return fonts.get(role, PROMO_DEFAULT_FONT)
+    return value
+
+
+def _scale_promo_params(params: dict[str, Any], width: int, height: int) -> None:
+    """Scale fraction-based geometry to absolute pixels for the canvas.
+
+    Any ``position`` component, ``width``/``height`` or ``font_size`` in
+    ``[0, 1]`` is treated as a fraction of the matching canvas dimension.
+    """
+
+    position = params.get("position")
+    if (
+        isinstance(position, list)
+        and len(position) == 2
+        and all(isinstance(item, (int, float)) and 0 <= item <= 1 for item in position)
+    ):
+        params["position"] = [round(position[0] * width), round(position[1] * height)]
+    for key in ("width", "height"):
+        value = params.get(key)
+        if isinstance(value, (int, float)) and 0 < value <= 1:
+            params[key] = round(value * (width if key == "width" else height))
+    size = params.get("font_size")
+    if isinstance(size, (int, float)) and 0 < size <= 1:
+        params["font_size"] = round(size * height)
+
+
+def render_promo_preset(
+    preset_name: str,
+    output: Path,
+    *,
+    text: str,
+    subtext: str = "",
+    project: Project | None = None,
+    width: int = 1080,
+    height: int = 1920,
+    fps: int = 30,
+    duration: float = 3.0,
+) -> MotionResult:
+    """Render one EffectCraft promo motion preset as transparent ProRes 4444 RGBA.
+
+    Looks up ``preset_name`` in :data:`PROMO_MOTION_PRESETS`, deep-copies the
+    preset spec, scales every layer position, dimension and font size from
+    ``width`` and ``height``, injects ``text`` into ``text_role == "title"``
+    layers and ``subtext`` into ``text_role == "subtext"`` layers, and resolves
+    brand token colours (``{primary}``, ``{accent}``, ``{ink}``) and fonts
+    (``{heading}``, ``{body}``) from ``project.brand`` when a project is
+    supplied. The spec is written as an ``.ecp`` next to ``output`` and rendered
+    through :func:`render`, producing ProRes 4444 with an alpha channel.
+
+    Raises:
+        EffectCraftError: ``preset_name`` is not a registered promo preset.
+    """
+
+    if preset_name not in PROMO_MOTION_PRESETS:
+        known = ", ".join(sorted(PROMO_MOTION_PRESETS))
+        raise EffectCraftError(
+            f"unknown promo motion preset {preset_name!r}; choose one of: {known}"
+        )
+
+    preset = PROMO_MOTION_PRESETS[preset_name]
+    spec = copy.deepcopy(dict(preset))
+    spec["width"] = int(width)
+    spec["height"] = int(height)
+    spec["fps"] = float(fps)
+    spec["duration"] = float(duration)
+
+    palette = _promo_palette(project)
+    fonts = _promo_fonts(project)
+
+    for layer in spec.get("layers", []):
+        params = layer.get("params", {})
+        text_role = layer.get("text_role")
+        if layer.get("type") == "text" and text_role == "title":
+            params["text"] = text
+        elif layer.get("type") == "text" and text_role == "subtext":
+            params["text"] = subtext
+        params.pop("text_role", None)
+        _scale_promo_params(params, int(width), int(height))
+        for key in ("color", "fill", "stroke"):
+            if isinstance(params.get(key), str):
+                params[key] = _resolve_token(params[key], palette)
+        if isinstance(params.get("font"), str):
+            params["font"] = _resolve_font_role(params["font"], fonts)
+
+    _validate_spec(spec)
+    check_installation()
+
+    output = Path(output)
+    ecp_path = output.with_suffix(".ecp")
+    build_ecp(spec, ecp_path)
+    return render(ecp_path, output, fps=float(fps), transparent=True)
 
 
 def render_amv_preset(

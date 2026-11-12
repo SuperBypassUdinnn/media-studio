@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -607,3 +608,157 @@ def test_alpha_coverage_returns_none_on_ffmpeg_failure(tmp_path, monkeypatch):
     )
     runner = EffectCraftRunner()
     assert runner._alpha_coverage(media) is None
+
+
+def _fake_promo_render(monkeypatch, tmp_path):
+    seen: dict[str, object] = {}
+
+    def fake_render(project_path, output, *, fps=30.0, transparent=True):
+        seen["spec"] = json.loads(Path(project_path).read_text(encoding="utf-8"))
+        return MotionResult(
+            output=Path(output),
+            ecp_path=Path(project_path),
+            report_path=Path(output).with_suffix(".json"),
+            report={"ok": True},
+        )
+
+    monkeypatch.setattr("media_studio.effectcraft.check_installation", lambda: None)
+    monkeypatch.setattr("media_studio.effectcraft.render", fake_render)
+    return seen
+
+
+def _promo_project(tmp_path) -> object:
+    from media_studio.manifest import Brand, Budget, Project
+
+    return Project(
+        root=tmp_path,
+        slug="demo",
+        title="Demo",
+        status="draft",
+        deliverables=(),
+        brand=Brand(
+            palette={"primary": "#ff0000", "accent": "#00ff00", "ink": "#0000ff"},
+            fonts={"heading": "Inter", "body": "Inter"},
+        ),
+        budget=Budget(),
+        assets={},
+        timeline=(),
+        video=None,
+        design=None,
+        effects=(),
+        raw={},
+    )
+
+
+def test_promo_motion_presets_contains_all_five():
+    """PROMO_MOTION_PRESETS registers exactly the five promo preset ids."""
+
+    from media_studio.effectcraft import PROMO_MOTION_PRESETS
+
+    expected = {
+        "promo-hook-slam",
+        "promo-kinetic-callout",
+        "promo-metric-badge",
+        "promo-lower-third-clean",
+        "promo-cta-endcard",
+    }
+    assert set(PROMO_MOTION_PRESETS) == expected
+
+
+def test_promo_preset_scales_positions_and_font_sizes(tmp_path, monkeypatch):
+    """Layer positions and font sizes scale from width/height for both aspects."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+
+    for width, height in ((1080, 1920), (1920, 1080)):
+        seen.clear()
+        render_promo_preset(
+            "promo-hook-slam",
+            tmp_path / f"out-{width}x{height}.mov",
+            text="Hook",
+            width=width,
+            height=height,
+        )
+        spec = seen["spec"]
+        comp = spec["composition"]
+        assert comp["width"] == width
+        assert comp["height"] == height
+        title = next(layer for layer in spec["layers"] if layer["name"] == "title")
+        assert abs(title["params"]["font_size"] - 0.075 * height) <= 1
+        assert abs(title["params"]["position"][0] - 0.5 * width) <= 1
+        assert abs(title["params"]["position"][1] - 0.42 * height) <= 1
+        pill = next(layer for layer in spec["layers"] if layer["name"] == "hook-pill")
+        assert abs(pill["params"]["width"] - 0.92 * width) <= 1
+        assert abs(pill["params"]["height"] - 0.06 * height) <= 1
+
+
+def test_promo_preset_injects_brand_palette_tokens(tmp_path, monkeypatch):
+    """project.brand.palette tokens (primary, accent, ink) resolve into layer colours."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    render_promo_preset(
+        "promo-hook-slam",
+        tmp_path / "out.mov",
+        text="Hook",
+        project=_promo_project(tmp_path),
+    )
+    spec = seen["spec"]
+    pill = next(layer for layer in spec["layers"] if layer["name"] == "hook-pill")
+    assert pill["params"]["color"] == "#00ff00"  # accent
+    title = next(layer for layer in spec["layers"] if layer["name"] == "title")
+    assert title["params"]["color"] == "#0000ff"  # ink
+    assert title["params"]["font"] == "Inter"  # heading font role
+
+
+def test_promo_preset_falls_back_to_defaults_without_project(tmp_path, monkeypatch):
+    """No project keeps default colours and fonts instead of crashing."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    render_promo_preset("promo-hook-slam", tmp_path / "out.mov", text="Hook")
+    spec = seen["spec"]
+    title = next(layer for layer in spec["layers"] if layer["name"] == "title")
+    assert title["params"]["color"] != "{ink}"
+    assert title["params"]["font"] != "{heading}"
+
+
+def test_render_promo_preset_builds_valid_ecp(tmp_path, monkeypatch):
+    """The rendered spec passes build_ecp validation and carries composition geometry."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    render_promo_preset(
+        "promo-metric-badge",
+        tmp_path / "out.mov",
+        text="98%",
+        subtext="conversion rate",
+        width=1080,
+        height=1920,
+        fps=30,
+        duration=3.0,
+    )
+    spec = seen["spec"]
+    comp = spec["composition"]
+    assert comp["width"] == 1080
+    assert comp["height"] == 1920
+    assert comp["fps"] == 30.0
+    assert comp["duration"] == 3.0
+    counter = next(layer for layer in spec["layers"] if layer["name"] == "counter")
+    assert counter["params"]["text"] == "98%"
+    unit = next(layer for layer in spec["layers"] if layer["name"] == "unit")
+    assert unit["params"]["text"] == "conversion rate"
+
+
+def test_unknown_promo_preset_raises():
+    """An unknown promo preset id raises EffectCraftError with a helpful message."""
+
+    from media_studio.effectcraft import EffectCraftError, render_promo_preset
+
+    with pytest.raises(EffectCraftError, match="unknown promo motion preset"):
+        render_promo_preset("promo-does-not-exist", Path("/tmp/x.mov"), text="Hi")
