@@ -209,6 +209,7 @@ def cmd_audio_tts(args: argparse.Namespace) -> int:
             engine=args.engine,
             rate=args.rate,
             words_out=args.words_out,
+            scratch=scratch,
         )
     except (TtsError, ValueError, OSError, MediaError) as error:
         shutil.rmtree(scratch, ignore_errors=True)
