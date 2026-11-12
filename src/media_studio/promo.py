@@ -12,13 +12,14 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from media_studio import audio, media, video
-from media_studio.captions import render_captions
+from media_studio.captions import CaptionsError, extract_word_timestamps, render_captions
 from media_studio.effectcraft import EffectCraftError, render_promo_preset
 from media_studio.gen.base import GenError, GenRequest
 from media_studio.gen.pipeline import generate_asset
@@ -210,9 +211,10 @@ def _collect_references(project: Project) -> tuple[str, ...]:
 def _visual_asset_candidates(project: Project) -> list[str]:
     video_exts = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    ref_ids = set(_collect_references(project))
     candidates: list[str] = []
     for asset_id, rel in project.assets.items():
-        if "logo" in asset_id.lower():
+        if "logo" in asset_id.lower() or asset_id in ref_ids:
             continue
         suffix = Path(rel).suffix.lower()
         if suffix in video_exts or suffix in image_exts:
@@ -390,6 +392,8 @@ def _render_solid_clip(
     output: Path, *, width: int, height: int, duration: float, color: str
 ) -> Path:
     col = color.lstrip("#")
+    if col.lower() in {"0f172a", "000000", "000"}:
+        col = "1e293b"
     media.run_command(
         [
             media.FFMPEG,
@@ -400,11 +404,16 @@ def _render_solid_clip(
             "-f",
             "lavfi",
             "-i",
-            f"color=c=0x{col}:s={width}x{height}:r=30:d={duration:.4f}",
+            (
+                f"gradients=s={width}x{height}:r=30:d={duration:.4f}"
+                f":c0=0x{col}:c1=0x0c4a6e:c2=0x1e293b:c3=0x334155:speed=0.8"
+            ),
             "-f",
             "lavfi",
             "-i",
             f"anullsrc=r=48000:cl=stereo:d={duration:.4f}",
+            "-vf",
+            "format=yuv420p",
             "-c:v",
             "libx264",
             "-preset",
@@ -584,6 +593,55 @@ def _mux_video_and_audio(video_in: Path, audio_in: Path, output: Path) -> Path:
     return output
 
 
+def _mix_vo_and_music(
+    vo_wav: Path, ducked_music: Path, output: Path, *, total_duration: float
+) -> Path:
+    media.run_command(
+        [
+            media.FFMPEG,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(vo_wav),
+            "-i",
+            str(ducked_music),
+            "-filter_complex",
+            (
+                f"[0:a]aformat=sample_rates=48000:channel_layouts=stereo,atrim=0:{total_duration:.6f}[vo];"
+                f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,atrim=0:{total_duration:.6f}[bgm];"
+                "[vo][bgm]amix=inputs=2:duration=first:weights=1 0.45:normalize=0[outa]"
+            ),
+            "-map",
+            "[outa]",
+            "-c:a",
+            "pcm_s16le",
+            str(output),
+        ],
+        label=f"mix vo and music {output.name}",
+        expect_stdout=False,
+    )
+    return output
+
+
+def _resolve_music_path(project: Project) -> Path | None:
+    music_id: str | None = None
+    if project.video is not None and project.video.music is not None:
+        music_id = project.video.music.asset
+    elif "music" in project.assets:
+        music_id = "music"
+    elif "bgm" in project.assets:
+        music_id = "bgm"
+    if not music_id:
+        return None
+    rel = project.assets.get(music_id)
+    if not rel:
+        return None
+    candidate = project.root / rel
+    return candidate if candidate.is_file() else None
+
+
 def render_promo(
     project: Project,
     plan: PromoPlan,
@@ -595,6 +653,9 @@ def render_promo(
     tts_engine: str = "auto",
 ) -> PromoRenderResult:
     """Render a promotional video plan, enforcing the Storyboard/Quota Gate unless ``auto=True``."""
+
+    if not plan.beats:
+        raise PromoError("promo plan has no beats")
 
     storyboard_path = project.root / "out" / "promo" / "storyboard.png"
     notes: list[str] = []
@@ -631,8 +692,19 @@ def render_promo(
         words_json = scratch / "words.json"
         vo_asset_rel = project.assets.get("voiceover") or project.assets.get("vo")
         if vo_asset_rel and (project.root / vo_asset_rel).is_file():
-            audio.clean_voiceover(project.root / vo_asset_rel, output=vo_wav, target_lufs=-16.0)
-            words_json.write_text("[]", encoding="utf-8")
+            vo_src = project.root / vo_asset_rel
+            audio.clean_voiceover(vo_src, output=vo_wav, target_lufs=-16.0)
+            try:
+                extracted = extract_word_timestamps(vo_src)
+                words_json.write_text(
+                    json.dumps(
+                        [{"word": w.word, "start": w.start, "end": w.end} for w in extracted]
+                    ),
+                    encoding="utf-8",
+                )
+            except CaptionsError as error:
+                notes.append(f"captions skipped for pre-recorded VO: {error}")
+                words_json.write_text("[]", encoding="utf-8")
         else:
             voice_id = project.brand.voice.voice_id if project.brand.voice else "id-ID-ArdiNeural"
             voice_rate = project.brand.voice.rate if project.brand.voice else ""
@@ -713,6 +785,9 @@ def render_promo(
                     )
             elif beat.template:
                 html_out = scratch / f"beat-{idx:02d}-html.mov"
+                _render_solid_clip(
+                    base_clip, width=1920, height=1080, duration=clip_dur, color=primary_col
+                )
                 try:
                     html_res = render_html_motion(
                         beat.template,
@@ -723,16 +798,25 @@ def render_promo(
                         height=1080,
                         fps=30,
                         duration=clip_dur,
-                        transparent=False,
+                        transparent=True,
                     )
-                    _normalize_clip(
-                        html_res.output, base_clip, width=1920, height=1080, duration=clip_dur
-                    )
+                    if html_res.output.is_file():
+                        if html_res.transparent:
+                            composited = scratch / f"beat-{idx:02d}-html-comp.mp4"
+                            _composite_overlay(
+                                base_clip, html_res.output, composited, width=1920, height=1080
+                            )
+                            base_clip = composited
+                        else:
+                            _normalize_clip(
+                                html_res.output,
+                                base_clip,
+                                width=1920,
+                                height=1080,
+                                duration=clip_dur,
+                            )
                 except HtmlMotionError as error:
                     notes.append(f"html_motion fallback on beat {idx}: {error}")
-                    _render_solid_clip(
-                        base_clip, width=1920, height=1080, duration=clip_dur, color=primary_col
-                    )
             else:
                 _render_solid_clip(
                     base_clip, width=1920, height=1080, duration=clip_dur, color=primary_col
@@ -789,14 +873,25 @@ def render_promo(
         master_info = media.probe(master_video)
         master_dur = max(plan.total_duration, master_info.duration)
 
-        # 4. Mix voiceover + transition SFX at -14 LUFS.
+        # 4. Mix voiceover + optional ducked music + transition SFX at -14 LUFS.
         padded_vo = scratch / "vo-padded.wav"
         _pad_audio(vo_wav, padded_vo, total_duration=master_dur)
+        base_bed = padded_vo
+        music_path = _resolve_music_path(project)
+        if music_path is not None:
+            trimmed_music = scratch / "music-trimmed.wav"
+            _pad_audio(music_path, trimmed_music, total_duration=master_dur)
+            ducked_music = scratch / "music-ducked.wav"
+            audio.duck_music(trimmed_music, padded_vo, ducked_music)
+            vo_plus_music = scratch / "vo-plus-music.wav"
+            _mix_vo_and_music(padded_vo, ducked_music, vo_plus_music, total_duration=master_dur)
+            base_bed = vo_plus_music
+
         mixed_audio = scratch / "mixed-audio.wav"
         try:
             valid_cues = [cue for cue in sfx_cues if 0.0 <= cue.at <= master_dur]
             mix_transition_sfx(
-                padded_vo,
+                base_bed,
                 valid_cues,
                 output=mixed_audio,
                 total_duration=master_dur,
@@ -868,13 +963,47 @@ def render_promo(
 
 
 def _run_media_mcp_checks(path: Path) -> dict[str, Any]:
-    """Best-effort hook for media-mcp OCR/AV-sync verification when available."""
+    """Best-effort hook for media-mcp AV-sync verification when available."""
 
     default_root = str(Path.home() / ".clone" / "Github" / "SuperBypassUdinnn" / "media-mcp")
     media_mcp_root = Path(os.environ.get("MEDIA_MCP_ROOT", default_root))
-    if not media_mcp_root.is_dir():
-        return {"available": False, "reason": "media-mcp not installed"}
-    return {"available": True, "checked": str(path)}
+    python_bin = media_mcp_root / "media" / ".venv" / "bin" / "python"
+    server_py = media_mcp_root / "media" / "server.py"
+    if not python_bin.is_file() or not server_py.is_file():
+        return {"available": False, "status": "unavailable", "reason": "media-mcp not installed"}
+
+    probe_script = (
+        "import asyncio, json, sys\n"
+        "from media import server\n"
+        "async def run():\n"
+        "    await server.media_beats(sys.argv[1])\n"
+        "    res = await server.media_avsync(sys.argv[1])\n"
+        "    print(res)\n"
+        "asyncio.run(run())\n"
+    )
+    try:
+        completed = subprocess.run(
+            [str(python_bin), "-c", probe_script, str(path)],
+            cwd=str(media_mcp_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"available": True, "status": "error", "error": str(error)}
+
+    if completed.returncode != 0:
+        return {
+            "available": True,
+            "status": "error",
+            "error": (completed.stderr or completed.stdout or "").strip()[-400:],
+        }
+    return {
+        "available": True,
+        "status": "ok",
+        "avsync": completed.stdout.strip()[-800:],
+    }
 
 
 def qc_promo(

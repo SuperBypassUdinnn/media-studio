@@ -101,9 +101,13 @@ def register_promo_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _read_script_arg(value: str) -> str:
-    candidate = Path(value)
-    if candidate.is_file():
-        return candidate.read_text(encoding="utf-8")
+    if "\n" not in value and len(value) < 256:
+        try:
+            candidate = Path(value)
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+        except OSError:
+            pass
     return value
 
 

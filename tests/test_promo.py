@@ -419,3 +419,212 @@ def test_cli_promo_plan_render_gate_and_qc_error(
     assert rc_qc == 1
     captured_qc = capsys.readouterr()
     assert "error:" in captured_qc.err
+
+
+def test_render_promo_rejects_empty_beats(tmp_path: Path) -> None:
+    root = _make_promo_project(tmp_path)
+    project = load_project(root)
+    empty_plan = PromoPlan(
+        project_slug="demo-promo",
+        aspects=("9:16", "16:9"),
+        script="Empty",
+        beats=(),
+        estimated_gen_calls=0,
+        references=(),
+        total_duration=0.0,
+    )
+
+    with pytest.raises(PromoError, match="no beats"):
+        render_promo(project, empty_plan, auto=True)
+
+
+def test_render_promo_ducks_music_and_extracts_prerecorded_vo_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _make_promo_project(tmp_path, with_assets=True)
+    vo_file = root / "assets" / "audio" / "vo.wav"
+    bgm_file = root / "assets" / "music" / "bgm.wav"
+    _ffmpeg_test_wav(vo_file, 2.0)
+    _ffmpeg_test_wav(bgm_file, 2.0)
+
+    manifest_path = root / "project.yaml"
+    manifest_data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest_data["assets"]["voiceover"] = "assets/audio/vo.wav"
+    manifest_data["assets"]["bgm"] = "assets/music/bgm.wav"
+    manifest_path.write_text(yaml.safe_dump(manifest_data, sort_keys=False), encoding="utf-8")
+
+    project = load_project(root)
+    plan = plan_promo(project, script="Hook. Problem. Demo. Proof. CTA.", target_duration=2.0)
+
+    duck_calls: list[tuple[Path, Path]] = []
+    extract_calls: list[Path] = []
+
+    def _fake_clean_vo(source: Path, *, output: Path, **_kwargs: object) -> Path:
+        _ffmpeg_test_wav(output, 2.0)
+        return output
+
+    def _fake_extract(media_path: Path) -> list[WordTiming]:
+        extract_calls.append(media_path)
+        return [WordTiming("Hello", 0.1, 0.5)]
+
+    def _fake_duck(music_path: Path, voice_path: Path, output_path: Path, **_kw: object) -> Path:
+        duck_calls.append((music_path, voice_path))
+        _ffmpeg_test_wav(output_path, 2.0)
+        return output_path
+
+    def _fake_probe(_path: Path) -> object:
+        return type("Info", (), {"duration": 2.0, "width": 1920, "height": 1080, "fps": 30.0})()
+
+    monkeypatch.setattr("media_studio.promo.audio.clean_voiceover", _fake_clean_vo)
+    monkeypatch.setattr("media_studio.promo.extract_word_timestamps", _fake_extract)
+    monkeypatch.setattr("media_studio.promo.audio.duck_music", _fake_duck)
+    monkeypatch.setattr(
+        "media_studio.promo.generate_asset",
+        lambda *_a, output, **_kw: GenResult(
+            output=output,
+            kind="video",
+            provider="mock",
+            model="m",
+            seed=1,
+            prompt="p",
+            references=(),
+            sha256="0" * 64,
+            size_bytes=1,
+            duration=1.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "media_studio.promo.render_html_motion",
+        lambda _t, *, output, **_kw: HtmlMotionResult(
+            output=output,
+            template="t",
+            width=1920,
+            height=1080,
+            fps=30,
+            frames=30,
+            duration=1.0,
+            transparent=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "media_studio.promo.render_promo_preset",
+        lambda _p, output, **_kw: MotionResult(
+            output=output,
+            ecp_path=output.with_suffix(".ecp"),
+            report_path=output.with_suffix(".report.json"),
+            report={"ok": False},
+        ),
+    )
+    monkeypatch.setattr("media_studio.promo._normalize_clip", lambda _s, out, **_kw: out)
+    monkeypatch.setattr("media_studio.promo._render_solid_clip", lambda out, **_kw: out)
+    monkeypatch.setattr(
+        "media_studio.promo.apply_transition", lambda _a, _b, *, output, **_kw: output
+    )
+    monkeypatch.setattr("media_studio.promo.media.probe", _fake_probe)
+    monkeypatch.setattr("media_studio.promo._pad_audio", lambda _s, out, **_kw: out)
+    monkeypatch.setattr("media_studio.promo._mix_vo_and_music", lambda _v, _m, out, **_kw: out)
+    monkeypatch.setattr(
+        "media_studio.promo.mix_transition_sfx", lambda _b, _c, *, output, **_kw: output
+    )
+    monkeypatch.setattr("media_studio.promo.reframe_video", lambda _s, *, output, **_kw: output)
+    monkeypatch.setattr("media_studio.promo._mux_video_and_audio", lambda _v, _a, out: out)
+    monkeypatch.setattr("media_studio.promo.render_captions", lambda _s, *, output, **_kw: output)
+    monkeypatch.setattr(
+        "media_studio.promo.video.encode_with_loudness", lambda _i, d, *_a, **_kw: d
+    )
+    monkeypatch.setattr("media_studio.promo.video.qc_report", lambda _p, **_kw: {"ok": True})
+
+    res = render_promo(project, plan, auto=True, deliverables=("reel-9x16",), force=True)
+    assert res.gated is False
+    assert extract_calls == [vo_file]
+    assert len(duck_calls) == 1
+    assert duck_calls[0][0].name == "music-trimmed.wav"
+    assert duck_calls[0][1].name == "vo-padded.wav"
+
+
+def test_render_promo_prerecorded_vo_handles_captions_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from media_studio.captions import CaptionsError
+
+    root = _make_promo_project(tmp_path, with_assets=True)
+    vo_file = root / "assets" / "audio" / "vo.wav"
+    _ffmpeg_test_wav(vo_file, 2.0)
+    manifest_path = root / "project.yaml"
+    manifest_data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest_data["assets"]["voiceover"] = "assets/audio/vo.wav"
+    manifest_path.write_text(yaml.safe_dump(manifest_data, sort_keys=False), encoding="utf-8")
+
+    project = load_project(root)
+    plan = plan_promo(project, script="Hook. Problem. Demo. Proof. CTA.", target_duration=2.0)
+
+    monkeypatch.setattr(
+        "media_studio.promo.audio.clean_voiceover", lambda _s, *, output, **_kw: output
+    )
+
+    def _fail_extract(_path: Path) -> list[WordTiming]:
+        raise CaptionsError("no whisper")
+
+    monkeypatch.setattr("media_studio.promo.extract_word_timestamps", _fail_extract)
+    monkeypatch.setattr(
+        "media_studio.promo.generate_asset",
+        lambda *_a, output, **_kw: GenResult(
+            output=output,
+            kind="video",
+            provider="mock",
+            model="m",
+            seed=1,
+            prompt="p",
+            references=(),
+            sha256="0" * 64,
+            size_bytes=1,
+            duration=1.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "media_studio.promo.render_html_motion",
+        lambda _t, *, output, **_kw: HtmlMotionResult(
+            output=output,
+            template="t",
+            width=1920,
+            height=1080,
+            fps=30,
+            frames=30,
+            duration=1.0,
+            transparent=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "media_studio.promo.render_promo_preset",
+        lambda _p, output, **_kw: MotionResult(
+            output=output,
+            ecp_path=output.with_suffix(".ecp"),
+            report_path=output.with_suffix(".report.json"),
+            report={"ok": False},
+        ),
+    )
+    monkeypatch.setattr("media_studio.promo._normalize_clip", lambda _s, out, **_kw: out)
+    monkeypatch.setattr("media_studio.promo._render_solid_clip", lambda out, **_kw: out)
+    monkeypatch.setattr(
+        "media_studio.promo.apply_transition", lambda _a, _b, *, output, **_kw: output
+    )
+    monkeypatch.setattr(
+        "media_studio.promo.media.probe",
+        lambda _p: type(
+            "Info", (), {"duration": 2.0, "width": 1920, "height": 1080, "fps": 30.0}
+        )(),
+    )
+    monkeypatch.setattr("media_studio.promo._pad_audio", lambda _s, out, **_kw: out)
+    monkeypatch.setattr(
+        "media_studio.promo.mix_transition_sfx", lambda _b, _c, *, output, **_kw: output
+    )
+    monkeypatch.setattr("media_studio.promo.reframe_video", lambda _s, *, output, **_kw: output)
+    monkeypatch.setattr("media_studio.promo._mux_video_and_audio", lambda _v, _a, out: out)
+    monkeypatch.setattr(
+        "media_studio.promo.video.encode_with_loudness", lambda _i, d, *_a, **_kw: d
+    )
+    monkeypatch.setattr("media_studio.promo.video.qc_report", lambda _p, **_kw: {"ok": True})
+
+    res = render_promo(project, plan, auto=True, deliverables=("master-16x9",), force=True)
+    assert res.gated is False
+    assert any("captions skipped for pre-recorded VO" in n for n in res.notes)
