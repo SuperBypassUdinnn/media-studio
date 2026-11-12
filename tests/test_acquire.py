@@ -21,6 +21,8 @@ from media_studio.acquire import (
     manual_request_message,
 )
 from media_studio.library import LibraryEntry
+from media_studio.search import SearchError, SearchOutcome
+from media_studio.sources.base import Candidate
 
 SAMPLE_RATE = 44100
 
@@ -116,6 +118,61 @@ class TestAcquireAsset:
             )
 
         assert result is None
+
+
+class TestSearchExternal:
+    def _outcome(self, candidates: tuple[Candidate, ...]) -> SearchOutcome:
+        return SearchOutcome(
+            query="forest demo",
+            kind="video",
+            searched_at="2026-11-12T00:00:00+00:00",
+            candidates=candidates,
+            reports=(),
+        )
+
+    def test_acquire_search_external_delegates_to_search_and_ranks_cc0(self) -> None:
+        from media_studio import acquire
+
+        candidates = (
+            Candidate(
+                source="by-source",
+                identifier="clip-by",
+                title="forest clip attribution",
+                kind="video",
+                license_text="CC BY 4.0",
+                download_url="https://example.com/by.mp4",
+            ),
+            Candidate(
+                source="cc0-source",
+                identifier="clip-cc0",
+                title="forest clip",
+                kind="video",
+                license_text="CC0",
+                download_url="https://example.com/cc0.mp4",
+            ),
+        )
+        outcome = self._outcome(candidates)
+
+        with patch("media_studio.acquire.search.run_search", return_value=outcome) as run_search:
+            ranked = acquire._search_external(type="video", tags=["forest", "demo"])
+
+        run_search.assert_called_once_with("forest demo", "video")
+        assert ranked is not None
+        assert [candidate["license"] for candidate in ranked] == ["CC0", "CC BY 4.0"]
+        assert ranked[0]["key"] == "cc0-source:clip-cc0"
+
+    def test_acquire_search_external_returns_none_when_empty_or_offline(self) -> None:
+        from media_studio import acquire
+
+        with patch("media_studio.acquire.search.run_search", return_value=self._outcome(())):
+            assert acquire._search_external(type="music", tags=["bed"]) is None
+
+        with patch("media_studio.acquire.search.run_search", side_effect=SearchError("offline")):
+            assert acquire._search_external(type="audio", tags=["sfx"]) is None
+
+        with patch("media_studio.acquire.search.run_search") as run_search:
+            assert acquire._search_external(type="font", tags=[]) is None
+        run_search.assert_not_called()
 
 
 class TestManualRequestMessage:

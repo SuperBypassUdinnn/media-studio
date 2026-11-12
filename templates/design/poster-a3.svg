@@ -2,12 +2,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
      width="{{width}}" height="{{height}}" viewBox="0 0 {{width}} {{height}}">
   <rect id="bg" data-bg="true" x="0" y="0" width="{{width}}" height="{{height}}" fill="{{primary}}"/>
-  <rect id="safe" data-safe="true" x="200" y="200" width="2080" height="3108" fill="none" stroke="none"/>
-  <text id="headline" data-role="text" x="200" y="1400" font-family="{{font_heading}}" font-size="200"
-        font-weight="700" fill="{{ink}}">{{headline}}</text>
-  <text id="subhead" data-role="text" x="200" y="1560" font-family="{{font_body}}" font-size="72"
+  <image id="foreground" x="{{foreground_x}}" y="{{foreground_y}}" width="{{foreground_w}}"
+         height="{{foreground_h}}" preserveAspectRatio="{{foreground_preserve}}"
+         xlink:href="{{foreground_href}}"/>
+  <rect id="safe" data-safe="true" x="{{safe_x}}" y="{{safe_y}}" width="{{safe_w}}"
+        height="{{safe_h}}" fill="none" stroke="none"/>
+  <text id="headline" data-role="text" x="{{safe_x}}" y="{{headline_y}}"
+        font-family="{{font_heading}}" font-size="{{headline_size}}" font-weight="700"
+        fill="{{ink}}">{{headline}}</text>
+  <text id="subhead" data-role="text" x="{{safe_x}}" y="{{subhead_y}}"
+        font-family="{{font_body}}" font-size="{{subhead_size}}"
         fill="{{ink}}">{{subhead}}</text>
-  <rect id="rule" x="200" y="1640" width="600" height="10" fill="{{accent}}"/>
-  <image id="logo" x="200" y="3000" width="480" height="240" preserveAspectRatio="xMinYMax meet"
-         xlink:href="{{logo_href}}"/>
+  <rect id="rule" x="{{safe_x}}" y="{{rule_y}}" width="{{rule_w}}" height="{{rule_h}}"
+        fill="{{accent}}"/>
+  <image id="logo" x="{{logo_x}}" y="{{logo_y}}" width="{{logo_w}}" height="{{logo_h}}"
+         preserveAspectRatio="xMinYMax meet" xlink:href="{{logo_href}}"/>
 </svg>

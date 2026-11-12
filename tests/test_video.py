@@ -11,11 +11,15 @@ import re
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 from xml.etree import ElementTree
 
 import pytest
 
 from media_studio import media, mlt, video
+from media_studio.fcproj import CompilerError
+from media_studio.filmcraft import FilmCraftRunner
 from media_studio.ledger import stage_asset
 from media_studio.manifest import Project, load_project
 from media_studio.mlt import AudioPlan, Clip, Timeline
@@ -802,3 +806,160 @@ def test_scene_ranges_without_cuts_cover_everything() -> None:
 def test_detect_scene_cuts_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(video.VideoError, match="no such file"):
         video.detect_scene_cuts(tmp_path / "ghost.mp4")
+
+
+def _clamp_project(tmp_path: Path, music_duration: float | None) -> Project:
+    """A 15 s edit over a 45 s music bed entered 30 s in."""
+
+    sources = tmp_path / "sources"
+    sources.mkdir(parents=True, exist_ok=True)
+    generate(
+        sources / "long-shot.mp4",
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=24:duration=15",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+        ],
+    )
+    generate(
+        sources / "music45.wav",
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=220:duration=45:sample_rate=48000",
+            "-c:a",
+            "pcm_s16le",
+        ],
+    )
+    root = scaffold_project("clamp-demo", root=tmp_path).path
+    project = load_project(root)
+    shot = stage_asset(
+        project,
+        class_name="video",
+        license_text="CC0",
+        local_file=sources / "long-shot.mp4",
+        provider="fixture",
+        retrieved_at="2026-10-24T00:00:00+00:00",
+    )
+    music = stage_asset(
+        project,
+        class_name="music",
+        license_text="CC0",
+        local_file=sources / "music45.wav",
+        provider="fixture",
+        retrieved_at="2026-10-24T00:00:00+00:00",
+    )
+    duration_line = f", duration: {music_duration}" if music_duration is not None else ""
+    manifest = f"""slug: clamp-demo
+title: Clamp Demo
+deliverables:
+  - id: master
+    kind: video
+    resolution: 320x180
+    fps: 24
+    duration: 15.0
+    preview: true
+assets:
+  shot: {shot.relative}
+  music: {music.relative}
+video:
+  shots:
+    - {{ asset: shot, duration: 15.0 }}
+  music: {{ asset: music, in: 30.0, gain: 0.6{duration_line} }}
+"""
+    (root / "project.yaml").write_text(manifest, encoding="utf-8")
+    return load_project(root)
+
+
+def _music_entries(
+    timeline: Timeline,
+) -> tuple[list[ElementTree.Element], list[ElementTree.Element]]:
+    root = ElementTree.fromstring(timeline.to_xml())
+    playlist = next(
+        element for element in root.findall("playlist") if element.get("id") == "music_playlist"
+    )
+    return playlist.findall("entry"), playlist.findall("blank")
+
+
+def test_audio_cue_clamps_long_music_to_video_duration_with_offset(tmp_path: Path) -> None:
+    """in_point=30 on a 45 s bed must not spill a 15 s edit past its last frame."""
+
+    project = _clamp_project(tmp_path, music_duration=20.0)
+    timeline, _evidence = video.build_timeline(project, project.deliverables[0])
+
+    assert timeline.duration == pytest.approx(15.0, abs=0.01)
+    assert timeline.music is not None
+    assert timeline.music.duration == pytest.approx(15.0)
+    assert timeline.music.in_point == pytest.approx(30.0)
+
+    entries, blanks = _music_entries(timeline)
+    assert int(entries[0].get("in", "0")) == mlt.frames(30.0, 24)
+    span = int(entries[-1].get("out", "0")) - int(entries[0].get("in", "0")) + 1
+    # Requested 20 s exceed what the source has left (15 s), which is exactly the edit
+    # length: the bed must not be cut short of the video.
+    assert span == mlt.frames(15.0, 24)
+    assert blanks == []  # a full-length bed needs no padding
+
+    # A shorter requested length is honoured, and the track is padded to the length of
+    # the edit so the playlist never ends before the picture does.
+    shorter = _clamp_project(tmp_path / "shorter", music_duration=10.0)
+    short_timeline, _ = video.build_timeline(shorter, shorter.deliverables[0])
+    assert short_timeline.music is not None
+    assert short_timeline.music.duration == pytest.approx(10.0)
+    short_entries, short_blanks = _music_entries(short_timeline)
+    short_span = int(short_entries[-1].get("out", "0")) - int(short_entries[0].get("in", "0")) + 1
+    assert short_span == mlt.frames(10.0, 24)
+    assert [int(blank.get("length", "0")) for blank in short_blanks] == [
+        mlt.frames(15.0, 24) - mlt.frames(10.0, 24)
+    ]
+
+
+def test_video_render_force_overwrites_existing_fcproj(
+    project_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = load_project(project_root)
+    target = project.root / "out" / "master.fcproj"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("manual GUI edits live here", encoding="utf-8")
+    runner = MagicMock(spec=FilmCraftRunner)
+
+    with pytest.raises(CompilerError, match="already exists"):
+        video.render_filmcraft(project, runner=runner, generate_review=False)
+    assert target.read_text(encoding="utf-8") == "manual GUI edits live here"
+
+    forced: list[bool] = []
+
+    def fake_compile(
+        project: Project,
+        output_fcproj: Path | None = None,
+        deliverable_id: str | None = None,
+        runner: FilmCraftRunner | None = None,
+        force: bool = False,
+    ) -> SimpleNamespace:
+        forced.append(force)
+        assert output_fcproj is not None
+        output_fcproj.write_text("rebuilt by the compiler", encoding="utf-8")
+        return SimpleNamespace(output_path=output_fcproj)
+
+    monkeypatch.setattr(video, "compile_manifest_to_fcproj", fake_compile)
+    monkeypatch.setattr(
+        video,
+        "qc_report",
+        lambda *args, **kwargs: {"checks": {}, "ok": True, "problems": []},
+    )
+    runner.export.return_value = SimpleNamespace(
+        render_path="cpu", gpu_fallback_to_cpu=False, details={}, returncode=0
+    )
+
+    result = video.render_filmcraft(project, runner=runner, force=True, generate_review=False)
+
+    assert forced == [True]
+    assert target.read_text(encoding="utf-8") == "rebuilt by the compiler"
+    assert result.fcproj_path == target

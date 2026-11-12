@@ -28,6 +28,15 @@ MIN_LARGE_CONTRAST = 3.0
 LARGE_TEXT_SIZE = 32.0
 DEFAULT_TOKENS = {"primary": "#101010", "accent": "#C8A24A", "ink": "#FFFFFF"}
 FONT_ROLES = ("heading", "body")
+# The safe area is a fraction of the canvas, so a 9:16 story and a square post keep the
+# same optical margin instead of a fixed pixel box that dwarfs a small canvas.
+SAFE_RATIOS = {
+    "social-post": (0.05, 0.05),
+    "video-thumbnail": (0.05, 0.05),
+    "poster-a3": (0.08, 0.057),
+}
+DEFAULT_SAFE_RATIO = (0.05, 0.05)
+FIT_PRESERVE = {"contain": "xMidYMid meet", "cover": "xMidYMid slice"}
 
 
 class DesignError(RuntimeError):
@@ -99,6 +108,94 @@ def font_families(project: Project, environment: dict[str, str]) -> dict[str, st
     return families
 
 
+def safe_box(template: str, width: int, height: int) -> tuple[int, int, int, int]:
+    """The template's safe area as a proportional box inside the canvas."""
+
+    x_ratio, y_ratio = SAFE_RATIOS.get(template, DEFAULT_SAFE_RATIO)
+    x = round(width * x_ratio)
+    y = round(height * y_ratio)
+    return x, y, width - 2 * x, height - 2 * y
+
+
+def _foreground_box(
+    width: int,
+    height: int,
+    safe: tuple[int, int, int, int],
+    position: str,
+) -> tuple[int, int, int, int]:
+    """Where the variant's cutout image sits, inside the safe area."""
+
+    safe_x, safe_y, safe_w, safe_h = safe
+    if position == "full":
+        return safe_x, safe_y, safe_w, safe_h
+    box_w = round(safe_w * 0.5)
+    box_h = round(safe_h * 0.5)
+    box_y = safe_y + (safe_h - box_h) // 2
+    if position == "left":
+        return safe_x, box_y, box_w, box_h
+    if position == "center":
+        return safe_x + (safe_w - box_w) // 2, box_y, box_w, box_h
+    return safe_x + safe_w - box_w, box_y, box_w, box_h
+
+
+def _layout(variant: VariantSpec, template: str) -> dict[str, str]:
+    """Canvas-dependent anchors and type sizes, resolved from the safe-area box."""
+
+    width, height = variant.width, variant.height
+    safe_x, safe_y, safe_w, safe_h = safe_box(template, width, height)
+    headline_size = variant.headline_size or round(height * 0.08)
+    subhead_size = variant.subhead_size or round(height * 0.037)
+    layout = {
+        "safe_x": str(safe_x),
+        "safe_y": str(safe_y),
+        "safe_w": str(safe_w),
+        "safe_h": str(safe_h),
+        "headline_size": str(headline_size),
+        "subhead_size": str(subhead_size),
+        "headline_y": str(safe_y + round(safe_h * 0.48)),
+        "subhead_y": str(safe_y + round(safe_h * 0.648)),
+        "bar_y": str(safe_y + round(safe_h * 0.565)),
+        "bar_w": str(round(safe_w * 0.185)),
+        "bar_h": str(max(round(height * 0.011), 1)),
+        "logo_x": str(safe_x),
+        "logo_y": str(safe_y + round(safe_h * 0.78)),
+        "logo_w": str(round(safe_w * 0.235)),
+        "logo_h": str(round(safe_w * 0.235)),
+        "band_y": str(safe_y + round(safe_h * 0.66)),
+        "band_h": str(height - (safe_y + round(safe_h * 0.66))),
+    }
+    if template == "video-thumbnail":
+        logo_size = round(safe_h * 0.235)
+        layout.update(
+            headline_y=str(safe_y + round(safe_h * 0.40)),
+            subhead_y=str(safe_y + round(safe_h * 0.82)),
+            logo_x=str(safe_x + safe_w - logo_size),
+            logo_y=str(safe_y),
+            logo_w=str(logo_size),
+            logo_h=str(logo_size),
+        )
+    elif template == "poster-a3":
+        layout.update(
+            rule_y=str(safe_y + round(safe_h * 0.69)),
+            rule_w=str(round(safe_w * 0.204)),
+            rule_h=str(max(round(height * 0.002), 1)),
+            logo_y=str(safe_y + round(safe_h * 0.90)),
+            logo_w=str(round(safe_w * 0.163)),
+            logo_h=str(round(safe_h * 0.055)),
+        )
+    return layout
+
+
+def _asset_href(project: Project, asset_id: str, role: str) -> str:
+    relative = project.assets.get(asset_id)
+    if not relative:
+        raise DesignError(f"{role} names asset {asset_id!r}, which is undeclared")
+    path = project.root / relative
+    if not path.is_file():
+        raise DesignError(f"{role} is not staged at {relative}")
+    return path.as_uri()
+
+
 def compose(project: Project, variant: VariantSpec, environment: dict[str, str]) -> str:
     """Substitute a template with brand tokens, fonts, and the variant's words."""
 
@@ -112,15 +209,13 @@ def compose(project: Project, variant: VariantSpec, environment: dict[str, str])
 
     logo_href = ""
     if project.design is not None and project.design.logo:
-        relative = project.assets.get(project.design.logo)
-        if not relative:
-            raise DesignError(
-                f"design.logo names asset {project.design.logo!r}, which is undeclared"
-            )
-        logo_path = project.root / relative
-        if not logo_path.is_file():
-            raise DesignError(f"logo is not staged at {relative}")
-        logo_href = logo_path.as_uri()
+        logo_href = _asset_href(project, project.design.logo, "design.logo")
+
+    foreground_href = ""
+    if variant.image:
+        foreground_href = _asset_href(
+            project, variant.image, f"design.variants[{variant.id}].image"
+        )
 
     values = {
         "width": str(variant.width),
@@ -133,7 +228,24 @@ def compose(project: Project, variant: VariantSpec, environment: dict[str, str])
         "font_heading": families["heading"],
         "font_body": families["body"],
         "logo_href": logo_href,
+        "foreground_href": foreground_href,
+        "foreground_preserve": FIT_PRESERVE[variant.image_fit],
+        **_layout(variant, variant.template),
     }
+    foreground_x, foreground_y, foreground_w, foreground_h = _foreground_box(
+        variant.width,
+        variant.height,
+        safe_box(variant.template, variant.width, variant.height),
+        variant.image_position,
+    )
+    values.update(
+        {
+            "foreground_x": str(foreground_x),
+            "foreground_y": str(foreground_y),
+            "foreground_w": str(foreground_w),
+            "foreground_h": str(foreground_h),
+        }
+    )
     composed = load_template(variant.template)
     for name, value in values.items():
         composed = composed.replace(f"{{{{{name}}}}}", value)
@@ -141,6 +253,8 @@ def compose(project: Project, variant: VariantSpec, environment: dict[str, str])
     if not logo_href:
         # Drop the image element rather than leave an empty href behind.
         composed = re.sub(r"<image id=\"logo\".*?/>", "", composed, flags=re.DOTALL)
+    if not foreground_href:
+        composed = re.sub(r"<image id=\"foreground\".*?/>", "", composed, flags=re.DOTALL)
     return composed
 
 

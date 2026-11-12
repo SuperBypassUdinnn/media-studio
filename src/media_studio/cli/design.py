@@ -34,7 +34,7 @@ def register_design_parser(subparsers: argparse._SubParsersAction) -> None:
     design_sub = design.add_subparsers(dest="design_command", required=True)
     draw = design_sub.add_parser("render", help="compose and export every declared variant")
     draw.add_argument("project", help="project path or slug")
-    draw.add_argument("--variant", default=None, help="render only this variant")
+    draw.add_argument("--variant", "--deliverable", default=None, help="render only this variant")
     draw.add_argument("--check-only", action="store_true", help="check what is already rendered")
     draw.set_defaults(func=cmd_design_render)
 

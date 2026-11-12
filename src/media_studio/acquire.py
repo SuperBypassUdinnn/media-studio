@@ -23,9 +23,10 @@ import tempfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
-from . import audio
+from . import audio, search
 from .library import (
     LIBRARY_ROOT,
     LibraryEntry,
@@ -53,14 +54,24 @@ class AcquireResult:
     source: str
 
 
-def _search_external(*, type: str, tags: list[str]) -> None:
-    """Stub for external API search.
+def _search_external(*, type: str, tags: list[str]) -> list[dict[str, Any]] | None:
+    """Delegate search to external API providers via search.run_search when tags are present.
 
-    Actual API integrations are beyond the scope of this task, so this always
-    returns ``None`` and the pipeline falls through to manual fallback.
+    Returns ranked candidate dicts (preferring CC0 / non-quarantined licenses) when non-empty,
+    or None when empty, offline, or unmapped type.
     """
 
-    return None
+    if not tags or type not in ("image", "video", "audio", "music"):
+        return None
+    query = " ".join(tags)
+    try:
+        outcome = search.run_search(query, type)
+    except search.SearchError:
+        return None
+    if not outcome or not outcome.candidates:
+        return None
+    candidates = search.rank_candidates(list(outcome.candidates), query)
+    return [candidate.to_dict() for candidate in candidates]
 
 
 def acquire_asset(

@@ -859,8 +859,12 @@ def title_sequence(
     animation: str = "fade_in_up",
     glow: bool = False,
     glow_intensity: float = 0.5,
+    transparent: bool = True,
 ) -> MotionResult:
     """Generate an animated title sequence with alpha channel."""
+    output = Path(output).resolve()
+    if transparent:
+        output = output.with_suffix(".mov")
     spec = {
         "width": width,
         "height": height,

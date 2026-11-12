@@ -25,7 +25,7 @@ from .fcproj import compile_manifest_to_fcproj
 from .filmcraft import ExportResult, FilmCraftError, FilmCraftRunner
 from .ingest import IngestError, probe_media
 from .ledger import read_sidecar
-from .manifest import AudioCue, Deliverable, Project, VideoPlan
+from .manifest import AudioCue, Deliverable, Project, VideoPlan, audio_span
 from .mlt import AudioPlan, Clip, Timeline, Title, ducking_from_speech, timeline_seconds
 from .parallax import ParallaxError, compose_parallax
 from .presets import PresetError, resolve_effects
@@ -123,8 +123,20 @@ def _shot_duration(project: Project, asset_id: str, declared: float | None) -> f
     return round(media.probe(_resolve_asset(project, asset_id)).duration, 3) or DEFAULT_SHOT_SECONDS
 
 
+def _source_seconds(path: Path) -> float | None:
+    """Best-effort source length; an unprobeable file leaves the cue unclamped by the source."""
+
+    try:
+        return media.probe(path).duration
+    except media.MediaError:
+        return None
+
+
 def _audio_plan(
-    project: Project, cue: AudioCue | None, ducking: tuple[tuple[float, float], ...] = ()
+    project: Project,
+    cue: AudioCue | None,
+    video_seconds: float,
+    ducking: tuple[tuple[float, float], ...] = (),
 ) -> AudioPlan | None:
     if cue is None:
         return None
@@ -136,6 +148,7 @@ def _audio_plan(
         fade_in=cue.fade_in,
         fade_out=cue.fade_out,
         ducking=ducking if cue.duck else (),
+        duration=audio_span(cue, video_seconds, _source_seconds(path)),
     )
 
 
@@ -200,9 +213,9 @@ def build_timeline(
             "speech_segments": [list(segment) for segment in speech],
             "source": "silencedetect on the voice track",
         }
-    voice_plan = _audio_plan(project, plan.voice)
+    voice_plan = _audio_plan(project, plan.voice, duration)
 
-    music = _audio_plan(project, plan.music, ducking)
+    music = _audio_plan(project, plan.music, duration, ducking)
     if music is not None and music_overrides:
         music = replace(music, **music_overrides)
 
@@ -665,6 +678,7 @@ def render_filmcraft(
     generate_review: bool = True,
     preview: bool = False,
     burn_captions: bool = False,
+    force: bool = False,
 ) -> FilmCraftRenderResult:
     if isinstance(deliverable_id, Deliverable):
         deliverable = deliverable_id
@@ -693,6 +707,7 @@ def render_filmcraft(
                 output_fcproj=fcproj_path,
                 deliverable_id=deliverable.id,
                 runner=runner,
+                force=force,
             )
 
     extension = deliverable.container or "mp4"

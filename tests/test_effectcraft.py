@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from media_studio.effectcraft import (
     EffectCraftError,
+    MotionResult,
     build_ecp,
     check_installation,
     logo_reveal,
@@ -320,6 +322,35 @@ def test_integration_lyric_overlay(tmp_path):
     result = lyric_overlay([(0.0, 1.0, "line one")], out, ecp, style="default")
     assert result.ok, result.report
     assert out.exists()
+
+
+def test_relative_out_path_resolves_cleanly_and_coerces_mov_for_alpha(tmp_path, monkeypatch):
+    """A relative .mp4 destination becomes an absolute .mov path for alpha output."""
+
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_render(project_path, output, *, fps=30.0, transparent=True):
+        seen["output"] = Path(output)
+        seen["transparent"] = transparent
+        return MotionResult(
+            output=Path(output),
+            ecp_path=Path(project_path),
+            report_path=Path(output).with_suffix(".json"),
+            report={"ok": True},
+        )
+
+    monkeypatch.setattr("media_studio.effectcraft.check_installation", lambda: None)
+    monkeypatch.setattr("media_studio.effectcraft.render", fake_render)
+
+    result = title_sequence("Hi", Path("out") / "title.mp4", Path("out") / "title.ecp")
+
+    expected = (tmp_path / "out" / "title.mov").resolve()
+    assert result.output == expected
+    assert expected.is_absolute()
+    assert seen["output"] == expected
+    assert seen["transparent"] is True
+    assert (tmp_path / "out" / "title.ecp").is_file()
 
 
 def test_motion_templates_match_design():
