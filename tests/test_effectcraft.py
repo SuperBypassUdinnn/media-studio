@@ -686,12 +686,36 @@ def test_promo_preset_scales_positions_and_font_sizes(tmp_path, monkeypatch):
         assert comp["width"] == width
         assert comp["height"] == height
         title = next(layer for layer in spec["layers"] if layer["name"] == "title")
-        assert abs(title["params"]["font_size"] - 0.075 * height) <= 1
+        assert abs(title["params"]["font_size"] - 0.075 * min(width, height)) <= 1
         assert abs(title["params"]["position"][0] - 0.5 * width) <= 1
         assert abs(title["params"]["position"][1] - 0.42 * height) <= 1
         pill = next(layer for layer in spec["layers"] if layer["name"] == "hook-pill")
         assert abs(pill["params"]["width"] - 0.92 * width) <= 1
         assert abs(pill["params"]["height"] - 0.06 * height) <= 1
+
+
+def test_promo_preset_fits_long_cta_text_inside_width(tmp_path, monkeypatch):
+    """Long title text on portrait is shrunk (floor 24px) to fit 84% of width."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    long_text = "Launch your next campaign with Media Studio today."
+    render_promo_preset(
+        "promo-cta-endcard",
+        tmp_path / "out.mov",
+        text=long_text,
+        width=1080,
+        height=1920,
+    )
+    spec = seen["spec"]
+    cta = next(layer for layer in spec["layers"] if layer["name"] == "cta")
+    font_size = cta["params"]["font_size"]
+    # font_size is an absolute px value, floored at 24, and the text fits 84% width.
+    assert 24 <= font_size <= 0.060 * min(1080, 1920)
+    assert cta["params"]["text"]  # text preserved (possibly wrapped)
+    rendered_width = len(cta["params"]["text"].split("\n")[0]) * font_size * 0.55
+    assert rendered_width <= 1080 * 0.84 + 1
 
 
 def test_promo_preset_injects_brand_palette_tokens(tmp_path, monkeypatch):

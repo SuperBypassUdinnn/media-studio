@@ -1057,6 +1057,9 @@ def _scale_promo_params(params: dict[str, Any], width: int, height: int) -> None
 
     Any ``position`` component, ``width``/``height`` or ``font_size`` in
     ``[0, 1]`` is treated as a fraction of the matching canvas dimension.
+    ``font_size`` scales against ``min(width, height)`` so portrait canvases
+    do not oversize text, and long title text is shrunk (floored at 24px) or
+    wrapped onto two lines so it always fits inside 84% of the canvas width.
     """
 
     position = params.get("position")
@@ -1072,7 +1075,34 @@ def _scale_promo_params(params: dict[str, Any], width: int, height: int) -> None
             params[key] = round(value * (width if key == "width" else height))
     size = params.get("font_size")
     if isinstance(size, (int, float)) and 0 < size <= 1:
-        params["font_size"] = round(size * height)
+        params["font_size"] = round(size * min(width, height))
+    _fit_promo_text(params, width)
+
+
+def _fit_promo_text(params: dict[str, Any], width: int) -> None:
+    """Shrink or wrap a text layer's ``text`` so it fits inside 84% of width.
+
+    Estimated glyph width is ``0.55 * font_size`` per character. When the text
+    is too wide, ``font_size`` is scaled down proportionally (floored at 24px);
+    if it still overflows at the floor, the text is wrapped onto two lines.
+    """
+
+    text = params.get("text")
+    if not isinstance(text, str) or not text:
+        return
+    font_size = params.get("font_size")
+    if not isinstance(font_size, (int, float)) or font_size <= 0:
+        return
+    max_width = width * 0.84
+    if len(text) * font_size * 0.55 <= max_width:
+        return
+    new_size = max(24, round(max_width / (len(text) * 0.55)))
+    params["font_size"] = new_size
+    if len(text) * new_size * 0.55 > max_width:
+        words = text.split()
+        if len(words) > 1:
+            mid = len(words) // 2
+            params["text"] = " ".join(words[:mid]) + "\n" + " ".join(words[mid:])
 
 
 def render_promo_preset(

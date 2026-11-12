@@ -8,6 +8,7 @@ captions onto a synthetic 1080x1920 clip with ffmpeg/libass.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -102,6 +103,32 @@ def test_ass_style_places_marginv_inside_safe_zone() -> None:
     margin_v = int(style["MarginV"])
     assert margin_v >= zone["top"], f"MarginV {margin_v} below safe top {zone['top']}"
     assert style["Alignment"] == "2"
+
+
+def test_ass_marginv_9x16_is_380_and_16x9_below_200() -> None:
+    style_9x16 = _ass_style_for("promo-pop", safe_zone_for("9:16", 1080, 1920), "#38BDF8")
+    assert int(style_9x16["MarginV"]) == 380
+    style_16x9 = _ass_style_for("promo-pop", safe_zone_for("16:9", 1920, 1080), "#38BDF8")
+    assert int(style_16x9["MarginV"]) < 200
+
+
+def test_ass_t_tags_always_inside_braces() -> None:
+    zone = safe_zone_for("9:16", 1080, 1920)
+    words = [
+        CaptionWord("Hello", 0.0, 0.5),
+        CaptionWord("world", 0.5, 1.0),
+    ]
+    chunks = [CaptionChunk(text="Hello world", start=0.0, end=1.0, words=words)]
+    path = Path("/tmp/opencode/t-braces-test.ass")
+    _write_ass(chunks, "promo-pop", zone, "#38BDF8", path, width=1080, height=1920)
+    text = path.read_text(encoding="utf-8")
+    dialogue = [line for line in text.splitlines() if line.startswith("Dialogue:")]
+    assert dialogue, "no Dialogue line written"
+    # Strip every {...} override block; a raw \\t( outside braces must remain nowhere.
+    without_braces = re.sub(r"\{[^}]*\}", "", dialogue[0])
+    assert re.search(r"\\t\(", without_braces) is None
+    # The active-word highlight \\t(...) is still present (inside braces).
+    assert re.search(r"\\t\(", dialogue[0]) is not None
 
 
 def test_ass_style_has_active_word_highlight_tags() -> None:

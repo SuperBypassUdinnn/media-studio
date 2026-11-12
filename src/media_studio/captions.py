@@ -219,7 +219,7 @@ def _ass_style_for(
     if style not in STYLES:
         raise CaptionsError(f"unknown style {style!r}; expected one of {STYLES}")
 
-    margin_v = max(int(zone.get("top", 220)), 380)
+    margin_v = int(zone.get("bottom", 72))
     margin_l = int(zone.get("left", 60))
     margin_r = int(zone.get("right", 140))
     h = accent_color.lstrip("#")
@@ -310,11 +310,14 @@ def _write_ass(
         for word in chunk.words:
             t0 = round((word.start - chunk.start) * 1000)
             t1 = round((word.end - chunk.start) * 1000)
-            text_parts.append(
-                f"{{\\c&H00FFFFFF&\\fscx100}}\\t({t0},{t1},\\c&H00{accent_bgr}&\\fscx110)"
-                f"{word.word}"
-                f"{{\\c&H00FFFFFF&\\fscx100}}"
+            t1_end = max(t0 + 30, t1)
+            white = "\\c&H00FFFFFF&\\fscx100"
+            accent = f"\\c&H00{accent_bgr}&\\fscx110"
+            override = (
+                f"{{{white}\\t({t0},{min(t0 + 30, t1_end)},{accent})"
+                f"\\t({t1_end},{t1_end + 30},{white})}}"
             )
+            text_parts.append(f"{override}{word.word}")
         text = " ".join(text_parts)
         lines.append(
             f"Dialogue: 0,{_ass_ts(chunk.start)},{_ass_ts(chunk.end)},"
