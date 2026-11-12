@@ -120,7 +120,6 @@ from .video_edl import (
 )
 from .video_fcproj import (
     cmd_video_beat_sync,
-    cmd_video_captions,
     cmd_video_cmd,
     cmd_video_cut_by_transcript,
     cmd_video_diff,
@@ -134,8 +133,10 @@ from .video_fcproj import (
 )
 from .video_lut import cmd_video_lut_apply, cmd_video_lut_preview, cmd_video_lut_search
 from .video_ops import (
+    cmd_video_captions,
     cmd_video_ingest,
     cmd_video_parallax,
+    cmd_video_reframe,
     cmd_video_remove_bg,
     cmd_video_scenes,
     cmd_video_shots_mine,
@@ -274,6 +275,7 @@ __all__ = [
     "cmd_video_place",
     "cmd_video_proxy",
     "cmd_video_qc",
+    "cmd_video_reframe",
     "cmd_video_remove_bg",
     "cmd_video_remove_fillers",
     "cmd_video_render",

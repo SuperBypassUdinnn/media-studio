@@ -95,12 +95,6 @@ def register_video_fcproj_parsers(video_sub: argparse._SubParsersAction) -> None
     transcript_p.add_argument("--file", type=Path, required=True, help="path to transcript JSON")
     transcript_p.set_defaults(func=cmd_video_transcript)
 
-    captions_p = video_sub.add_parser(
-        "captions", help="generate captions track from imported transcript"
-    )
-    captions_p.add_argument("project", help="project path, slug, or direct .fcproj file")
-    captions_p.set_defaults(func=cmd_video_captions)
-
     fillers_p = video_sub.add_parser(
         "remove-fillers", help="cut filler words from transcript and ripple timeline"
     )

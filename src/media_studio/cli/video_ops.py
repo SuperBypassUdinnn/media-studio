@@ -7,9 +7,11 @@ import json
 import sys
 from pathlib import Path
 
+from media_studio.captions import CaptionsError, CaptionWord, render_captions
 from media_studio.ingest import PROFILES, IngestError, ingest, ingest_folder, probe_media
 from media_studio.parallax import ParallaxError, compose_parallax
 from media_studio.ramp import RAMP_CURVES, RampError, apply_speed_ramp
+from media_studio.reframe import ReframeError, reframe_video, safe_zone_for
 from media_studio.scene import SceneError
 from media_studio.shots import ShotsError, mine_shots, render_candidates, write_candidates
 from media_studio.video import VideoError, detect_scene_cuts, scene_ranges
@@ -214,6 +216,122 @@ def register_video_ops_parsers(video_sub: argparse._SubParsersAction) -> None:
         "--no-render", action="store_true", help="write candidates.json only, render nothing"
     )
     shots_mine.set_defaults(func=cmd_video_shots_mine)
+
+    reframe_p = video_sub.add_parser(
+        "reframe", help="subject-tracked auto-reframe a clip to a vertical aspect"
+    )
+    reframe_p.add_argument("source", help="source video file to reframe")
+    reframe_p.add_argument(
+        "--aspect",
+        choices=("9:16", "16:9", "1:1"),
+        default="9:16",
+        help="target aspect ratio (default 9:16)",
+    )
+    reframe_p.add_argument(
+        "--mode",
+        choices=("auto", "track", "blur-pad"),
+        default="auto",
+        help="reframe mode: track (crop-pan), blur-pad (blurred background), or auto",
+    )
+    reframe_p.add_argument(
+        "--scene-threshold",
+        type=float,
+        default=0.3,
+        help="scene-change threshold for resetting the focal smoother (default 0.3)",
+    )
+    reframe_p.add_argument("--out", type=Path, required=True, help="destination .mp4 file")
+    reframe_p.set_defaults(func=cmd_video_reframe)
+
+    captions_p = video_sub.add_parser("captions", help="burn word-highlight captions into a video")
+    captions_p.add_argument("source", help="source video file to caption")
+    captions_p.add_argument(
+        "--words",
+        default="auto",
+        help="words.json / .srt sidecar path, or 'auto' to look beside the source",
+    )
+    captions_p.add_argument(
+        "--style",
+        choices=("promo-pop", "hormozi-bold", "clean-saas", "amv-lyric"),
+        default="promo-pop",
+        help="caption style (default promo-pop)",
+    )
+    captions_p.add_argument(
+        "--aspect",
+        choices=("9:16", "16:9", "1:1"),
+        default="9:16",
+        help="target aspect for safe-zone placement (default 9:16)",
+    )
+    captions_p.add_argument(
+        "--accent-color",
+        default="#38BDF8",
+        help="accent brand color for the active-word highlight (default #38BDF8)",
+    )
+    captions_p.add_argument(
+        "--engine",
+        choices=("ass", "html"),
+        default="ass",
+        help="render engine: ass burn-in or html kinetic overlay (default ass)",
+    )
+    captions_p.add_argument("--out", type=Path, required=True, help="destination .mp4 file")
+    captions_p.set_defaults(func=cmd_video_captions)
+
+
+def cmd_video_reframe(args: argparse.Namespace) -> int:
+    """Subject-tracked auto-reframe a clip to a vertical aspect."""
+
+    source = Path(args.source).expanduser()
+    output = Path(args.out).expanduser()
+    try:
+        result = reframe_video(
+            source,
+            aspect=args.aspect,
+            mode=args.mode,
+            output=output,
+            scene_threshold=args.scene_threshold,
+        )
+    except ReframeError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+    zone = safe_zone_for(result.aspect, result.width, result.height)
+    print(
+        f"reframed {source.name} -> {result.output.name} "
+        f"({result.width}x{result.height} @ {result.duration:.2f}s, "
+        f"{result.scenes} scene(s), mode={result.mode})"
+    )
+    print(
+        f"  safe zone: top={zone['top']} bottom={zone['bottom']} "
+        f"left={zone['left']} right={zone['right']}"
+    )
+    return EXIT_OK
+
+
+def cmd_video_captions(args: argparse.Namespace) -> int:
+    """Burn word-highlight captions into a video."""
+
+    source = Path(args.source).expanduser()
+    output = Path(args.out).expanduser()
+
+    words_arg = args.words
+    if words_arg == "auto":
+        words: Path | list[CaptionWord] = source
+    else:
+        words = Path(words_arg).expanduser()
+
+    try:
+        result = render_captions(
+            source,
+            words=words,
+            style=args.style,
+            aspect=args.aspect,
+            accent_color=args.accent_color,
+            output=output,
+            engine=args.engine,
+        )
+    except CaptionsError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+    print(f"captioned {source.name} -> {result.name} (style={args.style}, engine={args.engine})")
+    return EXIT_OK
 
 
 def cmd_video_ingest(args: argparse.Namespace) -> int:
