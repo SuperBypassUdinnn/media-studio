@@ -144,6 +144,14 @@ LICENSE_TABLE: tuple[tuple[str, str, bool, bool, bool, tuple[str, ...]], ...] = 
         False,
         ("cc-by-nd-4.0", "cc by-nd"),
     ),
+    (
+        "LicenseRef-AI-Generated",
+        "AI Generated (attribution required)",
+        True,
+        True,
+        True,
+        ("license-ref-ai-generated", "ai generated", "license-ref-ai"),
+    ),
 )
 
 

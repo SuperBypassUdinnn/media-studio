@@ -27,6 +27,12 @@ render-html = ["playwright>=1.50"]
 # Free neural TTS (edge-tts) for ms audio tts.
 tts = ["edge-tts>=7.0"]
 
+# Pluggable free-quota generative layer: httpx client + Google AI Studio SDK.
+gen = ["httpx>=0.28", "google-genai>=1.0"]
+
+# Promo orchestrator: free-quota generation plus optional TTS/HTML rendering.
+promo = ["httpx>=0.28", "google-genai>=1.0", "edge-tts>=7.0", "playwright>=1.50"]
+
 [project.scripts]
 ms = "media_studio.cli:main"
 

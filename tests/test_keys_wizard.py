@@ -20,7 +20,7 @@ REQUIRED = (
     "JAMENDO_CLIENT_ID",
     "SKETCHFAB_API_TOKEN",
 )
-OPTIONAL = ("UNSPLASH_ACCESS_KEY", "BLENDERKIT_API_KEY")
+OPTIONAL = ("UNSPLASH_ACCESS_KEY", "BLENDERKIT_API_KEY", "GEMINI_API_KEY", "HF_TOKEN")
 DEFERRED = "PEXELS_API_KEY"
 FAKE_VALUE = "unit-test-value-do-not-log-1f4c"
 
@@ -64,7 +64,7 @@ def test_only_optional_and_deferred_missing_still_passes(tmp_path: Path) -> None
     assert completed.returncode == 0
     assert "optional, not set (the stocky skill uses it" in completed.stdout
     assert "deferred (account suspended by the provider" in completed.stdout
-    assert "(2 optional not set)" in completed.stdout
+    assert "(4 optional not set)" in completed.stdout
     assert "(1 deferred by the provider)" in completed.stdout
 
 
