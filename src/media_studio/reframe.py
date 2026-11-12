@@ -28,8 +28,8 @@ OUTPUT_SIZE = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080)}
 SMOOTH_ALPHA = 0.45
 # Width (px) at which grayscale frames are sampled for motion centroid.
 SAMPLE_WIDTH = 64
-# Frames sampled per scene segment for the centroid.
-SAMPLES_PER_SEGMENT = 6
+# Sample the focal center every this many seconds within each scene.
+CENTER_SAMPLE_STEP_S = 0.5
 
 
 class ReframeError(RuntimeError):
@@ -65,10 +65,6 @@ def safe_zone_for(aspect: str, width: int, height: int) -> dict[str, int]:
         return {"top": 60, "bottom": 120, "left": 60, "right": 140}
     # 1:1 square.
     return {"top": 60, "bottom": 60, "left": 60, "right": 60}
-
-
-# Backwards-compatible private alias used by tests.
-_safe_zone_for = safe_zone_for
 
 
 def clamp_crop_window(
@@ -138,19 +134,27 @@ def _centroid_of_frame(gray: np.ndarray) -> tuple[float, float]:
     return cx, cy
 
 
-def _motion_centroid(
-    source: Path, start_s: float, end_s: float, source_w: int, source_h: int
-) -> tuple[float, float]:
-    """Sample grayscale strips and return the motion-weighted centroid in source px."""
+def _motion_centroid_series(
+    source: Path,
+    start_s: float,
+    end_s: float,
+    source_w: int,
+    source_h: int,
+) -> list[tuple[float, float, float]]:
+    """Sample grayscale frames every ``CENTER_SAMPLE_STEP_S`` across ``[start, end]``.
+
+    Returns a list of ``(t, cx, cy)`` centers in source pixels. This gives
+    ``_smooth_center`` multiple points per scene so the smoothed focal center
+    actually moves within a scene and resets cleanly at each cut.
+    """
 
     if end_s <= start_s:
-        end_s = start_s + 0.5
-    frame_times = [
-        start_s + i * (end_s - start_s) / (SAMPLES_PER_SEGMENT - 1)
-        for i in range(SAMPLES_PER_SEGMENT)
-    ]
+        end_s = start_s + CENTER_SAMPLE_STEP_S
+    n = max(2, int((end_s - start_s) / CENTER_SAMPLE_STEP_S) + 1)
+    frame_times = [start_s + i * (end_s - start_s) / (n - 1) for i in range(n)]
 
-    frames: list[np.ndarray] = []
+    centers: list[tuple[float, float, float]] = []
+    scale_x = source_w / SAMPLE_WIDTH
     for t in frame_times:
         try:
             completed = subprocess.run(
@@ -180,37 +184,16 @@ def _motion_centroid(
             continue
         w = SAMPLE_WIDTH
         h = max(1, len(completed.stdout) // w)
-        frames.append(np.frombuffer(completed.stdout, dtype=np.uint8).reshape(h, w))
-
-    if not frames:
-        return source_w / 2.0, source_h / 2.0
-
-    cx_total = 0.0
-    cy_total = 0.0
-    weight_total = 0.0
-    prev: np.ndarray | None = None
-    scale_x = source_w / SAMPLE_WIDTH
-    scale_y = source_h / max(1, frames[0].shape[0])
-    for frame in frames:
+        try:
+            frame = np.frombuffer(completed.stdout, dtype=np.uint8).reshape(h, w)
+        except ValueError:
+            continue
         c_x, c_y = _centroid_of_frame(frame)
-        motion = (
-            float(
-                np.abs(
-                    frame.astype(np.int16) - (prev if prev is not None else frame).astype(np.int16)
-                ).mean()
-            )
-            if prev is not None
-            else 1.0
-        )
-        weight = max(motion, 1.0)
-        cx_total += c_x * scale_x * weight
-        cy_total += c_y * scale_y * weight
-        weight_total += weight
-        prev = frame
+        centers.append((t, c_x * scale_x, c_y * (source_h / max(1, h))))
 
-    if weight_total <= 0:
-        return source_w / 2.0, source_h / 2.0
-    return cx_total / weight_total, cy_total / weight_total
+    if not centers:
+        return [(start_s, source_w / 2.0, source_h / 2.0)]
+    return centers
 
 
 def _crop_dimensions(source_w: int, source_h: int, aspect: str) -> tuple[int, int]:
@@ -227,6 +210,71 @@ def _crop_dimensions(source_w: int, source_h: int, aspect: str) -> tuple[int, in
         crop_w = source_w
         crop_h = round(source_w / target_ratio)
     return max(1, crop_w), max(1, crop_h)
+
+
+def _blur_pad_filtergraph(source_w: int, source_h: int, out_w: int, out_h: int) -> str:
+    """Blur-pad: foreground scaled inside a blurred scaled background.
+
+    Background: scale to fill output (force_original_aspect_ratio=increase,
+    crop to output), then boxblur. Foreground: scale to fit inside output
+    (force_original_aspect_ratio=decrease), centered via overlay. No cropping
+    of horizontal edges — the whole source width is preserved.
+    """
+
+    bg = (
+        f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+        f"crop={out_w}:{out_h},boxblur=20:5[bg]"
+    )
+    fg = f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease[fg]"
+    overlay = "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]"
+    return f"{bg};{fg};{overlay}"
+
+
+def _track_filtergraph(
+    segments: list[tuple[float, float]],
+    smoothed: list[tuple[float, float, float]],
+    source_w: int,
+    source_h: int,
+    crop_w: int,
+    crop_h: int,
+    out_w: int,
+    out_h: int,
+) -> str:
+    """Piecewise crop-pan filtergraph: one smoothed crop per scene segment."""
+
+    if len(segments) == 1:
+        (start_s, end_s) = segments[0]
+        _, cx, cy = smoothed[0]
+        x, y = clamp_crop_window(
+            cx - crop_w / 2.0,
+            cy - crop_h / 2.0,
+            source_w=source_w,
+            source_h=source_h,
+            crop_w=crop_w,
+            crop_h=crop_h,
+        )
+        return f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}[v]"
+
+    filter_parts: list[str] = []
+    for seg_index, ((start_s, end_s), (_, cx, cy)) in enumerate(
+        zip(segments, smoothed, strict=False)
+    ):
+        x, y = clamp_crop_window(
+            cx - crop_w / 2.0,
+            cy - crop_h / 2.0,
+            source_w=source_w,
+            source_h=source_h,
+            crop_w=crop_w,
+            crop_h=crop_h,
+        )
+        src = f"[v{seg_index}]" if seg_index > 0 else "[0:v]"
+        filter_parts.append(
+            f"{src}trim=start={start_s:.3f}:end={end_s:.3f},setpts=PTS-STARTPTS,"
+            f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}[v{seg_index}'];"
+        )
+    split = f"[0:v]split={len(segments)}" + "".join(f"[v{i}]" for i in range(len(segments))) + ";"
+    concat_inputs = "".join(f"[v{i}']" for i in range(len(segments)))
+    return split + "".join(filter_parts) + f"{concat_inputs}concat=n={len(segments)}:v=1:a=0[v]"
 
 
 def _run_reframe(
@@ -247,62 +295,51 @@ def _run_reframe(
     if duration <= 0:
         duration = 1.0
 
-    crop_w, crop_h = _crop_dimensions(source_w, source_h, aspect)
     out_w, out_h = OUTPUT_SIZE[aspect]
+    crop_w, crop_h = _crop_dimensions(source_w, source_h, aspect)
 
     boundaries = _scene_boundaries(source, scene_threshold)
     segments = scene_segments(duration, boundaries)
 
-    # Compute one smoothed focal center per segment.
+    # Multi-sample focal centers per scene, then smooth with reset at each cut.
     centers: list[tuple[float, float, float]] = []
     cut_indices: set[int] = set()
     for seg_index, (start_s, end_s) in enumerate(segments):
-        cx, cy = _motion_centroid(source, start_s, end_s, source_w, source_h)
-        mid = (start_s + end_s) / 2.0
-        centers.append((mid, cx, cy))
+        series = _motion_centroid_series(source, start_s, end_s, source_w, source_h)
+        centers.extend(series)
         if seg_index > 0:
-            cut_indices.add(seg_index)
+            # The first sample of each new scene is a cut boundary.
+            cut_indices.add(len(centers) - len(series))
 
     smoothed = _smooth_center(centers, cut_indices)
 
-    # Build filter_complex: per-segment crop + scale, then concat.
-    if len(segments) == 1:
-        (start_s, end_s) = segments[0]
-        _, cx, cy = smoothed[0]
-        x, y = clamp_crop_window(
-            cx - crop_w / 2.0,
-            cy - crop_h / 2.0,
-            source_w=source_w,
-            source_h=source_h,
-            crop_w=crop_w,
-            crop_h=crop_h,
-        )
-        vfilter = f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}[v]"
+    if mode == "blur-pad":
+        vfilter = _blur_pad_filtergraph(source_w, source_h, out_w, out_h)
     else:
-        filter_parts: list[str] = []
-        for seg_index, ((start_s, end_s), (_, cx, cy)) in enumerate(
-            zip(segments, smoothed, strict=False)
-        ):
-            x, y = clamp_crop_window(
-                cx - crop_w / 2.0,
-                cy - crop_h / 2.0,
-                source_w=source_w,
-                source_h=source_h,
-                crop_w=crop_w,
-                crop_h=crop_h,
-            )
-            src = f"[v{seg_index}]"
-            filter_parts.append(
-                f"{src}trim=start={start_s:.3f}:end={end_s:.3f},setpts=PTS-STARTPTS,"
-                f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}[v{seg_index}'];"
-            )
-        split = (
-            f"[0:v]split={len(segments)}" + "".join(f"[v{i}]" for i in range(len(segments))) + ";"
+        # Map smoothed centers back to per-segment constant crops for the
+        # track filtergraph (use the last center of each segment).
+        per_segment: list[tuple[float, float, float]] = []
+        idx = 0
+        for _seg_index, (start_s, end_s) in enumerate(segments):
+            series = _motion_centroid_series(source, start_s, end_s, source_w, source_h)
+            seg_smoothed = smoothed[idx : idx + len(series)]
+            per_segment.append(seg_smoothed[-1])
+            idx += len(series)
+        vfilter = _track_filtergraph(
+            segments,
+            per_segment,
+            source_w,
+            source_h,
+            crop_w,
+            crop_h,
+            out_w,
+            out_h,
         )
-        concat_inputs = "".join(f"[v{i}']" for i in range(len(segments)))
-        vfilter = (
-            split + "".join(filter_parts) + f"{concat_inputs}concat=n={len(segments)}:v=1:a=0[v]"
-        )
+
+    map_args: list[str] = ["-map", "[v]"]
+    # Preserve source audio streams when present.
+    if info.audio_codec:
+        map_args.extend(["-map", "0:a?", "-c:a", "copy"])
 
     command = [
         media.FFMPEG,
@@ -314,8 +351,7 @@ def _run_reframe(
         str(source),
         "-filter_complex",
         vfilter,
-        "-map",
-        "[v]",
+        *map_args,
         "-c:v",
         "libx264",
         "-pix_fmt",

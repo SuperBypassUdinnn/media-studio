@@ -180,6 +180,65 @@ def _probe_size(path: Path) -> tuple[int, int]:
     return int(stream["width"]), int(stream["height"])
 
 
+def _probe_has_audio(path: Path) -> bool:
+    import json
+
+    completed = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=codec_type",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(completed.stdout)
+    return len(payload.get("streams", [])) > 0
+
+
+def _decode_center_pixel(
+    path: Path, *, x: int, y: int, time_s: float = 0.5
+) -> tuple[int, int, int]:
+    """Decode one pixel at (x, y) from ``path`` at ``time_s`` seconds."""
+
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            f"{time_s:.3f}",
+            "-i",
+            str(path),
+            "-vframes",
+            "1",
+            "-vf",
+            f"crop=1:1:{x}:{y},format=rgb24",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    data = completed.stdout
+    if len(data) < 3:
+        raise AssertionError(f"could not decode pixel at ({x},{y}) from {path}")
+    return data[0], data[1], data[2]
+
+
 @pytest.mark.slow
 def test_reframe_track_mode_produces_1080x1920(tmp_path: Path) -> None:
     source = _make_moving_box_clip(tmp_path / "source.mp4")
@@ -229,3 +288,109 @@ def test_reframe_auto_mode_falls_back_to_track(tmp_path: Path) -> None:
     assert output.is_file()
     width, height = _probe_size(output)
     assert (width, height) == (1080, 1920)
+
+
+def _make_edge_stripe_clip(path: Path, *, duration: int = 3) -> Path:
+    """1920x1080 clip: red stripe on left edge, blue stripe on right edge."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=black:size=1920x1080:rate={int(FPS)}:duration={duration}",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=red:size=40x1080:rate={int(FPS)}:duration={duration}",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=blue:size=40x1080:rate={int(FPS)}:duration={duration}",
+            "-filter_complex",
+            "[0:v][1:v]overlay=0:0[bg];[bg][2:v]overlay=W-w:0[out]",
+            "-map",
+            "[out]",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            str(path),
+        ],
+        check=True,
+    )
+    return path
+
+
+@pytest.mark.slow
+def test_reframe_blur_pad_preserves_horizontal_edges(tmp_path: Path) -> None:
+    # blur-pad must scale the whole source width into the output (no horizontal
+    # cropping) so left/right edge content survives inside blurred bands.
+    source = _make_edge_stripe_clip(tmp_path / "edges.mp4")
+    output = tmp_path / "out_blurpad.mp4"
+    result = reframe_video(
+        source,
+        aspect="9:16",
+        mode="blur-pad",
+        output=output,
+        scene_threshold=0.3,
+    )
+    assert isinstance(result, ReframeResult)
+    assert output.is_file()
+    width, height = _probe_size(output)
+    assert (width, height) == (1080, 1920)
+    # Left stripe at output x=0-20; right stripe at output x=1060-1080.
+    left = _decode_center_pixel(output, x=10, y=960)
+    right = _decode_center_pixel(output, x=1070, y=960)
+    assert left[0] > 100 and left[1] < 60 and left[2] < 60, f"left red stripe lost: {left}"
+    assert right[2] > 100 and right[0] < 60 and right[1] < 60, f"right blue stripe lost: {right}"
+
+
+@pytest.mark.slow
+def test_reframe_preserves_audio_stream(tmp_path: Path) -> None:
+    # Source has audio; reframed output must retain an audio stream.
+    source = tmp_path / "with_audio.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=size=1920x1080:rate={int(FPS)}:duration=3",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=3:sample_rate=48000",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source),
+        ],
+        check=True,
+    )
+    for mode in ("track", "blur-pad"):
+        output = tmp_path / f"out_{mode}.mp4"
+        result = reframe_video(
+            source,
+            aspect="9:16",
+            mode=mode,
+            output=output,
+            scene_threshold=0.3,
+        )
+        assert isinstance(result, ReframeResult)
+        assert output.is_file()
+        assert _probe_has_audio(output), f"audio stream lost in mode={mode}"

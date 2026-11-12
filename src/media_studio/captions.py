@@ -12,11 +12,13 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from media_studio import media
 from media_studio.media import MediaError
+from media_studio.reframe import safe_zone_for
 from media_studio.tts import WordTiming
 
 DEFAULT_MEDIA_MCP_ROOT = Path.home() / ".clone/Github/SuperBypassUdinnn/media-mcp"
@@ -44,18 +46,6 @@ class CaptionChunk:
     words: list[CaptionWord]
 
 
-def safe_zone_for(aspect: str, width: int, height: int) -> dict[str, int]:
-    """Return ``{top, bottom, left, right}`` safe margins (px) for an aspect."""
-
-    if aspect == "9:16":
-        return {"top": 220, "bottom": 380, "left": 60, "right": 140}
-    if aspect == "16:9":
-        return {"top": 60, "bottom": 120, "left": 60, "right": 140}
-    if aspect == "1:1":
-        return {"top": 60, "bottom": 60, "left": 60, "right": 60}
-    raise CaptionsError(f"unknown aspect {aspect!r}; expected 9:16, 16:9, or 1:1")
-
-
 def _media_mcp_root() -> Path:
     return Path(os.environ.get("MEDIA_MCP_ROOT", str(DEFAULT_MEDIA_MCP_ROOT)))
 
@@ -69,11 +59,36 @@ def _transcribe_py(media_mcp_root: Path) -> Path:
 
 
 def _words_sidecar(media_path: Path) -> Path | None:
-    for suffix in (".words.json", ".json", ".srt"):
+    """Return a transcript sidecar if it looks like word timings.
+
+    ``.words.json`` is always accepted. A bare ``.json`` sidecar is accepted
+    only when it contains ``words`` or ``segments`` keys (an arbitrary
+    ``<stem>.json`` config file must not be mistaken for a transcript).
+    """
+
+    for suffix in (".words.json", ".json"):
         candidate = media_path.with_suffix(suffix)
-        if candidate.is_file():
+        if not candidate.is_file():
+            continue
+        if suffix == ".words.json":
             return candidate
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and ("words" in payload or "segments" in payload):
+            return candidate
+    if media_path.with_suffix(".srt").is_file():
+        return media_path.with_suffix(".srt")
     return None
+
+
+def _temp_dir() -> Path:
+    """Scratch directory under /tmp/opencode for captions intermediates."""
+
+    base = Path("/tmp/opencode")
+    base.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix="captions-", dir=str(base)))
 
 
 def _parse_words_json(payload: object) -> list[CaptionWord]:
@@ -341,8 +356,9 @@ def extract_word_timestamps(media_path: Path) -> list[CaptionWord]:
         )
 
     # Invoke media-mcp transcribe.py: --num-speakers 1 --no-diarize --out <dir>.
-    out_dir = media_path.parent / "captions-work"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # All scratch lives under /tmp/opencode/captions-<pid> and is removed in finally.
+    scratch = _temp_dir()
+    words_out: list[CaptionWord] | None = None
     try:
         subprocess.run(
             [
@@ -353,23 +369,31 @@ def extract_word_timestamps(media_path: Path) -> list[CaptionWord]:
                 "1",
                 "--no-diarize",
                 "--out",
-                str(out_dir),
+                str(scratch),
             ],
             capture_output=True,
             check=True,
         )
+        stem = media_path.stem
+        json_path = scratch / f"{stem}.json"
+        if not json_path.is_file():
+            raise CaptionsError(f"media-mcp did not write {json_path}")
+        words_out = _parse_words_json(json.loads(json_path.read_text(encoding="utf-8")))
     except (OSError, subprocess.SubprocessError) as error:
         raise CaptionsError(f"media-mcp transcribe could not run: {error}") from error
     except subprocess.CalledProcessError as error:
         raise CaptionsError(
             f"media-mcp transcribe failed: {(error.stderr or b'').decode(errors='replace')[-500:]}"
         ) from error
+    finally:
+        # Clean scratch even on success; ignore errors (best-effort).
+        import shutil
 
-    stem = media_path.stem
-    json_path = out_dir / f"{stem}.json"
-    if not json_path.is_file():
-        raise CaptionsError(f"media-mcp did not write {json_path}")
-    return _parse_words_json(json.loads(json_path.read_text(encoding="utf-8")))
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    if words_out is None:
+        raise CaptionsError("media-mcp transcribe produced no words")
+    return words_out
 
 
 def render_captions(
@@ -416,9 +440,11 @@ def render_captions(
             raise CaptionsError(str(error)) from error
         return output
 
-    ass_path = output.with_suffix(".ass")
-    _write_ass(chunks, style, zone, accent_color, ass_path)
+    # Write the .ass intermediate under /tmp/opencode scratch (cleaned in finally).
+    scratch = _temp_dir()
+    ass_path = scratch / f"{output.stem}.ass"
     try:
+        _write_ass(chunks, style, zone, accent_color, ass_path)
         media.run_command(
             [
                 media.FFMPEG,
@@ -439,6 +465,10 @@ def render_captions(
         )
     except MediaError as error:
         raise CaptionsError(str(error)) from error
+    finally:
+        import shutil
+
+        shutil.rmtree(scratch, ignore_errors=True)
 
     if not output.is_file():
         raise CaptionsError(f"ffmpeg did not write captioned output: {output}")
