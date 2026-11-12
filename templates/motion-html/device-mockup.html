@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Device Mockup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; background: transparent !important; overflow: hidden; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  #root { width: 100%; height: 100%; position: relative; background: transparent !important; }
+  .stage {
+    position: absolute; left: 50%; top: 50%;
+    width: min(82vw, 640px); height: min(92vh, 960px);
+    transform: translate(-50%, -50%);
+  }
+  /* Gentle 3D tilt driven by --tilt (degrees). */
+  .device {
+    position: relative; width: 100%; height: 100%;
+    transform-style: preserve-3d;
+    transform: rotateX(var(--tilt-x, 12deg)) rotateY(var(--tilt-y, -8deg));
+  }
+  .bezel {
+    position: absolute; inset: 0;
+    border-radius: 40px;
+    border: 14px solid #1e293b;
+    background: #0f172a;
+    box-shadow: 0 40px 80px -20px rgba(0,0,0,0.5);
+  }
+  .bezel::after {
+    content: ""; position: absolute; left: 16px; top: -22px; right: 16px; height: 8px;
+    border-radius: 4px; background: #334155; border: 1px solid #475569;
+  }
+  .screen {
+    position: absolute; inset: 14px;
+    border-radius: 26px;
+    background: #000;
+    overflow: hidden;
+    mask-image: radial-gradient(circle at center, black 68%, transparent 72%);
+    -webkit-mask-image: radial-gradient(circle at center, black 68%, transparent 72%);
+  }
+  .screen img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .screen::before {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.12), transparent 40%, transparent 60%, rgba(0,0,0,0.10));
+    pointer-events: none;
+  }
+  .badge {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    padding: 8px 16px; border-radius: 999px;
+    background: rgba(255,255,255,0.9); border: 1px solid rgba(0,0,0,0.08);
+    font-size: 12px; font-weight: 700; color: var(--ink, #0f172a);
+    letter-spacing: 0.08em; text-transform: uppercase; box-shadow: 0 8px 20px -6px rgba(0,0,0,0.25);
+  }
+  .caption {
+    position: absolute; left: 50%; top: 106%;
+    transform: translateX(-50%);
+    width: min(82vw, 640px); text-align: center;
+  }
+  .caption .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent, #38bdf8); }
+  .caption h1 { font-size: clamp(18px, 4.5vw, 28px); line-height: 1.2; color: var(--ink, #0f172a); font-weight: 800; margin-top: 6px; }
+  .caption p { font-size: clamp(13px, 2vw, 16px); line-height: 1.5; color: #475569; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="stage">
+    <div class="device" id="device">
+      <div class="bezel"></div>
+      <div class="screen" id="screen"></div>
+      <div class="badge" id="badge">Staged screenshot</div>
+    </div>
+  </div>
+  <div class="caption">
+    <div class="eyebrow" id="eyebrow">Product preview</div>
+    <h1 id="headline">Headline goes here</h1>
+    <p id="subhead">Subheadline describes what is shown on the device screen.</p>
+  </div>
+</div>
+<script>
+(function () {
+  const root = document.getElementById('root');
+  const device = document.getElementById('device');
+  const screen = document.getElementById('screen');
+  const badge = document.getElementById('badge');
+  const headline = document.getElementById('headline');
+  const subhead = document.getElementById('subhead');
+  const eyebrow = document.getElementById('eyebrow');
+
+  function applyParams(params) {
+    if (!params) return;
+    const p = (name, def) => (params[name] !== undefined && params[name] !== null) ? params[name] : def;
+    if (p('headline')) headline.textContent = p('headline');
+    if (p('subhead')) subhead.textContent = p('subhead');
+    if (p('eyebrow')) eyebrow.textContent = p('eyebrow');
+    const accent = p('accent', '#38bdf8');
+    const ink = p('ink', '#0f172a');
+    root.style.setProperty('--accent', accent);
+    root.style.setProperty('--ink', ink);
+    const uri = p('screenshot', '');
+    if (uri) {
+      screen.innerHTML = '<img src="' + escapeHtml(uri) + '" alt="device screen">';
+    }
+    badge.textContent = p('badge', 'Staged screenshot');
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[ch]));
+  }
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  window.__msSeek = function (timeSec, frameIndex, totalFrames, params) {
+    applyParams(params);
+    const progress = totalFrames > 1 ? frameIndex / (totalFrames - 1) : 0;
+    const ease = easeInOutCubic(progress);
+    // Gentle rocking tilt across the duration.
+    const tiltX = 10 + Math.sin(progress * Math.PI) * 6;
+    const tiltY = -6 + Math.cos(progress * Math.PI) * 4;
+    device.style.setProperty('--tilt-x', tiltX + 'deg');
+    device.style.setProperty('--tilt-y', tiltY + 'deg');
+    // Subtle vertical float.
+    device.style.transform = 'translate(-50%, -50%) rotateX(' + tiltX + 'deg) rotateY(' + tiltY + 'deg) translateY(' + (-Math.sin(progress * Math.PI) * 14) + 'px)';
+  };
+})();
+</script>
+</body>
+</html>

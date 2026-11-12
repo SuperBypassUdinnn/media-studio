@@ -21,6 +21,7 @@ from media_studio.effectcraft import (
     render_promo_preset,
     title_sequence,
 )
+from media_studio.html_motion import HtmlMotionError, render_html_motion
 from media_studio.manifest import ManifestError, load_project
 
 from .common import EXIT_FAILURE, EXIT_OK, resolve_monkeypatchable
@@ -81,6 +82,31 @@ def register_motion_parser(subparsers: argparse._SubParsersAction) -> None:
     motion_lt.add_argument("--out", type=Path, default=None, help="output file path")
     motion_lt.add_argument("--duration", type=float, default=4.0, help="duration in seconds")
     motion_lt.set_defaults(func=cmd_motion_lower_third)
+
+    motion_html = motion_sub.add_parser(
+        "html", help="render an HTML/SVG template to video via Playwright"
+    )
+    motion_html.add_argument("template", help="template name (bundled) or path to an .html file")
+    motion_html.add_argument("--params", default="{}", help="JSON object of seek params")
+    motion_html.add_argument("--project", help="project path or slug for brand token injection")
+    motion_html.add_argument(
+        "--out", type=Path, required=True, help="output file path (.mov for alpha)"
+    )
+    motion_html.add_argument(
+        "--width", type=int, default=1080, help="output width in pixels (default 1080)"
+    )
+    motion_html.add_argument(
+        "--height", type=int, default=1920, help="output height in pixels (default 1920)"
+    )
+    motion_html.add_argument("--fps", type=int, default=30, help="output frame rate (default 30)")
+    motion_html.add_argument("--duration", type=float, default=3.0, help="duration in seconds")
+    motion_html.add_argument(
+        "--transparent",
+        action="store_true",
+        default=False,
+        help="render with alpha channel (forces .mov)",
+    )
+    motion_html.set_defaults(func=cmd_motion_html)
 
     motion_insp = motion_sub.add_parser("inspect", help="inspect an EffectCraft project")
     motion_insp.add_argument("project", help="project path, slug, or direct .ecproj file")
@@ -294,6 +320,47 @@ def cmd_motion_lower_third(args: argparse.Namespace) -> int:
     except Exception as error:
         print(f"error rendering lower-third: {error}", file=sys.stderr)
         return EXIT_FAILURE
+
+
+def cmd_motion_html(args: argparse.Namespace) -> int:
+    """Render an HTML/SVG template to video via Playwright frame-stepping."""
+
+    load_fn = resolve_monkeypatchable("load_project", load_project)
+    project = None
+    if args.project:
+        try:
+            project = load_fn(args.project)
+        except ManifestError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return EXIT_FAILURE
+    params = {}
+    if args.params:
+        try:
+            params = json.loads(args.params)
+        except json.JSONDecodeError as error:
+            print(f"error: invalid --params JSON: {error}", file=sys.stderr)
+            return EXIT_FAILURE
+    try:
+        result = render_html_motion(
+            args.template,
+            output=args.out,
+            params=params,
+            project=project,
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+            duration=args.duration,
+            transparent=args.transparent,
+        )
+    except HtmlMotionError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"html {result.template}")
+    print(f"  output:  {result.output}")
+    print(f"  frames:  {result.frames} @ {result.fps} fps ({result.duration}s)")
+    print(f"  size:    {result.width}x{result.height}, transparent={result.transparent}")
+    return EXIT_OK
 
 
 def cmd_motion_inspect(args: argparse.Namespace) -> int:

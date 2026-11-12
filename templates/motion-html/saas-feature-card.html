@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SaaS Feature Card</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; background: transparent !important; overflow: hidden; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  #root { width: 100%; height: 100%; position: relative; background: transparent !important; }
+  .card {
+    position: absolute; left: 50%; top: 46%;
+    transform: translate(-50%, -50%);
+    width: min(86vw, 720px); height: min(62vh, 520px);
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.35);
+    border-radius: 24px;
+    box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.25);
+    padding: 40px;
+    display: flex; flex-direction: column; gap: 14px;
+    backdrop-filter: blur(6px);
+  }
+  .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent, #38bdf8); }
+  h1 { font-size: clamp(20px, 5vw, 34px); line-height: 1.15; color: var(--ink, #0f172a); font-weight: 800; }
+  p { font-size: clamp(14px, 2.4vw, 17px); line-height: 1.5; color: #475569; }
+  .feature { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 14px; color: #334155; }
+  .feature .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent, #38bdf8); flex: 0 0 auto; }
+  /* Highlight ring around a target element. */
+  .target { position: relative; display: inline-block; margin-top: 18px; padding: 10px 16px; border-radius: 10px; border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.25); background: rgba(var(--accent-rgb, 56, 189, 248), 0.08); cursor: pointer; }
+  .ring {
+    position: absolute; top: 50%; left: 50%; width: 0; height: 0;
+    border: 2px solid var(--accent, #38bdf8);
+    border-radius: 50%; box-sizing: border-box;
+    transform: translate(-50%, -50%); opacity: 0;
+    pointer-events: none; transition: width 0.4s ease, height 0.4s ease, opacity 0.4s ease;
+  }
+  .ring.active { opacity: 0.85; }
+  /* Floating cursor click. */
+  .cursor {
+    position: absolute; width: 22px; height: 22px;
+    border: 2.5px solid var(--ink, #0f172a); border-radius: 50%;
+    background: rgba(255,255,255,0.9); box-shadow: 0 0 0 4px rgba(var(--ink-rgb,15,23,42),0.12);
+    pointer-events: none; z-index: 50; transform: translate(-50%, -50%);
+  }
+  .cursor .click { position: absolute; top: 50%; left: 50%; width: 0; height: 0; background: var(--accent, #38bdf8); border-radius: 50%; transform: translate(-50%, -50%); opacity: 0; transition: width 0.12s ease, height 0.12s ease, opacity 0.12s ease; }
+  .cursor .click.active { width: 14px; height: 14px; opacity: 0.85; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="card">
+    <div class="eyebrow" id="eyebrow">New feature</div>
+    <h1 id="headline">Headline goes here</h1>
+    <p id="subhead">Subheadline explains the capability in a friendly tone.</p>
+    <div class="feature"><div class="dot"></div><span id="featureText">Real-time collaboration for distributed teams</span></div>
+    <div class="target" id="target">Try it free &rarr;</div>
+    <div class="ring" id="ring"></div>
+  </div>
+  <div class="cursor" id="cursor"><div class="click" id="click"></div></div>
+</div>
+<script>
+(function () {
+  const root = document.getElementById('root');
+  const ring = document.getElementById('ring');
+  const target = document.getElementById('target');
+  const cursor = document.getElementById('cursor');
+  const click = document.getElementById('click');
+  const headline = document.getElementById('headline');
+  const subhead = document.getElementById('subhead');
+  const eyebrow = document.getElementById('eyebrow');
+  const featureText = document.getElementById('featureText');
+
+  function applyParams(params) {
+    if (!params) return;
+    const p = (name, def) => (params[name] !== undefined && params[name] !== null) ? params[name] : def;
+    if (p('headline')) headline.textContent = p('headline');
+    if (p('subhead')) subhead.textContent = p('subhead');
+    if (p('eyebrow')) eyebrow.textContent = p('eyebrow');
+    if (p('feature')) featureText.textContent = p('feature');
+    const accent = p('accent', '#38bdf8');
+    const ink = p('ink', '#0f172a');
+    root.style.setProperty('--accent', accent);
+    root.style.setProperty('--ink', ink);
+    try {
+      const c = accent.slice(1);
+      root.style.setProperty('--accent-rgb', [parseInt(c.substr(0,2),16), parseInt(c.substr(2,2),16), parseInt(c.substr(4,2),16)].join(','));
+    } catch (e) {}
+    try {
+      const c = ink.slice(1);
+      root.style.setProperty('--ink-rgb', [parseInt(c.substr(0,2),16), parseInt(c.substr(2,2),16), parseInt(c.substr(4,2),16)].join(','));
+    } catch (e) {}
+  }
+
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  window.__msSeek = function (timeSec, frameIndex, totalFrames, params) {
+    applyParams(params);
+    const progress = totalFrames > 1 ? frameIndex / (totalFrames - 1) : 0;
+    const cycle = Math.sin(progress * Math.PI * 2);
+    const ease = easeOutCubic(progress);
+
+    // Highlight ring: expands then fades around the target.
+    const rect = target.getBoundingClientRect();
+    const ringScale = 1.05 + ease * 0.35;
+    ring.style.left = '50%'; ring.style.top = '50%';
+    ring.style.width = (rect.width * ringScale) + 'px';
+    ring.style.height = (rect.height * ringScale) + 'px';
+    ring.classList.toggle('active', progress > 0.25 && progress < 0.85);
+
+    // Floating cursor: travels across the card and clicks near the target at the end.
+    const cx = 60 + ease * (rect.left + rect.width / 2 - 60);
+    const cy = 120 + ease * (rect.top + rect.height / 2 - 120);
+    cursor.style.left = cx + 'px';
+    cursor.style.top = cy + 'px';
+    click.classList.toggle('active', progress > 0.78);
+  };
+})();
+</script>
+</body>
+</html>

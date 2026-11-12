@@ -21,6 +21,9 @@ rhythm = ["librosa>=0.11"]
 # Optional colour tracing engine (vtracer); potrace stays the default fallback.
 vector = ["vtracer>=0.6"]
 
+# Playwright frame-stepped HTML/SVG-to-video rendering (reuses cached Chromium).
+render-html = ["playwright>=1.50"]
+
 [project.scripts]
 ms = "media_studio.cli:main"
 

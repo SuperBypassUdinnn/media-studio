@@ -57,6 +57,7 @@ from .library import (
     register_library_parser,
 )
 from .motion import (
+    cmd_motion_html,
     cmd_motion_inspect,
     cmd_motion_lower_third,
     cmd_motion_lyrics,
@@ -210,6 +211,7 @@ __all__ = [
     "cmd_library_list",
     "cmd_library_register",
     "cmd_library_search",
+    "cmd_motion_html",
     "cmd_motion_inspect",
     "cmd_motion_lower_third",
     "cmd_motion_lyrics",

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kinetic Captions</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; background: transparent !important; overflow: hidden; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  #root { width: 100%; height: 100%; position: relative; background: transparent !important; }
+  .stage {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(88vw, 960px);
+    text-align: center;
+    line-height: 1.45;
+  }
+  .words { font-size: clamp(24px, 6vw, 48px); font-weight: 800; color: rgba(var(--ink-rgb, 15, 23, 42), 0.35); letter-spacing: -0.01em; display: inline-block; }
+  .word {
+    display: inline-block;
+    padding: 6px 10px;
+    margin: 0 4px;
+    border-radius: 8px;
+    transition: transform 0.12s ease, color 0.12s ease, background 0.12s ease;
+    cursor: default;
+  }
+  .word.past { color: rgba(var(--ink-rgb, 15, 23, 42), 0.15); transform: scale(0.92); }
+  .word.active {
+    color: #ffffff;
+    background: var(--accent, #38bdf8);
+    transform: scale(1.18);
+    box-shadow: 0 0 0 6px rgba(var(--accent-rgb, 56, 189, 248), 0.45);
+  }
+  .word.enter { transform: scale(0.6); }
+  .cue { position: absolute; left: 50%; top: 42%; transform: translateX(-50%); font-size: 13px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent, #38bdf8); }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="cue" id="cue">Captions</div>
+  <div class="stage">
+    <div class="words" id="words"></div>
+  </div>
+</div>
+<script>
+(function () {
+  const root = document.getElementById('root');
+  const wordsEl = document.getElementById('words');
+  const cue = document.getElementById('cue');
+
+  let words = [];
+  function applyParams(params) {
+    if (!params) return;
+    const p = (name, def) => (params[name] !== undefined && params[name] !== null) ? params[name] : def;
+    const accent = p('accent', '#38bdf8');
+    const ink = p('ink', '#0f172a');
+    root.style.setProperty('--accent', accent);
+    root.style.setProperty('--ink', ink);
+    try {
+      const c = accent.slice(1);
+      root.style.setProperty('--accent-rgb', [parseInt(c.substr(0,2),16), parseInt(c.substr(2,2),16), parseInt(c.substr(4,2),16)].join(','));
+    } catch (e) {}
+    try {
+      const c = ink.slice(1);
+      root.style.setProperty('--ink-rgb', [parseInt(c.substr(0,2),16), parseInt(c.substr(2,2),16), parseInt(c.substr(4,2),16)].join(','));
+    } catch (e) {}
+    if (p('cue')) cue.textContent = p('cue');
+    const raw = p('words', []);
+    words = Array.isArray(raw) ? raw : [];
+    renderWords();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[ch]));
+  }
+
+  function renderWords() {
+    wordsEl.innerHTML = '';
+    words.forEach(function (w, i) {
+      const span = document.createElement('span');
+      span.className = 'word enter';
+      span.textContent = escapeHtml(typeof w === 'string' ? w : w.text);
+      span.dataset.index = i;
+      wordsEl.appendChild(span);
+    });
+  }
+
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  window.__msSeek = function (timeSec, frameIndex, totalFrames, params) {
+    applyParams(params);
+    const progress = totalFrames > 1 ? frameIndex / (totalFrames - 1) : 0;
+    const ease = easeOutCubic(progress);
+    const nodes = wordsEl.querySelectorAll('.word');
+    nodes.forEach(function (node, i) {
+      const w = words[i] || {};
+      const start = typeof w === 'string' ? 0 : (w.start !== undefined ? w.start : i * 0.5);
+      const end = typeof w === 'string' ? 999 : (w.end !== undefined ? w.end : start + 0.5);
+      if (timeSec < start) {
+        node.className = 'word';
+        node.style.opacity = 0.35;
+        node.style.transform = 'scale(0.92)';
+      } else if (timeSec >= start && timeSec < end) {
+        node.className = 'word active';
+        const pop = 1 + 0.18 * Math.min(1, Math.sin((timeSec - start) / Math.max(end - start, 0.01) * Math.PI));
+        node.style.transform = 'scale(' + pop + ')';
+      } else {
+        node.className = 'word past';
+        node.style.opacity = 0.18;
+        node.style.transform = 'scale(0.92)';
+      }
+    });
+  };
+})();
+</script>
+</body>
+</html>

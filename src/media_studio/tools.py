@@ -120,6 +120,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         False,
         "colour tracing (optional extra 'vector')",
     ),
+    ToolSpec(
+        "playwright",
+        (sys.executable, "-c", "import playwright"),
+        False,
+        "HTML/SVG-to-video rendering (optional extra 'render-html')",
+    ),
 )
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -280,6 +286,34 @@ def deep_checks(
             detail=f"{free_gib:.1f} GiB free",
         )
     )
+
+    # Playwright plus a cached Chromium binary (optional render-html extra).
+    try:  # pragma: no cover - environment probe
+        import playwright  # noqa: F401
+
+        cache = Path.home() / ".cache" / "ms-playwright"
+        patterns = (
+            "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell",
+            "chromium-*/chrome-linux64/chrome",
+        )
+        has_chromium = cache.is_dir() and any(cache.glob(pattern) for pattern in patterns)
+        results.append(
+            CheckResult(
+                "Playwright Chromium",
+                has_chromium,
+                "cached Chromium present under ~/.cache/ms-playwright/"
+                if has_chromium
+                else "playwright installed but no cached Chromium binary",
+            )
+        )
+    except ImportError:
+        results.append(
+            CheckResult(
+                "Playwright Chromium",
+                False,
+                "playwright not installed (install media-studio[render-html] + a Chromium binary)",
+            )
+        )
 
     engines_cfg = Path("~/.config/opencode/media-engines.json").expanduser()
     if engines_cfg.is_file():
