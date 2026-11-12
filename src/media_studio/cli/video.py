@@ -56,6 +56,11 @@ def register_video_parser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="keep the lossless render under /tmp/opencode for inspection",
     )
+    render.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing .fcproj even when it carries manual GUI edits",
+    )
     render.set_defaults(func=cmd_video_render)
 
     handoff = video_sub.add_parser(
@@ -175,6 +180,7 @@ def cmd_video_render(args: argparse.Namespace) -> int:
             gpu=gpu,
             preview=args.preview,
             burn_captions=getattr(args, "burn_captions", False),
+            force=bool(getattr(args, "force", False)),
         )
     except (ManifestError, VideoError, MediaError, FilmCraftError) as error:
         print(f"error: {error}", file=sys.stderr)

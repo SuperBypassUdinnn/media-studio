@@ -963,3 +963,93 @@ def test_video_render_force_overwrites_existing_fcproj(
     assert forced == [True]
     assert target.read_text(encoding="utf-8") == "rebuilt by the compiler"
     assert result.fcproj_path == target
+
+
+def test_cli_video_render_force_forwards_to_render_filmcraft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ms video render --force`` must forward force=True to render_filmcraft."""
+    from media_studio import cli as cli_module
+    from media_studio.cli import main
+
+    root = scaffold_project("video-demo", root=tmp_path).path
+    project = load_project(root)
+    deliverable = project.deliverables[0]
+    fcproj_path = project.root / "out" / f"{deliverable.id}.fcproj"
+    fcproj_path.parent.mkdir(parents=True, exist_ok=True)
+    fcproj_path.write_text("manual GUI edits live here", encoding="utf-8")
+
+    seen: dict[str, object] = {}
+
+    def fake_render_filmcraft(
+        project: Project,
+        deliverable_id: str | None = None,
+        *,
+        gpu: str = "auto",
+        quality: int = 70,
+        runner=None,
+        generate_review: bool = True,
+        preview: bool = False,
+        burn_captions: bool = False,
+        force: bool = False,
+    ) -> SimpleNamespace:
+        seen["force"] = force
+        seen["deliverable_id"] = deliverable_id
+        return SimpleNamespace(
+            deliverable=project.root / "out" / "video" / "master.mp4",
+            fcproj_path=fcproj_path,
+            report_path=fcproj_path.with_suffix(".json"),
+            contact_sheet=fcproj_path.with_suffix(".png"),
+            proxy_path=None,
+            stills=[],
+            report={
+                "checks": {},
+                "ok": True,
+                "problems": [],
+                "width": 320,
+                "height": 180,
+                "fps": 24,
+                "duration_seconds": 6.0,
+                "video_codec": "h264",
+                "audio_codec": "aac",
+            },
+        )
+
+    monkeypatch.setattr(cli_module, "render_filmcraft", fake_render_filmcraft)
+    monkeypatch.setattr(
+        cli_module, "qc_report", lambda *args, **kwargs: {"checks": {}, "ok": True, "problems": []}
+    )
+
+    assert main(["video", "render", str(root), "--deliverable", deliverable.id, "--force"]) == 0
+    assert seen["force"] is True
+    assert seen["deliverable_id"] == deliverable.id
+
+    # Without --force the existing .fcproj must not be overwritten.
+    seen.clear()
+
+    def fake_render_filmcraft_no_force(*a, **k) -> SimpleNamespace:
+        seen["force"] = k.get("force", False)
+        seen["deliverable_id"] = k.get("deliverable_id", a[1] if len(a) > 1 else None)
+        return SimpleNamespace(
+            deliverable=project.root / "out" / "video" / "master.mp4",
+            fcproj_path=fcproj_path,
+            report_path=fcproj_path.with_suffix(".json"),
+            contact_sheet=fcproj_path.with_suffix(".png"),
+            proxy_path=None,
+            stills=[],
+            report={
+                "checks": {},
+                "ok": True,
+                "problems": [],
+                "width": 320,
+                "height": 180,
+                "fps": 24,
+                "duration_seconds": 6.0,
+                "video_codec": "h264",
+                "audio_codec": "aac",
+            },
+        )
+
+    monkeypatch.setattr(cli_module, "render_filmcraft", fake_render_filmcraft_no_force)
+    assert main(["video", "render", str(root), "--deliverable", deliverable.id]) == 0
+    assert seen["force"] is False
