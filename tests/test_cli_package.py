@@ -179,6 +179,15 @@ def test_monkeypatchable_symbols_reexported() -> None:
         assert hasattr(cli_module, name), f"missing re-export: {name}"
 
 
+def test_cli_promo_render_accepts_fps_flag() -> None:
+    """`ms promo render` must accept --fps (default 30, supports 60)."""
+    parser = build_parser()
+    ns = parser.parse_args(["promo", "render", "proj", "--auto", "--fps", "60"])
+    assert ns.fps == 60
+    ns_default = parser.parse_args(["promo", "render", "proj"])
+    assert ns_default.fps == 30
+
+
 def test_cli_module_execution_entrypoint() -> None:
     """Verify `python -m media_studio.cli --help` executes cleanly."""
     proc = subprocess.run(

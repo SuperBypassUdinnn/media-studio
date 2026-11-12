@@ -67,6 +67,56 @@ def test_apply_transition_rejects_bad_duration(tmp_path: Path, bad_duration: int
         )
 
 
+def test_apply_transition_command_uses_high_quality_intermediate_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apply_transition must use crf 14, preset veryfast, lanczos scale, limited range."""
+    from media_studio import transitions
+
+    captured: dict = {}
+
+    def fake_ffmpeg(command):
+        captured["command"] = list(command)
+        # Delegate to real ffmpeg so the output file exists for the probe in apply_transition.
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostats", "-y", *command], capture_output=True, text=True
+        )
+
+    monkeypatch.setattr(transitions, "_ffmpeg", fake_ffmpeg)
+
+    clip_a = tmp_path / "a.mp4"
+    clip_b = tmp_path / "b.mp4"
+    _make_clip(clip_a, 1.0)
+    _make_clip(clip_b, 1.0)
+
+    apply_transition(
+        clip_a,
+        clip_b,
+        kind="whip_pan_left",
+        output=tmp_path / "out.mp4",
+        duration_ms=250,
+        width=1080,
+        height=1920,
+        fps=30,
+    )
+
+    cmd = captured["command"]
+    assert "-preset" in cmd and cmd[cmd.index("-preset") + 1] == "veryfast", cmd
+    assert "-crf" in cmd and cmd[cmd.index("-crf") + 1] == "14", cmd
+    assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p", cmd
+    # The normalisation scale must carry flags=lanczos.
+    norm_idx = None
+    for i, part in enumerate(cmd):
+        if part == "-filter_complex":
+            norm_idx = i + 1
+            break
+    assert norm_idx is not None
+    vf = cmd[norm_idx]
+    assert "scale=w=1080:h=1920" in vf, vf
+    assert "flags=lanczos" in vf, f"no lanczos in normalisation filter: {vf}"
+    assert "format=yuv420p" in vf, f"no limited range format in normalisation filter: {vf}"
+
+
 def _make_clip(destination: Path, duration: float = 1.0, *, with_audio: bool = False) -> Path:
     """Render one synthetic animated clip with real ffmpeg."""
 

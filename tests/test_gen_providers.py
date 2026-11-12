@@ -229,6 +229,24 @@ def test_keyless_image_gets_pollinations_url(monkeypatch, tmp_path) -> None:
     assert "seed=9" in captured["url"]
 
 
+def test_keyless_requests_native_resolution_for_1080x1920(monkeypatch, tmp_path) -> None:
+    """Keyless must request width/height matching the target aspect's native resolution."""
+    captured: dict = {}
+
+    def fake_get(url, timeout):
+        captured["url"] = url
+        return FakeKeylessResponse(200)
+
+    monkeypatch.setattr("media_studio.gen.providers.keyless.httpx.get", fake_get)
+    provider = KeylessProvider()
+    output = tmp_path / "out.png"
+    provider.generate_image(
+        "sunset over mountains", output=output, size="1080x1920", seed=9, references=[]
+    )
+
+    assert "width=1080" in captured["url"] and "height=1920" in captured["url"]
+
+
 def test_plugins_are_unavailable_without_key(monkeypatch) -> None:
     for provider in (FalProvider(), ReplicateProvider(), KlingProvider(), SeedanceProvider()):
         assert provider.available() is False

@@ -396,7 +396,7 @@ def _resolve_reference_paths(project: Project, references: tuple[str, ...]) -> l
 
 
 def _render_solid_clip(
-    output: Path, *, width: int, height: int, duration: float, color: str
+    output: Path, *, width: int, height: int, duration: float, color: str, fps: int = 30
 ) -> Path:
     col = color.lstrip("#")
     if col.lower() in {"0f172a", "000000", "000"}:
@@ -412,7 +412,7 @@ def _render_solid_clip(
             "lavfi",
             "-i",
             (
-                f"gradients=s={width}x{height}:r=30:d={duration:.4f}"
+                f"gradients=s={width}x{height}:r={fps}:d={duration:.4f}"
                 f":c0=0x{col}:c1=0x0c4a6e:c2=0x1e293b:c3=0x334155:speed=0.8"
             ),
             "-f",
@@ -441,12 +441,18 @@ def _render_solid_clip(
 
 
 def _normalize_clip(
-    source: Path, output: Path, *, width: int, height: int, duration: float
+    source: Path,
+    output: Path,
+    *,
+    width: int,
+    height: int,
+    duration: float,
+    fps: int = 30,
 ) -> Path:
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
     vf = (
-        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},fps=30,format=yuv420p"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={width}:{height},fps={fps},scale=in_range=auto:out_range=limited,format=yuv420p"
     )
     if source.suffix.lower() in image_exts:
         cmd = [
@@ -470,7 +476,9 @@ def _normalize_clip(
             "-c:v",
             "libx264",
             "-preset",
-            "ultrafast",
+            "veryfast",
+            "-crf",
+            "14",
             "-c:a",
             "aac",
             "-b:a",
@@ -504,7 +512,9 @@ def _normalize_clip(
             "-c:v",
             "libx264",
             "-preset",
-            "ultrafast",
+            "veryfast",
+            "-crf",
+            "14",
             "-c:a",
             "aac",
             "-b:a",
@@ -528,7 +538,7 @@ def _composite_overlay(base: Path, overlay: Path, output: Path, *, width: int, h
             "-i",
             str(overlay),
             "-filter_complex",
-            f"[1:v]scale={width}:{height}[ov];[0:v][ov]overlay=0:0:shortest=1,format=yuv420p[outv]",
+            f"[1:v]scale={width}:{height}:flags=lanczos[ov];[0:v][ov]overlay=0:0:shortest=1,scale=in_range=auto:out_range=limited,format=yuv420p[outv]",
             "-map",
             "[outv]",
             "-map",
@@ -536,7 +546,9 @@ def _composite_overlay(base: Path, overlay: Path, output: Path, *, width: int, h
             "-c:v",
             "libx264",
             "-preset",
-            "ultrafast",
+            "veryfast",
+            "-crf",
+            "14",
             "-c:a",
             "copy",
             str(output),
@@ -658,8 +670,14 @@ def render_promo(
     force: bool = False,
     deliverables: tuple[str, ...] = DEFAULT_DELIVERABLES,
     tts_engine: str = "auto",
+    fps: int = 30,
 ) -> PromoRenderResult:
-    """Render a promotional video plan, enforcing the Storyboard/Quota Gate unless ``auto=True``."""
+    """Render a promotional video plan, enforcing the Storyboard/Quota Gate unless ``auto=True``.
+
+    ``fps`` sets the deliverable frame rate (default 30; use 60 for high-motion
+    promo output) and is threaded through every beat render, transition,
+    caption burn, and the final encode.
+    """
 
     if not plan.beats:
         raise PromoError("promo plan has no beats")
@@ -745,20 +763,8 @@ def render_promo(
         min_beat_dur = min(b.duration for b in plan.beats)
         trans_td = min(0.25, max(0.06, min_beat_dur * 0.35))
         trans_ms = max(60, round(trans_td * 1000))
-        # Quantize td to 30fps to match transitions.apply_transition frame quantization.
-        quant_td = max(1, round(trans_ms * 30 / 1000.0)) / 30.0
-
-        # 2. Acquire/generate B-roll + render motion overlays per beat, per deliverable aspect.
-        primary_col = project.brand.palette.get("primary", "#0F172A")
-        accent_col = project.brand.palette.get("accent", "#38BDF8")
-        ref_paths = _resolve_reference_paths(project, plan.references)
-        gen_calls_used = 0
-
-        min_beat_dur = min(b.duration for b in plan.beats)
-        trans_td = min(0.25, max(0.06, min_beat_dur * 0.35))
-        trans_ms = max(60, round(trans_td * 1000))
-        # Quantize td to 30fps to match transitions.apply_transition frame quantization.
-        quant_td = max(1, round(trans_ms * 30 / 1000.0)) / 30.0
+        # Quantize td to the deliverable fps to match transition frame quantization.
+        quant_td = max(1, round(trans_ms * fps / 1000.0)) / fps
 
         master_dur = max(plan.total_duration, 1.0)
 
@@ -816,9 +822,10 @@ def render_promo(
                         width=1920,
                         height=1080,
                         duration=clip_dur,
+                        fps=fps,
                     )
                     reframed = scratch / f"beat-{idx:02d}-reframed.mp4"
-                    reframe_video(normalized, aspect=aspect, mode="auto", output=reframed)
+                    reframe_video(normalized, aspect=aspect, mode="auto", output=reframed, fps=fps)
                     base_clip = reframed
                 elif beat.gen_prompt and gen_calls_used < max_gen_calls:
                     gen_out = (
@@ -830,7 +837,7 @@ def render_promo(
                                 kind="video",
                                 prompt=beat.gen_prompt,
                                 duration=clip_dur,
-                                fps=30,
+                                fps=fps,
                                 resolution="1920x1080",
                                 references=ref_paths,
                             ),
@@ -841,10 +848,17 @@ def render_promo(
                         gen_calls_used += 1
                         normalized = scratch / f"beat-{idx:02d}-norm.mp4"
                         _normalize_clip(
-                            gen_res.output, normalized, width=1920, height=1080, duration=clip_dur
+                            gen_res.output,
+                            normalized,
+                            width=1920,
+                            height=1080,
+                            duration=clip_dur,
+                            fps=fps,
                         )
                         reframed = scratch / f"beat-{idx:02d}-reframed.mp4"
-                        reframe_video(normalized, aspect=aspect, mode="auto", output=reframed)
+                        reframe_video(
+                            normalized, aspect=aspect, mode="auto", output=reframed, fps=fps
+                        )
                         base_clip = reframed
                     except GenError as error:
                         notes.append(f"gen fallback on beat {idx}: {error}")
@@ -858,7 +872,12 @@ def render_promo(
                 elif beat.template:
                     html_out = scratch / f"beat-{idx:02d}-html.mov"
                     _render_solid_clip(
-                        base_clip, width=out_w, height=out_h, duration=clip_dur, color=primary_col
+                        base_clip,
+                        width=out_w,
+                        height=out_h,
+                        duration=clip_dur,
+                        color=primary_col,
+                        fps=fps,
                     )
                     try:
                         value = _value_from_text(beat.text)
@@ -877,7 +896,7 @@ def render_promo(
                             project=project,
                             width=out_w,
                             height=out_h,
-                            fps=30,
+                            fps=fps,
                             duration=clip_dur,
                             transparent=True,
                         )
@@ -899,12 +918,18 @@ def render_promo(
                                     width=out_w,
                                     height=out_h,
                                     duration=clip_dur,
+                                    fps=fps,
                                 )
                     except HtmlMotionError as error:
                         notes.append(f"html_motion fallback on beat {idx}: {error}")
                 else:
                     _render_solid_clip(
-                        base_clip, width=out_w, height=out_h, duration=clip_dur, color=primary_col
+                        base_clip,
+                        width=out_w,
+                        height=out_h,
+                        duration=clip_dur,
+                        color=primary_col,
+                        fps=fps,
                     )
 
                 final_beat_clip = base_clip
@@ -919,7 +944,7 @@ def render_promo(
                             project=project,
                             width=out_w,
                             height=out_h,
-                            fps=30,
+                            fps=fps,
                             duration=clip_dur,
                         )
                         if ec_res.ok and ec_res.output.is_file():
@@ -949,7 +974,7 @@ def render_promo(
                         duration_ms=trans_ms,
                         width=out_w,
                         height=out_h,
-                        fps=30,
+                        fps=fps,
                     )
                     master_video = joined
                 except TransitionError as error:

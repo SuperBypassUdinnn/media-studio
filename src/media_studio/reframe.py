@@ -222,10 +222,10 @@ def _blur_pad_filtergraph(source_w: int, source_h: int, out_w: int, out_h: int) 
     """
 
     bg = (
-        f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
-        f"crop={out_w}:{out_h},boxblur=20:5[bg]"
+        f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=increase"
+        f":flags=lanczos,crop={out_w}:{out_h},boxblur=20:5[bg]"
     )
-    fg = f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease[fg]"
+    fg = f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=lanczos[fg]"
     overlay = "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]"
     return f"{bg};{fg};{overlay}"
 
@@ -253,7 +253,7 @@ def _track_filtergraph(
             crop_w=crop_w,
             crop_h=crop_h,
         )
-        return f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}[v]"
+        return f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}:flags=lanczos[v]"
 
     filter_parts: list[str] = []
     for seg_index, ((start_s, end_s), (_, cx, cy)) in enumerate(
@@ -283,6 +283,7 @@ def _run_reframe(
     aspect: str,
     mode: str,
     scene_threshold: float,
+    fps: int = 30,
 ) -> tuple[int, int, float, int]:
     """Build and run the ffmpeg reframe; return (width, height, duration, scenes)."""
 
@@ -357,7 +358,7 @@ def _run_reframe(
         "-pix_fmt",
         "yuv420p",
         "-r",
-        str(round(info.fps or 30)),
+        str(int(fps)),
         str(output),
     ]
 
@@ -379,6 +380,7 @@ def reframe_video(
     mode: str = "auto",
     output: Path,
     scene_threshold: float = 0.3,
+    fps: int = 30,
 ) -> ReframeResult:
     """Reframe ``source`` to ``aspect`` and write ``output``.
 
@@ -387,6 +389,9 @@ def reframe_video(
       - ``blur-pad``: foreground scaled inside a blurred scaled background
         (for wide UI/screencasts that cannot be cropped).
       - ``auto``: track when a stable subject is detected, else blur-pad.
+
+    ``fps`` sets the output frame rate (default 30) and is applied to the
+    ffmpeg ``-r`` flag and reported in the probe.
     """
 
     source = Path(source)
@@ -401,7 +406,7 @@ def reframe_video(
         effective_mode = _choose_mode(source, scene_threshold)
 
     width, height, duration, scenes = _run_reframe(
-        source, output, aspect, effective_mode, scene_threshold
+        source, output, aspect, effective_mode, scene_threshold, fps=fps
     )
     return ReframeResult(
         output=output,

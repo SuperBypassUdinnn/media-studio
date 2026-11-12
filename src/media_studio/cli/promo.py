@@ -83,6 +83,12 @@ def register_promo_parser(subparsers: argparse._SubParsersAction) -> None:
         default="auto",
         help="TTS engine override (auto, edge, piper, kokoro, espeak-ng)",
     )
+    render_parser.add_argument(
+        "--fps",
+        type=int,
+        default=30,
+        help="deliverable frame rate in fps (default: 30; use 60 for high-motion output)",
+    )
     render_parser.set_defaults(func=cmd_promo_render)
 
     qc_parser = sub.add_parser("qc", help="verify promo deliverables and generate contact sheets")
@@ -153,6 +159,7 @@ def cmd_promo_render(args: argparse.Namespace) -> int:
             force=args.force,
             deliverables=deliverables,
             tts_engine=args.tts_engine,
+            fps=args.fps,
         )
     except (PromoError, ManifestError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)

@@ -94,7 +94,7 @@ def _validate_duration_ms(duration_ms: object) -> int:
 def _normalisation_filter(width: int, height: int, fps: int) -> str:
     return (
         f"scale=w={width}:h={height}:force_original_aspect_ratio=disable"
-        f",setsar=1,fps={fps},format=yuv420p"
+        f":flags=lanczos,setsar=1,fps={fps},format=yuv420p"
     )
 
 
@@ -216,7 +216,7 @@ def apply_transition(
         "-preset",
         "veryfast",
         "-crf",
-        "23",
+        "14",
         "-pix_fmt",
         "yuv420p",
     ]

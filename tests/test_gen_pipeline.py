@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -320,6 +321,80 @@ def test_video_image_fallback_leaves_no_temp_png(
     assert output.read_bytes() == FAKE_VIDEO
     # No intermediate .png remains beside the video output.
     assert not output.with_suffix(".png").exists()
+
+
+def _capture_still_to_motion(monkeypatch) -> dict:
+    captured: dict = {}
+
+    def fake_still_to_motion(still, output, *, duration, fps, resolution, motion):
+        captured["still"] = str(still)
+        captured["output"] = str(output)
+        captured["duration"] = duration
+        captured["fps"] = fps
+        captured["resolution"] = resolution
+        captured["motion"] = motion
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_bytes(FAKE_VIDEO)
+
+    monkeypatch.setattr("media_studio.gen.pipeline._still_to_motion", fake_still_to_motion)
+    return captured
+
+
+def test_still_to_motion_supersamples_with_lanczos(tmp_path, monkeypatch) -> None:
+    """_still_to_motion must supersample (scale up -> zoompan -> scale down) with lanczos flags."""
+    from media_studio.gen import pipeline
+
+    vf_captured: dict = {}
+
+    def fake_run_ffmpeg(command):
+        vf_captured["command"] = list(command)
+        return subprocess.CompletedProcess(args=command, returncode=0)
+
+    monkeypatch.setattr(pipeline, "_run_ffmpeg", fake_run_ffmpeg)
+    still = tmp_path / "still.png"
+    still.write_bytes(b"fake")
+    output = tmp_path / "out.mp4"
+
+    pipeline._still_to_motion(
+        still, output, duration=2.0, fps=30, resolution="1080x1920", motion="push_in"
+    )
+
+    vf = vf_captured["command"][vf_captured["command"].index("-vf") + 1]
+    assert "flags=lanczos" in vf, f"no lanczos flags in vf: {vf}"
+    # Supersample: scale up before zoompan, then scale back down.
+    assert vf.count("scale=") >= 2, f"expected supersample scale chain: {vf}"
+    assert "zoompan" in vf, f"no zoompan in vf: {vf}"
+    # Eased zoom curve: slow-in/slow-out (ease function), not linear min(zoom+...).
+    assert "if(gt(zoom" in vf or "ease" in vf or "sin" in vf or "pow" in vf, (
+        f"zoom curve not eased: {vf}"
+    )
+
+
+def test_still_to_motion_limited_range_output(tmp_path, monkeypatch) -> None:
+    """_still_to_motion output must be limited range (yuv420p, never yuvj420p)."""
+    from media_studio.gen import pipeline
+
+    vf_captured: dict = {}
+
+    def fake_run_ffmpeg(command):
+        vf_captured["command"] = list(command)
+        return subprocess.CompletedProcess(args=command, returncode=0)
+
+    monkeypatch.setattr(pipeline, "_run_ffmpeg", fake_run_ffmpeg)
+    still = tmp_path / "still.png"
+    still.write_bytes(b"fake")
+    output = tmp_path / "out.mp4"
+
+    pipeline._still_to_motion(
+        still, output, duration=2.0, fps=30, resolution="1080x1920", motion="push_in"
+    )
+
+    cmd = vf_captured["command"]
+    assert "-pix_fmt" in cmd
+    pix_idx = cmd.index("-pix_fmt")
+    assert cmd[pix_idx + 1] == "yuv420p", (
+        f"expected yuv420p (limited range), got {cmd[pix_idx + 1]}"
+    )
 
 
 def test_image_all_providers_fail_returns_deterministic_fallback(

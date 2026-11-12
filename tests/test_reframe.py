@@ -41,6 +41,15 @@ def test_safe_zone_for_16x9_1920x1080() -> None:
     assert zone == {"top": 60, "bottom": 120, "left": 60, "right": 140}
 
 
+def test_reframe_video_accepts_fps_param() -> None:
+    """reframe_video must accept an fps param (default 30) without changing existing behavior."""
+    import inspect
+
+    sig = inspect.signature(reframe_video)
+    assert "fps" in sig.parameters
+    assert sig.parameters["fps"].default == 30
+
+
 def test_safe_zone_for_unknown_aspect_raises() -> None:
     with pytest.raises(ReframeError, match="unknown aspect"):
         safe_zone_for("4:3", 1080, 1920)

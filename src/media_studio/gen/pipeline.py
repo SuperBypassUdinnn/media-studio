@@ -214,6 +214,12 @@ def _finalize(
     )
 
 
+# Supersample factor for the zoompan Ken Burns move: render the still at ~2x
+# the target before zooming, then scale back down with lanczos so integer
+# x/y rounding no longer jitters.
+ZOOM_SUPER_SAMPLE = 2
+
+
 def _still_to_motion(
     still: Path,
     output: Path,
@@ -223,11 +229,21 @@ def _still_to_motion(
     resolution: str,
     motion: str = "push_in",
 ) -> None:
-    """Convert one still image to a motion MP4 with an FFmpeg ``zoompan`` Ken Burns move."""
+    """Convert one still image to a motion MP4 with a supersampled ``zoompan`` Ken Burns move.
+
+    The still is scaled up (``ZOOM_SUPER_SAMPLE``x) with lanczos before the
+    zoompan, then scaled back down with lanczos, so integer x/y rounding no
+    longer jitters. The zoom curve is eased (slow-in/slow-out sine) and the
+    output is forced to limited range (``yuv420p``).
+    """
 
     width_text, _, height_text = str(resolution).lower().partition("x")
     width, height = int(width_text), int(height_text)
+    super_w, super_h = width * ZOOM_SUPER_SAMPLE, height * ZOOM_SUPER_SAMPLE
     total_frames = max(1, round(duration * fps))
+    # Slow-in/slow-out (ease-in-out sine) zoom curve: zoom starts at 1, eases
+    # toward 1.4, never exceeding it.
+    ease_zoom = "if(lt(zoom,1.4),1+0.4*sin(min((zoom-1)/0.4,1)*3.14159/2),1.4)"
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -241,8 +257,10 @@ def _still_to_motion(
         str(still),
         "-vf",
         (
-            f"zoompan=z='min(zoom+0.0015,1.4)':x='iw/2-(iw/zoom)/2':"
-            f"y='ih/2-(ih/zoom)/2':s={width}x{height}:fps={fps}:d={total_frames}"
+            f"scale={super_w}x{super_h}:flags=lanczos,"
+            f"zoompan=z='{ease_zoom}':x='iw/2-(iw/zoom)/2':"
+            f"y='ih/2-(ih/zoom)/2':s={super_w}x{super_h}:fps={fps}:d={total_frames},"
+            f"scale={width}x{height}:flags=lanczos,format=yuv420p"
         ),
         "-t",
         f"{duration:.3f}",

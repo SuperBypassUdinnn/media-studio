@@ -546,6 +546,103 @@ def test_cli_promo_plan_render_gate_and_qc_error(
     assert "error:" in captured_qc.err
 
 
+def test_render_promo_accepts_fps_param_and_threads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_promo must accept fps (default 30) and thread fps=60 through every beat/encode."""
+
+    root = _make_promo_project(tmp_path, with_assets=True)
+    project = load_project(root)
+    plan = plan_promo(
+        project,
+        script="Hook fast. Problem clear. Demo smooth. Proof real. CTA now.",
+        target_duration=4.0,
+    )
+
+    captured: dict = {}
+
+    def _fake_tts(text, *, output, words_out=None, **_kwargs):
+        _ffmpeg_test_wav(output, 4.0)
+        wpath = words_out or output.with_suffix(".json")
+        wpath.write_text(
+            json.dumps([{"word": "Hook", "start": 0.1, "end": 0.7}]),
+            encoding="utf-8",
+        )
+        return TtsResult(
+            audio_path=output,
+            words_path=wpath,
+            sidecar_path=output.with_suffix(output.suffix + ".license"),
+            duration=4.0,
+            engine="mock",
+            voice="mock",
+            words=(WordTiming("Hook", 0.1, 0.7),),
+        )
+
+    def _fake_gen(request, *, output, **_kwargs):
+        _ffmpeg_test_mp4(output, 1920, 1080, 0.8, "0x1e293b")
+        return GenResult(
+            output=output,
+            kind="video",
+            provider="mock",
+            model="mock-v1",
+            seed=42,
+            prompt="",
+            references=(),
+            sha256="0" * 64,
+            size_bytes=1,
+            duration=1.0,
+        )
+
+    def _fake_html(_template, *, output, width=1920, height=1080, fps=30, duration=1.0, **_kwargs):
+        captured["html_fps"] = fps
+        captured["html_w"] = width
+        captured["html_h"] = height
+        out_mp4 = output.with_suffix(".mp4")
+        _ffmpeg_test_mp4(out_mp4, width, height, max(0.8, duration), "0x0f172a")
+        return HtmlMotionResult(
+            output=out_mp4,
+            template="saas-feature-card",
+            width=width,
+            height=height,
+            fps=fps,
+            frames=max(1, round(duration * fps)),
+            duration=duration,
+            transparent=False,
+        )
+
+    def _fake_ec(preset_name, output, *, width=1920, height=1080, fps=30, duration=1.0, **_kwargs):
+        captured["ec_fps"] = fps
+        out_mp4 = output.with_suffix(".mp4")
+        _ffmpeg_test_mp4(out_mp4, width, height, max(0.8, duration), "0x0284c7")
+        return MotionResult(
+            output=out_mp4,
+            ecp_path=output.with_suffix(".ecp"),
+            report_path=output.with_suffix(".report.json"),
+            report={"ok": True, "preset": preset_name},
+        )
+
+    def _fake_norm(source, output, *, width, height, duration, **_kwargs):
+        captured["norm_fps"] = None  # _normalize_clip signature has no fps; check vf instead
+        Path(output).write_bytes(b"fake-norm")
+        return output
+
+    monkeypatch.setattr("media_studio.promo.synthesize_speech", _fake_tts)
+    monkeypatch.setattr("media_studio.promo.generate_asset", _fake_gen)
+    monkeypatch.setattr("media_studio.promo.render_html_motion", _fake_html)
+    monkeypatch.setattr("media_studio.promo.render_promo_preset", _fake_ec)
+
+    render_promo(project, plan, auto=True, max_gen_calls=2, force=True, fps=60)
+
+    assert captured.get("html_fps") == 60, captured
+    assert captured.get("ec_fps") == 60, captured
+
+    # Default fps is 30 when omitted.
+    captured.clear()
+    render_promo(project, plan, auto=True, max_gen_calls=2, force=True)
+    assert captured.get("html_fps") == 30, captured
+    assert captured.get("ec_fps") == 30, captured
+
+
 def test_render_promo_rejects_empty_beats(tmp_path: Path) -> None:
     root = _make_promo_project(tmp_path)
     project = load_project(root)

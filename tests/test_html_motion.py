@@ -267,6 +267,58 @@ def test_html_motion_templates_contains_bundled_names() -> None:
     assert len(html_motion.HTML_MOTION_TEMPLATES) == 4
 
 
+def test_motion_html_templates_use_vmin_sizing() -> None:
+    """Templates must use viewport-relative vmin sizing (no fixed px/vw caps) so cards
+    fill the frame proportionally at both 1080x1920 and 1920x1080."""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    templates_dir = repo_root / "templates" / "motion-html"
+    for name in html_motion.HTML_MOTION_TEMPLATES:
+        source = (templates_dir / name).read_text(encoding="utf-8")
+        # No fixed px width/height caps on the card/stage.
+        assert "min(86vw," not in source, f"{name} still uses fixed vw cap"
+        assert "min(82vw," not in source, f"{name} still uses fixed vw cap"
+        assert "min(88vw," not in source, f"{name} still uses fixed vw cap"
+        assert "640px" not in source, f"{name} still uses fixed 640px cap"
+        assert "720px" not in source, f"{name} still uses fixed 720px cap"
+        assert "960px" not in source, f"{name} still uses fixed 960px cap"
+        # vmin-based sizing present for proportional fill.
+        assert "vmin" in source, f"{name} has no vmin sizing"
+        # Fonts scale with vmin (no fixed px font caps that break at 1080p).
+        assert "clamp(" not in source or "vmin" in source, f"{name} fonts should scale with vmin"
+
+
+def test_html_motion_fps_is_threaded_from_params(tmp_path: Path, _mock_ffmpeg) -> None:
+    """render_html_motion must pass fps through to the encode and frame math."""
+    page = _fake_page()
+    seen: dict = {}
+
+    def fake_seek(_js_expr, arg=None):
+        if isinstance(arg, dict) and "p" in arg:
+            seen["params"] = arg["p"]
+        return None
+
+    page.evaluate.side_effect = fake_seek
+    with mock.patch(
+        "media_studio.html_motion.sync_playwright", return_value=_fake_playwright(page)
+    ):
+        result = html_motion.render_html_motion(
+            "saas-feature-card",
+            output=tmp_path / "out.mov",
+            params={"headline": "Hello"},
+            project=_make_project(tmp_path),
+            width=1080,
+            height=1920,
+            fps=60,
+            duration=1.0,
+            transparent=False,
+        )
+    assert result.fps == 60
+    assert result.frames == 60  # round(1.0 * 60)
+    assert seen["params"]["fps"] == 60
+
+
 # ---------------------------------------------------------------------------
 # Slow E2E test: real Chromium + FFmpeg, alpha pinned
 # ---------------------------------------------------------------------------

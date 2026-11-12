@@ -11,22 +11,22 @@
   .card {
     position: absolute; left: 50%; top: 46%;
     transform: translate(-50%, -50%);
-    width: min(86vw, 720px); height: min(62vh, 520px);
+    width: 64vmin; height: 52vmin;
     background: rgba(255, 255, 255, 0.92);
     border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.35);
-    border-radius: 24px;
+    border-radius: 2vmin;
     box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.25);
-    padding: 40px;
+    padding: 4vmin;
     display: flex; flex-direction: column; gap: 14px;
     backdrop-filter: blur(6px);
   }
-  .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent, #38bdf8); }
-  h1 { font-size: clamp(20px, 5vw, 34px); line-height: 1.15; color: var(--ink, #0f172a); font-weight: 800; }
-  p { font-size: clamp(14px, 2.4vw, 17px); line-height: 1.5; color: #475569; }
-  .feature { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 14px; color: #334155; }
+  .eyebrow { font-size: 2.6vmin; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent, #38bdf8); }
+  h1 { font-size: clamp(14px, 4vmin, 26px); line-height: 1.15; color: var(--ink, #0f172a); font-weight: 800; }
+  p { font-size: clamp(11px, 2.2vmin, 16px); line-height: 1.5; color: #475569; }
+  .feature { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 2.8vmin; color: #334155; }
   .feature .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent, #38bdf8); flex: 0 0 auto; }
   /* Highlight ring around a target element. */
-  .target { position: relative; display: inline-block; margin-top: 18px; padding: 10px 16px; border-radius: 10px; border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.25); background: rgba(var(--accent-rgb, 56, 189, 248), 0.08); cursor: pointer; }
+  .target { position: relative; display: inline-block; margin-top: 3.6vmin; padding: 2vmin 3.2vmin; border-radius: 2vmin; border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.25); background: rgba(var(--accent-rgb, 56, 189, 248), 0.08); cursor: pointer; }
   .ring {
     position: absolute; top: 50%; left: 50%; width: 0; height: 0;
     border: 2px solid var(--accent, #38bdf8);
@@ -37,13 +37,13 @@
   .ring.active { opacity: 0.85; }
   /* Floating cursor click. */
   .cursor {
-    position: absolute; width: 22px; height: 22px;
+    position: absolute; width: 4.4vmin; height: 4.4vmin;
     border: 2.5px solid var(--ink, #0f172a); border-radius: 50%;
-    background: rgba(255,255,255,0.9); box-shadow: 0 0 0 4px rgba(var(--ink-rgb,15,23,42),0.12);
+    background: rgba(255,255,255,0.9); box-shadow: 0 0 0 0.8vmin rgba(var(--ink-rgb,15,23,42),0.12);
     pointer-events: none; z-index: 50; transform: translate(-50%, -50%);
   }
   .cursor .click { position: absolute; top: 50%; left: 50%; width: 0; height: 0; background: var(--accent, #38bdf8); border-radius: 50%; transform: translate(-50%, -50%); opacity: 0; transition: width 0.12s ease, height 0.12s ease, opacity 0.12s ease; }
-  .cursor .click.active { width: 14px; height: 14px; opacity: 0.85; }
+  .cursor .click.active { width: 2.8vmin; height: 2.8vmin; opacity: 0.85; }
 </style>
 </head>
 <body>
