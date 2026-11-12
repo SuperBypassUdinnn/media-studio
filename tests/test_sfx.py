@@ -109,6 +109,19 @@ def test_mix_transition_sfx_rejects_missing_base() -> None:
         )
 
 
+@pytest.mark.parametrize("bad_at", [-0.1, 1.5, 2.0, 10.0])
+def test_mix_transition_sfx_rejects_cue_at_out_of_bounds(bad_at: float) -> None:
+    """cue.at below 0 or above total_duration raises SfxError before ffmpeg runs."""
+
+    with pytest.raises(SfxError, match=r"cue\.at"):
+        mix_transition_sfx(
+            None,
+            [SfxCue(path_or_id="ui-pop", at=bad_at)],
+            output=Path("/tmp/opencode/out.wav"),
+            total_duration=1.0,
+        )
+
+
 @pytest.mark.slow
 def test_mix_transition_sfx_pure_sfx_bed(tmp_path: Path) -> None:
     """No base audio: silent bed, mixed cues match total_duration and stay under -1.5 dBTP."""

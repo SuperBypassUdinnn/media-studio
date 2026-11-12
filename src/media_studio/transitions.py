@@ -168,6 +168,7 @@ def apply_transition(
             f"({duration_a:.3f}s and {duration_b:.3f}s)"
         )
 
+    out_duration = duration_a + duration_b - td
     norm = _normalisation_filter(width, height, fps)
     parts: list[str] = [f"[0:v]{norm}[a]", f"[1:v]{norm}[b]"]
 
@@ -185,16 +186,16 @@ def apply_transition(
     if has_a or has_b:
         audio_parts: list[str] = []
         for index, (has, dur) in enumerate(((has_a, duration_a), (has_b, duration_b))):
-            label = f"{index}"
             if has:
                 audio_parts.append(
-                    f"[{index}:a]aformat=sample_rates={AUDIO_RATE}:channel_layouts=stereo[a{label}r]"
+                    f"[{index}:a]aformat=sample_rates={AUDIO_RATE}:channel_layouts=stereo"
+                    f",atrim=0:{dur:.6f}[a{index}]"
                 )
             else:
                 audio_parts.append(
-                    f"anullsrc=r={AUDIO_RATE}:cl=stereo:duration={dur:.6f}[a{label}r]"
+                    f"anullsrc=r={AUDIO_RATE}:cl=stereo:duration={dur:.6f}[a{index}]"
                 )
-        audio_parts.append("[a0r][a1r]concat=n=2:v=0:a=1[outa]")
+        audio_parts.append(f"[a0][a1]acrossfade=d={td:.6f}:c1=tri:c2=tri[outa]")
         parts.extend(audio_parts)
 
     filter_complex = ";".join(parts)
@@ -236,7 +237,7 @@ def apply_transition(
         )
     else:
         command.append("-an")
-    command.extend(["-movflags", "+faststart", str(output)])
+    command.extend(["-t", f"{out_duration:.6f}", "-movflags", "+faststart", str(output)])
 
     _ffmpeg(command)
 

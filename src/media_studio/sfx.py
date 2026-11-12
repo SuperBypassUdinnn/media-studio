@@ -124,6 +124,10 @@ def mix_transition_sfx(
 
     resolved_events: list[tuple[SfxCue, Path]] = []
     for cue in events:
+        if cue.at < 0.0:
+            raise SfxError(f"cue.at must be >= 0, got {cue.at}")
+        if cue.at > total_duration:
+            raise SfxError(f"cue.at={cue.at} exceeds total_duration={total_duration}")
         resolved_events.append((cue, _resolve_cue(cue.path_or_id)))
 
     inputs: list[str] = []

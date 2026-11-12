@@ -67,34 +67,59 @@ def test_apply_transition_rejects_bad_duration(tmp_path: Path, bad_duration: int
         )
 
 
-def _make_clip(destination: Path, duration: float = 1.0) -> Path:
+def _make_clip(destination: Path, duration: float = 1.0, *, with_audio: bool = False) -> Path:
     """Render one synthetic animated clip with real ffmpeg."""
 
-    completed = subprocess.run(
-        [
-            media.FFMPEG,
-            "-hide_banner",
-            "-nostats",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            f"testsrc2=size=160x120:rate=30:duration={duration}",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-an",
-            str(destination),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    command: list[str] = [
+        media.FFMPEG,
+        "-hide_banner",
+        "-nostats",
+        "-y",
+    ]
+    if with_audio:
+        command.extend(
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                f"testsrc2=size=160x120:rate=30:duration={duration}",
+                "-f",
+                "lavfi",
+                "-i",
+                f"sine=frequency=440:duration={duration}:sample_rate=48000",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "pcm_s16le",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-shortest",
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                f"testsrc2=size=160x120:rate=30:duration={duration}",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-an",
+            ]
+        )
+    command.append(str(destination))
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
     assert completed.returncode == 0, completed.stderr[-800:]
     assert destination.is_file()
     return destination
@@ -159,6 +184,38 @@ def test_apply_transition_rgb_split_hit_executes(tmp_path: Path) -> None:
     assert info.height == 1920
     assert info.fps == pytest.approx(30.0, abs=0.5)
     assert info.duration == pytest.approx(1.75, abs=0.2)
+
+
+@pytest.mark.slow
+def test_apply_transition_aligns_audio_to_output_duration(tmp_path: Path) -> None:
+    """clip_a has audio, clip_b is silent: output audio/video match out_duration."""
+
+    clip_a = tmp_path / "a.mp4"
+    clip_b = tmp_path / "b.mp4"
+    _make_clip(clip_a, 1.0, with_audio=True)
+    _make_clip(clip_b, 1.0, with_audio=False)
+
+    output = tmp_path / "out.mp4"
+    result = apply_transition(
+        clip_a,
+        clip_b,
+        kind="whip_pan_left",
+        output=output,
+        duration_ms=250,
+        width=160,
+        height=120,
+        fps=30,
+    )
+
+    assert isinstance(result, TransitionResult)
+    assert output.is_file() and output.stat().st_size > 0
+    info = media.probe(output)
+    expected = 1.0 + 1.0 - result.duration_ms / 1000.0
+    assert info.duration == pytest.approx(expected, abs=0.05)
+    assert info.audio_codec is not None
+    assert info.width == 160
+    assert info.height == 120
+    assert info.fps == pytest.approx(30.0, abs=0.5)
 
 
 @pytest.mark.slow
