@@ -37,8 +37,10 @@ from .assets import (
     suggested_asset_id,
 )
 from .audio import (
+    cmd_audio_clean,
     cmd_audio_sfx_list,
     cmd_audio_sfx_mix,
+    cmd_audio_tts,
     register_audio_parser,
 )
 from .common import EXIT_FAILURE, EXIT_OK, STAGING_CLASS_FOR_KIND
@@ -209,8 +211,10 @@ __all__ = [
     "cmd_assets_pull",
     "cmd_assets_search",
     "cmd_assets_stage",
+    "cmd_audio_clean",
     "cmd_audio_sfx_list",
     "cmd_audio_sfx_mix",
+    "cmd_audio_tts",
     "cmd_design_logo",
     "cmd_design_render",
     "cmd_design_svg_build",

@@ -24,6 +24,9 @@ vector = ["vtracer>=0.6"]
 # Playwright frame-stepped HTML/SVG-to-video rendering (reuses cached Chromium).
 render-html = ["playwright>=1.50"]
 
+# Free neural TTS (edge-tts) for ms audio tts.
+tts = ["edge-tts>=7.0"]
+
 [project.scripts]
 ms = "media_studio.cli:main"
 

@@ -126,6 +126,24 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         False,
         "HTML/SVG-to-video rendering (optional extra 'render-html')",
     ),
+    ToolSpec(
+        "edge-tts",
+        (sys.executable, "-c", "import edge_tts"),
+        False,
+        "free neural TTS (optional extra 'tts')",
+    ),
+    ToolSpec(
+        "httpx",
+        (sys.executable, "-c", "import httpx"),
+        False,
+        "generative provider HTTP client (optional extra 'gen')",
+    ),
+    ToolSpec(
+        "google-genai",
+        (sys.executable, "-c", "import google.genai"),
+        False,
+        "Google AI Studio generative client (optional extra 'gen')",
+    ),
 )
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -252,12 +270,23 @@ def deep_checks(
     for label, venv in TORCH_VENVS:
         expanded = venv.expanduser()
         if not (expanded / "bin" / "python").is_file():
-            results.append(CheckResult(f"torch {label}", False, f"missing venv: {expanded}"))
+            results.append(
+                CheckResult(
+                    f"torch {label}",
+                    False,
+                    f"optional: missing venv {expanded}; ffmpeg vocal cleanup fallback active",
+                )
+            )
             continue
         version = python_probe(expanded)
         if version is None:
             results.append(
-                CheckResult(f"torch {label}", False, f"torch not importable in {expanded}")
+                CheckResult(
+                    f"torch {label}",
+                    False,
+                    "optional: torch not importable in "
+                    f"{expanded}; ffmpeg vocal cleanup fallback active",
+                )
             )
         else:
             results.append(CheckResult(f"torch {label}", True, version))
@@ -314,6 +343,30 @@ def deep_checks(
                 "playwright not installed (install media-studio[render-html] + a Chromium binary)",
             )
         )
+
+    # Optional Python dependencies reported as checks (never fatal).
+    for module_name, detail, label in (
+        (
+            "edge_tts",
+            "edge-tts not installed (install media-studio[tts])",
+            "edge-tts",
+        ),
+        (
+            "httpx",
+            "httpx not installed (install media-studio[gen])",
+            "httpx",
+        ),
+        (
+            "google.genai",
+            "google-genai not installed (install media-studio[gen])",
+            "google-genai",
+        ),
+    ):
+        try:  # pragma: no cover - environment probe
+            __import__(module_name)
+            results.append(CheckResult(label, True, "installed"))
+        except ImportError:
+            results.append(CheckResult(label, False, detail))
 
     engines_cfg = Path("~/.config/opencode/media-engines.json").expanduser()
     if engines_cfg.is_file():
