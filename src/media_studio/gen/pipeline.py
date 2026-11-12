@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from .quota import QuotaStore
 
 STAGING_CLASS_FOR_KIND = {"image": "design", "video": "video"}
 LICENSE_TEXT = "LicenseRef-AI-Generated"
+DEFAULT_DAILY_CAP = 6
 DETERMINISTIC_FALLBACK = "deterministic-fallback"
 MOTION_FROM_STILL = "motion-from-still"
 
@@ -284,26 +286,51 @@ def _deterministic_card(output: Path, *, duration: float, fps: int, resolution: 
     _run_ffmpeg(command)
 
 
+def _deterministic_slate(output: Path, *, size: str = "1024x1024") -> None:
+    """Write a clean PIL gradient/slate PNG card when every generative image path fails."""
+
+    try:
+        from PIL import Image
+    except ImportError as error:  # pragma: no cover - Pillow is a runtime dependency
+        raise GenError(f"cannot render deterministic slate: {error}") from error
+
+    width_text, _, height_text = str(size).lower().partition("x")
+    width, height = int(width_text), int(height_text)
+    image = Image.new("RGB", (width, height))
+    pixels = image.load()
+    for y in range(height):
+        for x in range(width):
+            pixels[x, y] = (
+                int(200 * x / max(width - 1, 1)),
+                int(150 * y / max(height - 1, 1)),
+                int(100 + 100 * (x + y) / max(width + height - 2, 1)),
+            )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output, format="PNG")
+
+
 def _attempt(
     *,
     provider: GenProvider,
     request: GenRequest,
     output: Path,
     quota_store: QuotaStore,
-    max_daily: int,
+    max_daily: int | None = None,
     kind: str,
 ) -> GenerateOutput | None:
     """Try one provider once. Returns output metadata on success, None when skipped.
 
     Failed attempts (429, cap, unavailability) never consume ``max_gen_calls``: they only
-    record a cooldown and let the cascade advance.
+    record a cooldown and let the cascade advance. ``max_daily`` defaults to
+    :data:`DEFAULT_DAILY_CAP` when ``None``.
     """
 
+    cap = max_daily if max_daily is not None else DEFAULT_DAILY_CAP
     if not provider.available():
         return None
     if not provider.generates(kind):
         return None
-    if not quota_store.can_spend(provider.name, max_daily):
+    if not quota_store.can_spend(provider.name, cap):
         quota_store.set_cooldown(provider.name, _seconds_until_midnight())
         return None
     try:
@@ -356,6 +383,7 @@ def generate_asset(
     providers = default_providers()
     spent = 0
     kind = request.kind
+    max_daily = max(max_gen_calls, DEFAULT_DAILY_CAP)
 
     if kind == "video":
         # Phase 1: providers that can natively generate video.
@@ -367,7 +395,7 @@ def generate_asset(
                 request=request,
                 output=output,
                 quota_store=quota_store,
-                max_daily=6,
+                max_daily=max_daily,
                 kind="video",
             )
             if outcome is None:
@@ -388,51 +416,56 @@ def generate_asset(
                 project=project,
             )
         # Phase 2: image-only providers become a still, then a motion-from-still conversion.
-        for provider in providers:
-            if spent >= max_gen_calls:
-                break
-            if not provider.generates("image"):
-                continue
-            still = output.with_suffix(".png")
-            outcome = _attempt(
-                provider=provider,
-                request=GenRequest(
+        # The intermediate still lives in a temp dir under /tmp/opencode and is always removed.
+        tmp_dir = Path(tempfile.mkdtemp(prefix="gen-", dir="/tmp/opencode"))
+        try:
+            still = tmp_dir / f"{_slug(request.prompt)}.png"
+            for provider in providers:
+                if spent >= max_gen_calls:
+                    break
+                if not provider.generates("image"):
+                    continue
+                outcome = _attempt(
+                    provider=provider,
+                    request=GenRequest(
+                        kind="image",
+                        prompt=request.prompt,
+                        size=request.size,
+                        seed=request.seed,
+                        references=list(request.references),
+                    ),
+                    output=still,
+                    quota_store=quota_store,
+                    max_daily=max_daily,
                     kind="image",
+                )
+                if outcome is None:
+                    continue
+                quota_store.record_spend(provider.name)
+                spent += 1
+                _still_to_motion(
+                    still,
+                    output,
+                    duration=request.duration,
+                    fps=request.fps,
+                    resolution=request.resolution,
+                    motion=request.motion,
+                )
+                return _finalize(
+                    output=output,
+                    kind="video",
+                    provider=provider.name,
+                    model=outcome.model,
+                    seed=outcome.seed,
                     prompt=request.prompt,
-                    size=request.size,
-                    seed=request.seed,
-                    references=list(request.references),
-                ),
-                output=still,
-                quota_store=quota_store,
-                max_daily=6,
-                kind="image",
-            )
-            if outcome is None:
-                continue
-            quota_store.record_spend(provider.name)
-            spent += 1
-            _still_to_motion(
-                still,
-                output,
-                duration=request.duration,
-                fps=request.fps,
-                resolution=request.resolution,
-                motion=request.motion,
-            )
-            return _finalize(
-                output=output,
-                kind="video",
-                provider=provider.name,
-                model=outcome.model,
-                seed=outcome.seed,
-                prompt=request.prompt,
-                references=outcome.references,
-                duration=request.duration,
-                fallback_used=True,
-                fallback_reason=MOTION_FROM_STILL,
-                project=project,
-            )
+                    references=outcome.references,
+                    duration=request.duration,
+                    fallback_used=True,
+                    fallback_reason=MOTION_FROM_STILL,
+                    project=project,
+                )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
     else:
         for provider in providers:
             if spent >= max_gen_calls:
@@ -442,7 +475,7 @@ def generate_asset(
                 request=request,
                 output=output,
                 quota_store=quota_store,
-                max_daily=6,
+                max_daily=max_daily,
                 kind="image",
             )
             if outcome is None:
@@ -506,7 +539,45 @@ def generate_asset(
             fallback_reason=DETERMINISTIC_FALLBACK,
             project=project,
         )
-    raise GenError(f"all generative providers failed for image: {request.prompt!r}")
+
+    # Image total failure: acquire from the project library when a project is supplied,
+    # otherwise render a deterministic gradient slate PNG.
+    if project is not None:
+        acquired = acquire_asset(
+            type="image",
+            tags=[_slug(request.prompt)],
+            project_assets_dir=project.root / "assets",
+            project_slug=project.slug,
+        )
+        if acquired is not None and acquired.symlink.is_file():
+            shutil.copyfile(acquired.symlink, output)
+            return _finalize(
+                output=output,
+                kind="image",
+                provider="library",
+                model=acquired.entry.id,
+                seed=None,
+                prompt=request.prompt,
+                references=(),
+                duration=None,
+                fallback_used=True,
+                fallback_reason=DETERMINISTIC_FALLBACK,
+                project=project,
+            )
+    _deterministic_slate(output, size=request.size)
+    return _finalize(
+        output=output,
+        kind="image",
+        provider="deterministic",
+        model="pil-gradient-slate",
+        seed=None,
+        prompt=request.prompt,
+        references=(),
+        duration=None,
+        fallback_used=True,
+        fallback_reason=DETERMINISTIC_FALLBACK,
+        project=project,
+    )
 
 
 def generate_storyboard(
@@ -516,7 +587,12 @@ def generate_storyboard(
     out_dir: Path,
     max_gen_calls: int = 6,
 ) -> list[GenResult]:
-    """Generate one image per scene, honouring the shared ``max_gen_calls`` budget."""
+    """Generate one image per scene, honouring the shared ``max_gen_calls`` budget.
+
+    Per-scene failures degrade gracefully to a deterministic fallback result rather than
+    aborting the whole storyboard. The remaining ``max_gen_calls`` budget is carried across
+    scenes and only a successful generative call (no fallback) consumes it.
+    """
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -528,13 +604,31 @@ def generate_storyboard(
             break
         output = out_dir / f"{index:03d}_{_slug(scene)}.png"
         request = GenRequest(kind="image", prompt=scene)
-        result = generate_asset(
-            request,
-            project=project,
-            output=output,
-            max_gen_calls=max_gen_calls - spent,
-            quota_store=quota_store,
-        )
+        try:
+            result = generate_asset(
+                request,
+                project=project,
+                output=output,
+                max_gen_calls=max_gen_calls - spent,
+                quota_store=quota_store,
+            )
+        except GenError:
+            # Last-resort deterministic slate for this scene; keep the storyboard going.
+            _deterministic_slate(output, size="1024x1024")
+            result = GenResult(
+                output=output,
+                kind="image",
+                provider="deterministic",
+                model="pil-gradient-slate",
+                seed=None,
+                prompt=scene,
+                references=(),
+                sha256=_sha256_of(output),
+                size_bytes=output.stat().st_size,
+                duration=None,
+                fallback_used=True,
+                fallback_reason=DETERMINISTIC_FALLBACK,
+            )
         results.append(result)
         # Only a successful generative call (no fallback) consumes the storyboard budget.
         if not result.fallback_used:

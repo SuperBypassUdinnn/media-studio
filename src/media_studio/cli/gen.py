@@ -191,11 +191,3 @@ def cmd_gen_providers(args: argparse.Namespace) -> int:
             f"kinds={kinds} spent={spent}{' cooling-down' if cooling else ''}"
         )
     return EXIT_OK
-
-
-# Keep the module importable with no registered subcommands when the stub is replaced.
-def main(argv: list[str] | None = None) -> int:  # pragma: no cover - legacy shim
-    parser = argparse.ArgumentParser(prog="ms gen")
-    register_gen_parser(parser.add_subparsers(dest="gen_command", required=True))
-    args = parser.parse_args(argv)
-    return int(args.func(args))

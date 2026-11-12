@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from media_studio.gen.base import GenError, GenRequest, ProviderQuotaError
+from media_studio.gen.base import GenRequest, ProviderQuotaError
 from media_studio.gen.pipeline import (
     DETERMINISTIC_FALLBACK,
     MOTION_FROM_STILL,
@@ -182,7 +182,7 @@ def test_image_generation_returns_first_successful_provider(
     assert status.get("keyless", {}).get("spent", 0) == 1
 
 
-def test_all_providers_unavailable_raises_gen_error(
+def test_image_all_providers_unavailable_returns_deterministic_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     quota_path = tmp_path / "quota.json"
@@ -196,16 +196,22 @@ def test_all_providers_unavailable_raises_gen_error(
             FakeProvider("keyless", available=False),
         ],
     )
-    monkeypatch.setattr("media_studio.gen.pipeline._deterministic_card", _write_dummy_ffmpeg)
 
-    with pytest.raises(GenError):
-        generate_asset(
-            GenRequest(kind="image", prompt="x"),
-            project=None,
-            output=tmp_path / "out.png",
-            max_gen_calls=6,
-            quota_store=quota_store,
-        )
+    output = tmp_path / "out.png"
+    result = generate_asset(
+        GenRequest(kind="image", prompt="x"),
+        project=None,
+        output=output,
+        max_gen_calls=6,
+        quota_store=quota_store,
+    )
+
+    assert result.fallback_used is True
+    assert result.fallback_reason == DETERMINISTIC_FALLBACK
+    assert result.provider == "deterministic"
+    assert output.is_file()
+    sidecar = Path(str(output) + ".license")
+    assert sidecar.is_file()
 
 
 def test_sidecar_and_ledger_registration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -285,3 +291,111 @@ def test_storyboard_honours_shared_call_budget(
         "000_scene-one.png",
         "001_scene-two.png",
     }
+
+
+def test_video_image_fallback_leaves_no_temp_png(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quota_path = tmp_path / "quota.json"
+    monkeypatch.setenv("MEDIA_STUDIO_QUOTA_PATH", str(quota_path))
+    quota_store = QuotaStore()
+
+    # aistudio video rate-limited; huggingface image succeeds -> motion-from-still.
+    aistudio = FakeProvider("aistudio", video_error=ProviderQuotaError("rate limited", 120))
+    huggingface = FakeProvider("huggingface", kinds=("image",))
+    _install_fakes(monkeypatch, [aistudio, huggingface])
+    monkeypatch.setattr("media_studio.gen.pipeline._still_to_motion", _write_dummy_still_to_motion)
+
+    output = tmp_path / "out.mp4"
+    result = generate_asset(
+        GenRequest(kind="video", prompt="a slow push-in"),
+        project=None,
+        output=output,
+        max_gen_calls=1,
+        quota_store=quota_store,
+    )
+
+    assert result.fallback_used is True
+    assert result.fallback_reason == MOTION_FROM_STILL
+    assert output.read_bytes() == FAKE_VIDEO
+    # No intermediate .png remains beside the video output.
+    assert not output.with_suffix(".png").exists()
+
+
+def test_image_all_providers_fail_returns_deterministic_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quota_path = tmp_path / "quota.json"
+    monkeypatch.setenv("MEDIA_STUDIO_QUOTA_PATH", str(quota_path))
+    quota_store = QuotaStore()
+
+    aistudio = FakeProvider("aistudio", image_error=ProviderQuotaError("rate limited", 60))
+    huggingface = FakeProvider("huggingface", kinds=("image",), image_error=RuntimeError("down"))
+    keyless = FakeProvider("keyless", kinds=("image",), image_error=RuntimeError("down"))
+    _install_fakes(monkeypatch, [aistudio, huggingface, keyless])
+
+    output = tmp_path / "out.png"
+    result = generate_asset(
+        GenRequest(kind="image", prompt="a product shot"),
+        project=None,
+        output=output,
+        max_gen_calls=1,
+        quota_store=quota_store,
+    )
+
+    assert result.fallback_used is True
+    assert result.fallback_reason == DETERMINISTIC_FALLBACK
+    assert result.provider == "deterministic"
+    assert output.is_file()
+    sidecar = Path(str(output) + ".license")
+    assert sidecar.is_file()
+    fields = dict(line.split(": ", 1) for line in sidecar.read_text().splitlines() if ": " in line)
+    assert fields["SPDX-License-Identifier"] == "LicenseRef-AI-Generated"
+    assert fields["Attribution"] == "[AI Generated: deterministic/pil-gradient-slate]"
+    assert fields["Class"] == "design"
+
+
+def test_storyboard_handles_provider_failures_across_scenes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quota_path = tmp_path / "quota.json"
+    monkeypatch.setenv("MEDIA_STUDIO_QUOTA_PATH", str(quota_path))
+
+    # First provider succeeds for scene one, then fails for the rest -> deterministic fallback.
+    flaky = FakeProvider("keyless", kinds=("image",))
+    call_count = {"n": 0}
+
+    def flaky_generate_image(prompt, *, output, size, seed, references):
+        call_count["n"] += 1
+        output.write_bytes(FAKE_IMAGE)
+        if call_count["n"] > 1:
+            raise RuntimeError("provider down")
+        from media_studio.gen.base import GenerateOutput
+
+        return GenerateOutput(model="keyless-imagen", seed=seed, references=tuple(references))
+
+    flaky.generate_image = flaky_generate_image
+    _install_fakes(monkeypatch, [flaky])
+
+    out_dir = tmp_path / "storyboard"
+    results = generate_storyboard(
+        ["scene one", "scene two", "scene three"],
+        project=None,
+        out_dir=out_dir,
+        max_gen_calls=6,
+    )
+
+    assert len(results) == 3
+    assert results[0].provider == "keyless" and results[0].fallback_used is False
+    assert results[1].fallback_used is True
+    assert results[1].fallback_reason == DETERMINISTIC_FALLBACK
+    assert results[2].fallback_used is True
+    assert results[2].fallback_reason == DETERMINISTIC_FALLBACK
+    assert {p.name for p in out_dir.glob("*.png")} == {
+        "000_scene-one.png",
+        "001_scene-two.png",
+        "002_scene-three.png",
+    }
+    for png in out_dir.glob("*.png"):
+        sidecar = Path(str(png) + ".license")
+        assert sidecar.is_file()
