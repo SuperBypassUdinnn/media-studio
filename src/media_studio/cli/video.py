@@ -13,6 +13,7 @@ from media_studio.filmcraft import FilmCraftError
 from media_studio.manifest import ManifestError, Project, load_project
 from media_studio.media import MediaError, extract_stills, generate_proxy, probe
 from media_studio.natron import NatronError, composite_project
+from media_studio.transitions import TRANSITION_KINDS, TransitionError, apply_transition
 from media_studio.video import VideoError, qc_report, render_filmcraft
 from media_studio.video import handoff as video_handoff
 from media_studio.video import render as render_video
@@ -144,6 +145,33 @@ def register_video_parser(subparsers: argparse._SubParsersAction) -> None:
         "--out", type=Path, default=None, help="destination directory (default out/<stem>-stills)"
     )
     stills_p.set_defaults(func=cmd_video_stills)
+
+    transition_p = video_sub.add_parser(
+        "transition", help="render an FFmpeg transition between two clips"
+    )
+    transition_p.add_argument("clip_a", help="first clip (a file path)")
+    transition_p.add_argument("clip_b", help="second clip (a file path)")
+    transition_p.add_argument(
+        "--kind",
+        choices=sorted(TRANSITION_KINDS),
+        required=True,
+        help="transition kind (default whip_pan_left)",
+    )
+    transition_p.add_argument(
+        "--duration-ms",
+        type=int,
+        default=250,
+        help="transition duration in milliseconds, frame-quantized to fps (default 250)",
+    )
+    transition_p.add_argument(
+        "--width", type=int, default=1080, help="output width in pixels (default 1080)"
+    )
+    transition_p.add_argument(
+        "--height", type=int, default=1920, help="output height in pixels (default 1920)"
+    )
+    transition_p.add_argument("--fps", type=int, default=30, help="output frame rate (default 30)")
+    transition_p.add_argument("--out", type=Path, required=True, help="destination .mp4 file")
+    transition_p.set_defaults(func=cmd_video_transition)
 
     register_video_ops_parsers(video_sub)
     register_video_fcproj_parsers(video_sub)
@@ -464,3 +492,28 @@ def cmd_video_stills(args: argparse.Namespace) -> int:
     except (ManifestError, FileNotFoundError, RuntimeError, MediaError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
+
+
+def cmd_video_transition(args: argparse.Namespace) -> int:
+    """Render an FFmpeg transition between two clips (`ms video transition`)."""
+
+    apply_fn = resolve_monkeypatchable("apply_transition", apply_transition)
+    try:
+        result = apply_fn(
+            Path(args.clip_a),
+            Path(args.clip_b),
+            kind=args.kind,
+            output=args.out,
+            duration_ms=args.duration_ms,
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+        )
+    except TransitionError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"transition {result.kind} -> {result.output.name}")
+    print(f"  {result.width}x{result.height} @ {result.fps} fps, {result.duration:.2f}s")
+    print(f"  duration_ms: {result.duration_ms}, sfx tag: {result.sfx_tag}")
+    return EXIT_OK

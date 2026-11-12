@@ -1,0 +1,51 @@
+license: CC0-1.0
+source: bundled (synthesized in-house, media-studio)
+sample_rate_hz: 48000
+sample_width_bytes: 2
+description: |
+  Deterministic CC0 starter SFX pack for promo/AMV transitions: whoosh sweeps,
+  sub-bass and crisp impacts, a riser build, and a UI pop. Synthesized with
+  NumPy/SciPy (no third-party recordings), so every file is freely reusable.
+effects:
+  - id: whoosh-soft
+    file: whoosh-soft.wav
+    tags: [whoosh, sweep, soft, transition]
+    channels: 2
+    duration_s: ~0.9
+    description: Soft filtered-noise whoosh sweep, 650 Hz -> 210 Hz.
+    use: gentle scene wipes and slide transitions.
+  - id: whoosh-fast
+    file: whoosh-fast.wav
+    tags: [whoosh, sweep, fast, transition]
+    channels: 2
+    duration_s: ~0.55
+    description: Fast, energetic whoosh sweep, 1300 Hz -> 260 Hz.
+    use: whip pans and quick cuts.
+  - id: impact-sub
+    file: impact-sub.wav
+    tags: [impact, sub, bass, punch]
+    channels: 1
+    duration_s: ~0.7
+    description: Sub-bass impact punch with 48 Hz fundamental.
+    use: zoom punch-ins and beat drops.
+  - id: impact-hit
+    file: impact-hit.wav
+    tags: [impact, hit, transient, crisp]
+    channels: 1
+    duration_s: ~0.45
+    description: Crisp transient hit with a 900 Hz click.
+    use: flash cuts and RGB-split hits.
+  - id: riser-build
+    file: riser-build.wav
+    tags: [riser, build, sweep, tension]
+    channels: 1
+    duration_s: ~1.6
+    description: Exponential pitch riser, 220 Hz -> 1760 Hz.
+    use: builds before a transition or drop.
+  - id: ui-pop
+    file: ui-pop.wav
+    tags: [ui, pop, click, short]
+    channels: 1
+    duration_s: ~0.18
+    description: Short plucky UI pop, 1 kHz.
+    use: button hits and micro-transitions.

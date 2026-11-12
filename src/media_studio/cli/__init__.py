@@ -13,7 +13,9 @@ from media_studio.media import extract_stills, generate_proxy, probe
 from media_studio.ramp import apply_speed_ramp
 from media_studio.search import run_search
 from media_studio.see import peek
+from media_studio.sfx import SfxCue, SfxEntry, SfxError, list_bundled_sfx, mix_transition_sfx
 from media_studio.tools import collect_toolchain, path_order_problem
+from media_studio.transitions import TRANSITION_KINDS, TransitionError, apply_transition
 from media_studio.video import (
     detect_scene_cuts,
     qc_report,
@@ -34,7 +36,11 @@ from .assets import (
     resolve_candidate,
     suggested_asset_id,
 )
-from .audio import register_audio_parser
+from .audio import (
+    cmd_audio_sfx_list,
+    cmd_audio_sfx_mix,
+    register_audio_parser,
+)
 from .common import EXIT_FAILURE, EXIT_OK, STAGING_CLASS_FOR_KIND
 from .design import (
     cmd_design_logo,
@@ -96,6 +102,7 @@ from .video import (
     cmd_video_qc,
     cmd_video_render,
     cmd_video_stills,
+    cmd_video_transition,
     register_video_parser,
 )
 from .video_edl import (
@@ -179,9 +186,15 @@ __all__ = [
     "EXIT_FAILURE",
     "EXIT_OK",
     "STAGING_CLASS_FOR_KIND",
+    "TRANSITION_KINDS",
     "FilmCraftRunner",
+    "SfxCue",
+    "SfxEntry",
+    "SfxError",
+    "TransitionError",
     "annotate_output",
     "apply_speed_ramp",
+    "apply_transition",
     "build_parser",
     "cmd_3d_convert",
     "cmd_3d_from_image",
@@ -196,6 +209,8 @@ __all__ = [
     "cmd_assets_pull",
     "cmd_assets_search",
     "cmd_assets_stage",
+    "cmd_audio_sfx_list",
+    "cmd_audio_sfx_mix",
     "cmd_design_logo",
     "cmd_design_render",
     "cmd_design_svg_build",
@@ -264,14 +279,17 @@ __all__ = [
     "cmd_video_speed_ramp",
     "cmd_video_stills",
     "cmd_video_transcript",
+    "cmd_video_transition",
     "cmd_video_trim",
     "collect_toolchain",
     "detect_scene_cuts",
     "extract_stills",
     "fetch_material",
     "generate_proxy",
+    "list_bundled_sfx",
     "load_project",
     "main",
+    "mix_transition_sfx",
     "path_order_problem",
     "peek",
     "print_staged",
