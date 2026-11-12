@@ -389,6 +389,131 @@ def test_render_promo_auto_assembles_dual_aspect_and_qc_passes(
     assert leftovers == []
 
 
+def test_render_promo_renders_native_aspect_html_and_effectcraft_9x16(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _make_promo_project(tmp_path, with_assets=True)
+    project = load_project(root)
+    plan = plan_promo(
+        project,
+        script="Hook fast. Problem clear. Demo smooth. Proof real. CTA now.",
+        target_duration=4.0,
+    )
+
+    def _fake_tts(
+        text: str,
+        *,
+        output: Path,
+        words_out: Path | None = None,
+        **_kwargs: object,
+    ) -> TtsResult:
+        _ffmpeg_test_wav(output, 4.0)
+        timings = [
+            WordTiming("Hook", 0.1, 0.7),
+            WordTiming("fast", 0.8, 1.4),
+        ]
+        wpath = words_out or output.with_suffix(".json")
+        wpath.write_text(
+            json.dumps([{"word": t.word, "start": t.start, "end": t.end} for t in timings]),
+            encoding="utf-8",
+        )
+        return TtsResult(
+            audio_path=output,
+            words_path=wpath,
+            sidecar_path=output.with_suffix(output.suffix + ".license"),
+            duration=4.0,
+            engine="mock",
+            voice="mock",
+            words=tuple(timings),
+        )
+
+    def _fake_gen(request: object, *, output: Path, **_kwargs: object) -> GenResult:
+        dur = float(getattr(request, "duration", 1.0))
+        _ffmpeg_test_mp4(output, 1920, 1080, max(0.8, dur), "0x1e293b")
+        return GenResult(
+            output=output,
+            kind="video",
+            provider="mock",
+            model="mock-v1",
+            seed=42,
+            prompt=str(getattr(request, "prompt", "")),
+            references=(),
+            sha256="0" * 64,
+            size_bytes=output.stat().st_size,
+            duration=dur,
+        )
+
+    html_calls: list[dict[str, object]] = []
+    ec_calls: list[dict[str, object]] = []
+
+    def _fake_html(
+        _template: str,
+        *,
+        output: Path,
+        width: int = 1920,
+        height: int = 1080,
+        duration: float = 1.0,
+        params: dict[str, object] | None = None,
+        **_kwargs: object,
+    ) -> HtmlMotionResult:
+        html_calls.append({"width": width, "height": height, "params": params or {}})
+        out_mp4 = output.with_suffix(".mp4")
+        _ffmpeg_test_mp4(out_mp4, width, height, max(0.8, duration), "0x0f172a")
+        return HtmlMotionResult(
+            output=out_mp4,
+            template="saas-feature-card",
+            width=width,
+            height=height,
+            fps=30,
+            frames=max(1, round(duration * 30)),
+            duration=duration,
+            transparent=False,
+        )
+
+    def _fake_effectcraft(
+        preset_name: str,
+        output: Path,
+        *,
+        width: int = 1920,
+        height: int = 1080,
+        duration: float = 1.0,
+        **_kwargs: object,
+    ) -> MotionResult:
+        ec_calls.append({"width": width, "height": height})
+        out_mp4 = output.with_suffix(".mp4")
+        _ffmpeg_test_mp4(out_mp4, width, height, max(0.8, duration), "0x0284c7")
+        return MotionResult(
+            output=out_mp4,
+            ecp_path=output.with_suffix(".ecp"),
+            report_path=output.with_suffix(".report.json"),
+            report={"ok": True, "preset": preset_name},
+        )
+
+    monkeypatch.setattr("media_studio.promo.synthesize_speech", _fake_tts)
+    monkeypatch.setattr("media_studio.promo.generate_asset", _fake_gen)
+    monkeypatch.setattr("media_studio.promo.render_html_motion", _fake_html)
+    monkeypatch.setattr("media_studio.promo.render_promo_preset", _fake_effectcraft)
+
+    result = render_promo(project, plan, auto=True, max_gen_calls=2, force=True)
+    assert result.gated is False
+
+    # 9:16 deliverable renders HTML cards natively at (1080, 1920).
+    html_9x16 = [c for c in html_calls if c["width"] == 1080 and c["height"] == 1920]
+    assert html_9x16, f"no 9:16 HTML render; calls={html_calls}"
+    params = html_9x16[0]["params"]
+    assert params.get("headline") is not None
+    assert params.get("value") is not None
+    assert params.get("suffix") == "%"
+    assert params.get("ink") == "#0F172A"
+
+    # EffectCraft presets render natively at (1080, 1920) for 9:16.
+    ec_9x16 = [c for c in ec_calls if c["width"] == 1080 and c["height"] == 1920]
+    assert ec_9x16, f"no 9:16 EffectCraft render; calls={ec_calls}"
+
+    qc = qc_promo(project, deliverables=("reel-9x16", "master-16x9"), use_media_mcp=False)
+    assert qc["ok"] is True
+
+
 def test_cli_promo_plan_render_gate_and_qc_error(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

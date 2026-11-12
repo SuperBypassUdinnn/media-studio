@@ -25,7 +25,7 @@ from media_studio.gen.base import GenError, GenRequest
 from media_studio.gen.pipeline import generate_asset
 from media_studio.html_motion import HtmlMotionError, render_html_motion
 from media_studio.manifest import Project
-from media_studio.reframe import ASPECTS, OUTPUT_SIZE, ReframeError, reframe_video
+from media_studio.reframe import ASPECTS, OUTPUT_SIZE, reframe_video
 from media_studio.see import SeeError, peek
 from media_studio.sfx import SfxCue, SfxError, mix_transition_sfx
 from media_studio.transitions import TransitionError, apply_transition
@@ -357,6 +357,13 @@ def _write_storyboard(project: Project, plan: PromoPlan, destination: Path) -> P
     cmd.extend(["-frames:v", "1", str(destination)])
     media.run_command(cmd, label="render promo storyboard", expect_stdout=False)
     return destination
+
+
+def _value_from_text(text: str) -> int:
+    """Parse the leading integer from ``text`` (e.g. "98% off" -> 98), else 98."""
+
+    match = re.search(r"(\d+)", text or "")
+    return int(match.group(1)) if match else 98
 
 
 def _aspect_for_deliverable(project: Project, deliverable_id: str) -> str:
@@ -741,139 +748,21 @@ def render_promo(
         # Quantize td to 30fps to match transitions.apply_transition frame quantization.
         quant_td = max(1, round(trans_ms * 30 / 1000.0)) / 30.0
 
-        beat_clips: list[Path] = []
-        sfx_cues: list[SfxCue] = []
-        elapsed = 0.0
+        # 2. Acquire/generate B-roll + render motion overlays per beat, per deliverable aspect.
+        primary_col = project.brand.palette.get("primary", "#0F172A")
+        accent_col = project.brand.palette.get("accent", "#38BDF8")
+        ref_paths = _resolve_reference_paths(project, plan.references)
+        gen_calls_used = 0
 
-        for idx, beat in enumerate(plan.beats):
-            clip_dur = beat.duration + (quant_td if idx > 0 else 0.0)
-            base_clip = scratch / f"beat-{idx:02d}-base.mp4"
+        min_beat_dur = min(b.duration for b in plan.beats)
+        trans_td = min(0.25, max(0.06, min_beat_dur * 0.35))
+        trans_ms = max(60, round(trans_td * 1000))
+        # Quantize td to 30fps to match transitions.apply_transition frame quantization.
+        quant_td = max(1, round(trans_ms * 30 / 1000.0)) / 30.0
 
-            asset_rel = project.assets.get(beat.asset_id) if beat.asset_id else None
-            if asset_rel and (project.root / asset_rel).is_file():
-                _normalize_clip(
-                    project.root / asset_rel,
-                    base_clip,
-                    width=1920,
-                    height=1080,
-                    duration=clip_dur,
-                )
-            elif beat.gen_prompt and gen_calls_used < max_gen_calls:
-                gen_out = project.root / "assets" / "video" / f"gen-{project.slug}-{idx:02d}.mp4"
-                try:
-                    gen_res = generate_asset(
-                        GenRequest(
-                            kind="video",
-                            prompt=beat.gen_prompt,
-                            duration=clip_dur,
-                            fps=30,
-                            resolution="1920x1080",
-                            references=ref_paths,
-                        ),
-                        project=project,
-                        output=gen_out,
-                        max_gen_calls=max(1, max_gen_calls - gen_calls_used),
-                    )
-                    gen_calls_used += 1
-                    _normalize_clip(
-                        gen_res.output, base_clip, width=1920, height=1080, duration=clip_dur
-                    )
-                except GenError as error:
-                    notes.append(f"gen fallback on beat {idx}: {error}")
-                    _render_solid_clip(
-                        base_clip, width=1920, height=1080, duration=clip_dur, color=primary_col
-                    )
-            elif beat.template:
-                html_out = scratch / f"beat-{idx:02d}-html.mov"
-                _render_solid_clip(
-                    base_clip, width=1920, height=1080, duration=clip_dur, color=primary_col
-                )
-                try:
-                    html_res = render_html_motion(
-                        beat.template,
-                        output=html_out,
-                        params={"title": beat.text, "label": beat.kind.upper()},
-                        project=project,
-                        width=1920,
-                        height=1080,
-                        fps=30,
-                        duration=clip_dur,
-                        transparent=True,
-                    )
-                    if html_res.output.is_file():
-                        if html_res.transparent:
-                            composited = scratch / f"beat-{idx:02d}-html-comp.mp4"
-                            _composite_overlay(
-                                base_clip, html_res.output, composited, width=1920, height=1080
-                            )
-                            base_clip = composited
-                        else:
-                            _normalize_clip(
-                                html_res.output,
-                                base_clip,
-                                width=1920,
-                                height=1080,
-                                duration=clip_dur,
-                            )
-                except HtmlMotionError as error:
-                    notes.append(f"html_motion fallback on beat {idx}: {error}")
-            else:
-                _render_solid_clip(
-                    base_clip, width=1920, height=1080, duration=clip_dur, color=primary_col
-                )
+        master_dur = max(plan.total_duration, 1.0)
 
-            final_beat_clip = base_clip
-            if beat.preset:
-                preset_out = scratch / f"beat-{idx:02d}-preset.mov"
-                try:
-                    ec_res = render_promo_preset(
-                        beat.preset,
-                        preset_out,
-                        text=beat.text,
-                        subtext=project.title,
-                        project=project,
-                        width=1920,
-                        height=1080,
-                        fps=30,
-                        duration=clip_dur,
-                    )
-                    if ec_res.ok and ec_res.output.is_file():
-                        composited = scratch / f"beat-{idx:02d}-comp.mp4"
-                        _composite_overlay(
-                            base_clip, ec_res.output, composited, width=1920, height=1080
-                        )
-                        final_beat_clip = composited
-                except EffectCraftError as error:
-                    notes.append(f"effectcraft fallback on beat {idx}: {error}")
-
-            beat_clips.append(final_beat_clip)
-            if idx > 0:
-                sfx_cues.append(SfxCue(path_or_id=beat.sfx, at=max(0.0, elapsed), gain_db=-4.0))
-            elapsed += beat.duration
-
-        # 3. Join clips sequentially with transitions.
-        master_video = beat_clips[0]
-        for idx in range(1, len(beat_clips)):
-            joined = scratch / f"joined-{idx:02d}.mp4"
-            try:
-                apply_transition(
-                    master_video,
-                    beat_clips[idx],
-                    kind=plan.beats[idx].transition,
-                    output=joined,
-                    duration_ms=trans_ms,
-                    width=1920,
-                    height=1080,
-                    fps=30,
-                )
-                master_video = joined
-            except TransitionError as error:
-                raise PromoError(f"transition failed at beat {idx}: {error}") from error
-
-        master_info = media.probe(master_video)
-        master_dur = max(plan.total_duration, master_info.duration)
-
-        # 4. Mix voiceover + optional ducked music + transition SFX at -14 LUFS.
+        # 3. Mix voiceover + optional ducked music at -14 LUFS (once; duration shared).
         padded_vo = scratch / "vo-padded.wav"
         _pad_audio(vo_wav, padded_vo, total_duration=master_dur)
         base_bed = padded_vo
@@ -887,20 +776,7 @@ def render_promo(
             _mix_vo_and_music(padded_vo, ducked_music, vo_plus_music, total_duration=master_dur)
             base_bed = vo_plus_music
 
-        mixed_audio = scratch / "mixed-audio.wav"
-        try:
-            valid_cues = [cue for cue in sfx_cues if 0.0 <= cue.at <= master_dur]
-            mix_transition_sfx(
-                base_bed,
-                valid_cues,
-                output=mixed_audio,
-                total_duration=master_dur,
-                target_lufs=-14.0,
-            )
-        except SfxError as error:
-            raise PromoError(f"SFX mix failed: {error}") from error
-
-        # 5. Per-deliverable reframe, captions, and final loudness encode.
+        # 4. Word timings for captions.
         raw_words = json.loads(words_json.read_text(encoding="utf-8"))
         word_timings = [
             WordTiming(
@@ -911,22 +787,192 @@ def render_promo(
             for item in raw_words
             if isinstance(item, dict) and item.get("word")
         ]
+
+        # 5. Per-deliverable: build the master at native aspect, then mux/caption/encode.
         rendered_paths: dict[str, Path] = {}
         qc_results: dict[str, Any] = {}
 
         for deliv_id, final_mp4 in target_paths.items():
             aspect = _aspect_for_deliverable(project, deliv_id)
-            aspect_video = master_video
-            if aspect != "16:9":
-                reframed = scratch / f"{deliv_id}-reframed.mp4"
+            out_w, out_h = OUTPUT_SIZE[aspect]
+
+            # Build beat clips at the deliverable's native aspect. Footage / B-roll
+            # beats (asset_id / gen_prompt) are normalized at 16:9 then reframed to
+            # (out_w, out_h); HTML cards and CTA titles render natively at (out_w, out_h).
+            beat_clips: list[Path] = []
+            sfx_cues: list[SfxCue] = []
+            elapsed = 0.0
+
+            for idx, beat in enumerate(plan.beats):
+                clip_dur = beat.duration + (quant_td if idx > 0 else 0.0)
+                base_clip = scratch / f"beat-{idx:02d}-base.mp4"
+
+                asset_rel = project.assets.get(beat.asset_id) if beat.asset_id else None
+                if asset_rel and (project.root / asset_rel).is_file():
+                    normalized = scratch / f"beat-{idx:02d}-norm.mp4"
+                    _normalize_clip(
+                        project.root / asset_rel,
+                        normalized,
+                        width=1920,
+                        height=1080,
+                        duration=clip_dur,
+                    )
+                    reframed = scratch / f"beat-{idx:02d}-reframed.mp4"
+                    reframe_video(normalized, aspect=aspect, mode="auto", output=reframed)
+                    base_clip = reframed
+                elif beat.gen_prompt and gen_calls_used < max_gen_calls:
+                    gen_out = (
+                        project.root / "assets" / "video" / f"gen-{project.slug}-{idx:02d}.mp4"
+                    )
+                    try:
+                        gen_res = generate_asset(
+                            GenRequest(
+                                kind="video",
+                                prompt=beat.gen_prompt,
+                                duration=clip_dur,
+                                fps=30,
+                                resolution="1920x1080",
+                                references=ref_paths,
+                            ),
+                            project=project,
+                            output=gen_out,
+                            max_gen_calls=max(1, max_gen_calls - gen_calls_used),
+                        )
+                        gen_calls_used += 1
+                        normalized = scratch / f"beat-{idx:02d}-norm.mp4"
+                        _normalize_clip(
+                            gen_res.output, normalized, width=1920, height=1080, duration=clip_dur
+                        )
+                        reframed = scratch / f"beat-{idx:02d}-reframed.mp4"
+                        reframe_video(normalized, aspect=aspect, mode="auto", output=reframed)
+                        base_clip = reframed
+                    except GenError as error:
+                        notes.append(f"gen fallback on beat {idx}: {error}")
+                        _render_solid_clip(
+                            base_clip,
+                            width=out_w,
+                            height=out_h,
+                            duration=clip_dur,
+                            color=primary_col,
+                        )
+                elif beat.template:
+                    html_out = scratch / f"beat-{idx:02d}-html.mov"
+                    _render_solid_clip(
+                        base_clip, width=out_w, height=out_h, duration=clip_dur, color=primary_col
+                    )
+                    try:
+                        value = _value_from_text(beat.text)
+                        html_res = render_html_motion(
+                            beat.template,
+                            output=html_out,
+                            params={
+                                "headline": beat.text,
+                                "subhead": project.title,
+                                "feature": beat.text,
+                                "label": beat.kind.upper(),
+                                "value": value,
+                                "suffix": "%",
+                                "ink": "#0F172A",
+                            },
+                            project=project,
+                            width=out_w,
+                            height=out_h,
+                            fps=30,
+                            duration=clip_dur,
+                            transparent=True,
+                        )
+                        if html_res.output.is_file():
+                            if html_res.transparent:
+                                composited = scratch / f"beat-{idx:02d}-html-comp.mp4"
+                                _composite_overlay(
+                                    base_clip,
+                                    html_res.output,
+                                    composited,
+                                    width=out_w,
+                                    height=out_h,
+                                )
+                                base_clip = composited
+                            else:
+                                _normalize_clip(
+                                    html_res.output,
+                                    base_clip,
+                                    width=out_w,
+                                    height=out_h,
+                                    duration=clip_dur,
+                                )
+                    except HtmlMotionError as error:
+                        notes.append(f"html_motion fallback on beat {idx}: {error}")
+                else:
+                    _render_solid_clip(
+                        base_clip, width=out_w, height=out_h, duration=clip_dur, color=primary_col
+                    )
+
+                final_beat_clip = base_clip
+                if beat.preset:
+                    preset_out = scratch / f"beat-{idx:02d}-preset.mov"
+                    try:
+                        ec_res = render_promo_preset(
+                            beat.preset,
+                            preset_out,
+                            text=beat.text,
+                            subtext=project.title,
+                            project=project,
+                            width=out_w,
+                            height=out_h,
+                            fps=30,
+                            duration=clip_dur,
+                        )
+                        if ec_res.ok and ec_res.output.is_file():
+                            composited = scratch / f"beat-{idx:02d}-comp.mp4"
+                            _composite_overlay(
+                                base_clip, ec_res.output, composited, width=out_w, height=out_h
+                            )
+                            final_beat_clip = composited
+                    except EffectCraftError as error:
+                        notes.append(f"effectcraft fallback on beat {idx}: {error}")
+
+                beat_clips.append(final_beat_clip)
+                if idx > 0:
+                    sfx_cues.append(SfxCue(path_or_id=beat.sfx, at=max(0.0, elapsed), gain_db=-4.0))
+                elapsed += beat.duration
+
+            # Join clips sequentially with transitions at the deliverable aspect.
+            master_video = beat_clips[0]
+            for j in range(1, len(beat_clips)):
+                joined = scratch / f"{deliv_id}-joined-{j:02d}.mp4"
                 try:
-                    reframe_video(master_video, aspect=aspect, mode="auto", output=reframed)
-                    aspect_video = reframed
-                except ReframeError as error:
-                    raise PromoError(f"reframe failed for {deliv_id}: {error}") from error
+                    apply_transition(
+                        master_video,
+                        beat_clips[j],
+                        kind=plan.beats[j].transition,
+                        output=joined,
+                        duration_ms=trans_ms,
+                        width=out_w,
+                        height=out_h,
+                        fps=30,
+                    )
+                    master_video = joined
+                except TransitionError as error:
+                    raise PromoError(
+                        f"transition failed at beat {j} for {deliv_id}: {error}"
+                    ) from error
+
+            # SFX mix per deliverable (SFX cues reference elapsed within this master).
+            deliv_mixed = scratch / f"{deliv_id}-mixed-audio.wav"
+            try:
+                valid_cues = [cue for cue in sfx_cues if 0.0 <= cue.at <= master_dur]
+                mix_transition_sfx(
+                    base_bed,
+                    valid_cues,
+                    output=deliv_mixed,
+                    total_duration=master_dur,
+                    target_lufs=-14.0,
+                )
+            except SfxError as error:
+                raise PromoError(f"SFX mix failed: {error}") from error
 
             muxed = scratch / f"{deliv_id}-muxed.mp4"
-            _mux_video_and_audio(aspect_video, mixed_audio, muxed)
+            _mux_video_and_audio(master_video, deliv_mixed, muxed)
 
             captioned = muxed
             if word_timings:

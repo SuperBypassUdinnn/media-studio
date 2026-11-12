@@ -18,7 +18,7 @@ from pathlib import Path
 
 from media_studio import media
 from media_studio.media import MediaError
-from media_studio.reframe import safe_zone_for
+from media_studio.reframe import OUTPUT_SIZE, safe_zone_for
 from media_studio.tts import WordTiming
 
 DEFAULT_MEDIA_MCP_ROOT = Path.home() / ".clone/Github/SuperBypassUdinnn/media-mcp"
@@ -222,8 +222,8 @@ def _ass_style_for(
     margin_v = max(int(zone.get("top", 220)), 380)
     margin_l = int(zone.get("left", 60))
     margin_r = int(zone.get("right", 140))
-    accent_ass = accent_color.lstrip("#")
-    accent_ass = f"&H{accent_ass[4:6]}{accent_ass[2:4]}{accent_ass[0:2]}&"
+    h = accent_color.lstrip("#")
+    accent_bgr = f"{h[4:6]}{h[2:4]}{h[0:2]}"
 
     if style == "promo-pop":
         font, size, bold, italic = "Arial", 56, 1, 0
@@ -238,8 +238,8 @@ def _ass_style_for(
         "Name": style,
         "Fontname": font,
         "Fontsize": str(size),
-        "PrimaryColour": f"&H00{accent_ass[2:]}&",
-        "SecondaryColour": accent_ass,
+        "PrimaryColour": "&H00FFFFFF&",
+        "SecondaryColour": f"&H00{accent_bgr}&",
         "TertiaryColour": "&H000000FF&",
         "BackColour": "&H80000000&",
         "Bold": str(bold),
@@ -260,6 +260,9 @@ def _write_ass(
     zone: dict[str, int],
     accent_color: str,
     path: Path,
+    *,
+    width: int,
+    height: int,
 ) -> None:
     style_dict = _ass_style_for(style, zone, accent_color)
     lines = [
@@ -267,6 +270,8 @@ def _write_ass(
         "Title: media-studio captions",
         "ScriptType: v4.00+",
         "WrapStyle: 0",
+        f"PlayResX: {width}",
+        f"PlayResY: {height}",
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
@@ -299,12 +304,16 @@ def _write_ass(
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for chunk in chunks:
-        # Active-word highlight: apply \\c (color) and \\fscx (scale) per word.
+        # Active-word highlight: animated \\c/\\fscx per word via \\t, relative to chunk.start.
         text_parts: list[str] = []
+        accent_bgr = style_dict["SecondaryColour"][4:-1]  # strip &H00 ... &
         for word in chunk.words:
+            t0 = round((word.start - chunk.start) * 1000)
+            t1 = round((word.end - chunk.start) * 1000)
             text_parts.append(
-                f"{{\\c{style_dict['SecondaryColour']}\\fscx140}}{word.word}"
-                f"{{\\c{style_dict['PrimaryColour']}\\fscx100}}"
+                f"{{\\c&H00FFFFFF&\\fscx100}}\\t({t0},{t1},\\c&H00{accent_bgr}&\\fscx110)"
+                f"{word.word}"
+                f"{{\\c&H00FFFFFF&\\fscx100}}"
             )
         text = " ".join(text_parts)
         lines.append(
@@ -322,7 +331,8 @@ def _ass_ts(seconds: float) -> str:
     hours, rem = divmod(total_ms, 3_600_000)
     minutes, rem = divmod(rem, 60_000)
     secs, millis = divmod(rem, 1000)
-    return f"{hours}:{minutes:02d}:{secs:02d}.{millis:02d}"
+    cs = min(99, millis // 10)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{cs:02d}"
 
 
 def _media_mcp_available(media_mcp_root: Path) -> bool:
@@ -412,7 +422,8 @@ def render_captions(
     output = Path(output)
     if engine not in ENGINES:
         raise CaptionsError(f"unknown engine {engine!r}; expected one of {ENGINES}")
-    zone = safe_zone_for(aspect, 1080, 1920)
+    width, height = OUTPUT_SIZE[aspect]
+    zone = safe_zone_for(aspect, width, height)
 
     resolved_words = extract_word_timestamps(words) if isinstance(words, Path) else list(words)
     chunks = group_words(resolved_words)
@@ -430,8 +441,8 @@ def render_captions(
                     "accent_color": accent_color,
                     "zone": zone,
                 },
-                width=1080,
-                height=1920,
+                width=width,
+                height=height,
                 fps=30,
                 duration=max((c.end for c in chunks), default=3.0),
                 transparent=True,
@@ -444,7 +455,7 @@ def render_captions(
     scratch = _temp_dir()
     ass_path = scratch / f"{output.stem}.ass"
     try:
-        _write_ass(chunks, style, zone, accent_color, ass_path)
+        _write_ass(chunks, style, zone, accent_color, ass_path, width=width, height=height)
         media.run_command(
             [
                 media.FFMPEG,

@@ -14,11 +14,15 @@ from pathlib import Path
 import pytest
 
 from media_studio.captions import (
+    CaptionChunk,
     CaptionsError,
+    CaptionWord,
     WordTiming,
     _ass_style_for,
+    _ass_ts,
     _parse_words_json,
     _srt_to_words,
+    _write_ass,
     extract_word_timestamps,
     group_words,
     render_captions,
@@ -115,6 +119,45 @@ def test_all_styles_render() -> None:
         result = _ass_style_for(style, zone, accent_color="#38BDF8")
         assert "Alignment" in result
         assert "MarginV" in result
+
+
+def test_ass_style_single_trailing_ampersand() -> None:
+    zone = safe_zone_for("9:16", 1080, 1920)
+    style = _ass_style_for("promo-pop", zone, accent_color="#38BDF8")
+    for key in ("PrimaryColour", "SecondaryColour", "TertiaryColour"):
+        value = style[key]
+        assert value.startswith("&H") and value.endswith("&"), value
+        assert value.count("&") == 2, value
+    assert style["PrimaryColour"] == "&H00FFFFFF&"
+    assert style["TertiaryColour"] == "&H000000FF&"
+    # Accent #38BDF8 -> BGR F8BD38 -> SecondaryColour &H00F8BD38&
+    assert style["SecondaryColour"] == "&H00F8BD38&"
+
+
+def test_ass_ts_emits_2_digit_centiseconds() -> None:
+    assert _ass_ts(0.0) == "0:00:00.00"
+    assert _ass_ts(1.5) == "0:00:01.50"
+    assert _ass_ts(12.345) == "0:00:12.34"
+    # millis//10 floors to centiseconds, never 3 digits.
+    assert _ass_ts(0.099) == "0:00:00.09"
+    assert _ass_ts(61.09) == "0:01:01.09"
+    assert _ass_ts(3661.09) == "1:01:01.09"
+
+
+def test_write_ass_emits_playres() -> None:
+    zone = safe_zone_for("9:16", 1080, 1920)
+    chunks = [
+        CaptionChunk(text="Hello", start=0.0, end=1.0, words=[CaptionWord("Hello", 0.0, 1.0)])
+    ]
+    path = Path("/tmp/opencode/playres-test.ass")
+    _write_ass(chunks, "promo-pop", zone, "#38BDF8", path, width=1080, height=1920)
+    text = path.read_text(encoding="utf-8")
+    assert "PlayResX: 1080" in text
+    assert "PlayResY: 1920" in text
+    # [Script Info] block precedes [V4+ Styles].
+    si_end = text.index("[V4+ Styles]")
+    assert text.index("PlayResX: 1080") < si_end
+    assert text.index("PlayResY: 1920") < si_end
 
 
 # ---------------------------------------------------------------------------
