@@ -267,13 +267,13 @@ def _track_filtergraph(
             crop_w=crop_w,
             crop_h=crop_h,
         )
-        src = f"[v{seg_index}]" if seg_index > 0 else "[0:v]"
+        src = f"[v{seg_index}]"
         filter_parts.append(
             f"{src}trim=start={start_s:.3f}:end={end_s:.3f},setpts=PTS-STARTPTS,"
-            f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}[v{seg_index}'];"
+            f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}[v{seg_index}_out];"
         )
     split = f"[0:v]split={len(segments)}" + "".join(f"[v{i}]" for i in range(len(segments))) + ";"
-    concat_inputs = "".join(f"[v{i}']" for i in range(len(segments)))
+    concat_inputs = "".join(f"[v{i}_out]" for i in range(len(segments)))
     return split + "".join(filter_parts) + f"{concat_inputs}concat=n={len(segments)}:v=1:a=0[v]"
 
 
