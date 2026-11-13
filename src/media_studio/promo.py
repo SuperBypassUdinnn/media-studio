@@ -543,7 +543,7 @@ def _composite_overlay(base: Path, overlay: Path, output: Path, *, width: int, h
             "-i",
             str(overlay),
             "-filter_complex",
-            f"[1:v]scale={width}:{height}:flags=lanczos[ov];[0:v][ov]overlay=0:0:shortest=1,scale=in_range=auto:out_range=limited,format=yuv420p[outv]",
+            f"[1:v]scale={width}:{height}:flags=lanczos,format=rgba[ov];[0:v][ov]overlay=0:0:shortest=1,scale=in_range=auto:out_range=limited,format=yuv420p[outv]",
             "-map",
             "[outv]",
             "-map",
