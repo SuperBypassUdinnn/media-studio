@@ -756,6 +756,9 @@ def render_promo(
                     scratch=scratch,
                 )
                 words_json = tts_res.words_path
+                # Neural TTS: light cleanup only -- no afftdn denoise, no heavy
+                # compression -- so synthetic speech stays artifact-free.
+                audio.clean_voiceover(vo_wav, output=vo_wav, target_lufs=-16.0, profile="tts")
             except TtsError as error:
                 raise PromoError(f"voiceover synthesis failed: {error}") from error
 
