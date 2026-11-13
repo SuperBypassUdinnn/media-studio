@@ -99,6 +99,13 @@ def _normalisation_filter(width: int, height: int, fps: int) -> str:
 
 
 def _post_effect(kind: str) -> str:
+    """Return the transition-window post effect, expressed on TRUE RGB planes.
+
+    These expressions are applied after ``format=rgb24`` so ``r``/``g``/``b``
+    genuinely address the red/green/blue channels. Running them on ``yuv420p``
+    planes would reinterpret luma/chroma (white becomes cyan, edges ghost).
+    """
+
     if kind == "rgb_split_hit":
         # Chromatic aberration: shift red right and blue left on every frame.
         return "geq=r='r(X+4,Y)':g='g(X,Y)':b='b(X-4,Y)'"
@@ -173,8 +180,39 @@ def apply_transition(
     parts: list[str] = [f"[0:v]{norm}[a]", f"[1:v]{norm}[b]"]
 
     if kind in CUSTOM_KINDS:
+        # Apply the post effect ONLY inside the transition window: split the
+        # xfade output, run the RGB-space effect on the middle segment, and
+        # concat the untouched head/tail back around it. Applying the geq to
+        # the whole program used to corrupt chroma for the full duration.
         parts.append(f"[a][b]xfade=transition=fade:duration={td:.6f}:offset={offset:.6f}[base]")
-        parts.append(f"[base]{_post_effect(kind)}[outv]")
+        start_q = max(0.0, round(offset * fps) / fps)
+        end_q = min(out_duration, round((offset + td) * fps) / fps)
+        use_pre = start_q > 0.0
+        use_post = end_q < out_duration - (1.0 / fps)
+        labels: list[str] = []
+        if use_pre:
+            labels.append("pre")
+        labels.append("mid")
+        if use_post:
+            labels.append("post")
+        split_labels = "".join(f"[{label}]" for label in labels)
+        parts.append(f"[base]split={len(labels)}{split_labels}")
+        concat_inputs: list[str] = []
+        if use_pre:
+            parts.append(f"[pre]trim=start=0:end={start_q:.6f},setpts=PTS-STARTPTS[c0]")
+            concat_inputs.append("[c0]")
+        parts.append(
+            f"[mid]trim=start={start_q:.6f}:end={end_q:.6f},setpts=PTS-STARTPTS,"
+            f"format=rgb24,{_post_effect(kind)},format=yuv420p[c1]"
+        )
+        concat_inputs.append("[c1]")
+        if use_post:
+            parts.append(f"[post]trim=start={end_q:.6f},setpts=PTS-STARTPTS[c2]")
+            concat_inputs.append("[c2]")
+        if len(concat_inputs) == 1:
+            parts.append(f"{concat_inputs[0]}null[outv]")
+        else:
+            parts.append(f"{''.join(concat_inputs)}concat=n={len(concat_inputs)}:v=1:a=0[outv]")
     else:
         parts.append(
             f"[a][b]xfade=transition={XFADE_BY_KIND[kind]}"
