@@ -266,7 +266,7 @@ def plan_promo(
         "demo": {
             "preset": None,
             "template": "saas-feature-card",
-            "transition": "rgb_split_hit",
+            "transition": "zoom_punch_in",
             "sfx": "ui-pop",
             "needs_broll": False,
         },
