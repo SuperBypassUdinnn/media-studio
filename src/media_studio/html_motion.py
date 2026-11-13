@@ -159,11 +159,9 @@ def _encode_frames(
             "-frames:v",
             str(total_frames),
             "-c:v",
-            "prores_ks",
-            "-profile:v",
-            "4444",
+            "png",
             "-pix_fmt",
-            "yuva444p10le",
+            "rgba",
             str(output),
         ]
     else:
@@ -211,7 +209,7 @@ def render_html_motion(
     Each frame calls ``window.__msSeek(time_sec, frame_index, total_frames,
     params)`` in the page, then screenshots with ``omit_background`` so a
     transparent template yields an alpha channel. The PNG sequence is encoded
-    with FFmpeg (``prores_ks`` 4444 ``yuva444p10le`` for alpha, else
+    with FFmpeg (PNG ``rgba`` for alpha, else
     ``libx264`` ``yuv420p``).
     """
 
