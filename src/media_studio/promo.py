@@ -819,11 +819,11 @@ def render_promo(
 
             for idx, beat in enumerate(plan.beats):
                 clip_dur = beat.duration + (quant_td if idx > 0 else 0.0)
-                base_clip = scratch / f"beat-{idx:02d}-base.mp4"
+                base_clip = scratch / f"{deliv_id}-beat-{idx:02d}-base.mp4"
 
                 asset_rel = project.assets.get(beat.asset_id) if beat.asset_id else None
                 if asset_rel and (project.root / asset_rel).is_file():
-                    normalized = scratch / f"beat-{idx:02d}-norm.mp4"
+                    normalized = scratch / f"{deliv_id}-beat-{idx:02d}-norm.mp4"
                     _normalize_clip(
                         project.root / asset_rel,
                         normalized,
@@ -832,7 +832,7 @@ def render_promo(
                         duration=clip_dur,
                         fps=fps,
                     )
-                    reframed = scratch / f"beat-{idx:02d}-reframed.mp4"
+                    reframed = scratch / f"{deliv_id}-beat-{idx:02d}-reframed.mp4"
                     reframe_video(normalized, aspect=aspect, mode="auto", output=reframed, fps=fps)
                     base_clip = reframed
                 elif beat.gen_prompt and gen_calls_used < max_gen_calls:
@@ -854,7 +854,7 @@ def render_promo(
                             max_gen_calls=max(1, max_gen_calls - gen_calls_used),
                         )
                         gen_calls_used += 1
-                        normalized = scratch / f"beat-{idx:02d}-norm.mp4"
+                        normalized = scratch / f"{deliv_id}-beat-{idx:02d}-norm.mp4"
                         _normalize_clip(
                             gen_res.output,
                             normalized,
@@ -863,7 +863,7 @@ def render_promo(
                             duration=clip_dur,
                             fps=fps,
                         )
-                        reframed = scratch / f"beat-{idx:02d}-reframed.mp4"
+                        reframed = scratch / f"{deliv_id}-beat-{idx:02d}-reframed.mp4"
                         reframe_video(
                             normalized, aspect=aspect, mode="auto", output=reframed, fps=fps
                         )
@@ -878,7 +878,7 @@ def render_promo(
                             color=primary_col,
                         )
                 elif beat.template:
-                    html_out = scratch / f"beat-{idx:02d}-html.mov"
+                    html_out = scratch / f"{deliv_id}-beat-{idx:02d}-html.mov"
                     _render_solid_clip(
                         base_clip,
                         width=out_w,
@@ -914,7 +914,7 @@ def render_promo(
                         )
                         if html_res.output.is_file():
                             if html_res.transparent:
-                                composited = scratch / f"beat-{idx:02d}-html-comp.mp4"
+                                composited = scratch / f"{deliv_id}-beat-{idx:02d}-html-comp.mp4"
                                 _composite_overlay(
                                     base_clip,
                                     html_res.output,
@@ -946,7 +946,7 @@ def render_promo(
 
                 final_beat_clip = base_clip
                 if beat.preset:
-                    preset_out = scratch / f"beat-{idx:02d}-preset.mov"
+                    preset_out = scratch / f"{deliv_id}-beat-{idx:02d}-preset.mov"
                     try:
                         ec_res = render_promo_preset(
                             beat.preset,
@@ -960,7 +960,7 @@ def render_promo(
                             duration=clip_dur,
                         )
                         if ec_res.ok and ec_res.output.is_file():
-                            composited = scratch / f"beat-{idx:02d}-comp.mp4"
+                            composited = scratch / f"{deliv_id}-beat-{idx:02d}-comp.mp4"
                             _composite_overlay(
                                 base_clip, ec_res.output, composited, width=out_w, height=out_h
                             )
