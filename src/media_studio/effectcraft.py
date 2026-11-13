@@ -983,11 +983,11 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "keyframes": {
                         "scale": [
                             {"t": 0.0, "v": 0.0, "ease": "back-out"},
-                            {"t": 0.40, "v": 1.0, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "back-out"},
                         ],
                         "opacity": [
                             {"t": 0.0, "v": 0.0, "ease": "expo-out"},
-                            {"t": 0.40, "v": 1.0, "ease": "expo-out"},
+                            {"t": 0.35, "v": 1.0, "ease": "expo-out"},
                         ],
                     },
                 },
@@ -1097,11 +1097,9 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                             {"t": 0.25, "v": 1.0, "ease": "back-out"},
                             {"t": 0.30, "v": 1.0, "ease": "linear"},
                             {"t": 0.80, "v": 1.02, "ease": "expo-out"},
-                            {"t": 1.30, "v": 1.0, "ease": "expo-out"},
-                            {"t": 1.80, "v": 1.02, "ease": "expo-out"},
-                            {"t": 2.30, "v": 1.0, "ease": "expo-out"},
+                            {"t": 1.80, "v": 1.0, "ease": "expo-out"},
                             {"t": 2.80, "v": 1.02, "ease": "expo-out"},
-                            {"t": 3.30, "v": 1.0, "ease": "expo-out"},
+                            {"t": 3.80, "v": 1.0, "ease": "expo-out"},
                         ],
                         "opacity": [
                             {"t": 0.0, "v": 0.0, "ease": "expo-out"},
@@ -1327,7 +1325,7 @@ def _ease_value(v0: Any, v1: Any, e: float) -> Any:
     return v0 + (v1 - v0) * e
 
 
-def _expand_eased_keyframes(frames: list[dict[str, Any]], samples: int = 4) -> list[dict[str, Any]]:
+def _expand_eased_keyframes(frames: list[dict[str, Any]], samples: int = 8) -> list[dict[str, Any]]:
     """Insert intermediate keys per segment so linear playback approximates the ease curve.
 
     The engine interpolates linearly between keys, so each segment is resampled

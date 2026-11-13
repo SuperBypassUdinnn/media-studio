@@ -826,7 +826,7 @@ def test_promo_preset_entrance_within_035s(monkeypatch, tmp_path):
         ("promo-kinetic-callout", "accent-rule", "scale", 0.25),
         ("promo-kinetic-callout", "title", "opacity", 0.30),
         ("promo-metric-badge", "badge-pill", "scale", 0.30),
-        ("promo-metric-badge", "counter", "scale", 0.40),
+        ("promo-metric-badge", "counter", "scale", 0.35),
         ("promo-lower-third-clean", "accent-bar", "opacity", 0.30),
         ("promo-cta-endcard", "cta-pill", "scale", 0.25),
         ("promo-cta-endcard", "cta", "scale", 0.25),
@@ -851,19 +851,21 @@ def test_promo_preset_entrance_within_035s(monkeypatch, tmp_path):
 
 
 def test_promo_preset_backout_overshoot(monkeypatch, tmp_path):
-    """Back-out entrances overshoot past the target before settling."""
+    """Back-out entrances overshoot past the target then recover to ~1.0."""
 
-    # hook-slam title slams from 1.5 (overshoot) down to 1.0.
+    # hook-slam title slams from 1.5 (overshoot) down through ~0.96 to 1.0.
     spec = _preset_spec(monkeypatch, tmp_path, "promo-hook-slam")
     frames = _layer(spec, "title")["params"]["keyframes"]["scale"]
     values = [frame["v"] for frame in frames]
-    assert max(values) > 1.0, f"no overshoot in hook-slam title scale: {values}"
+    assert max(values) > 1.0, f"no overshoot past target in hook-slam title scale: {values}"
+    assert min(values) <= 1.05, f"hook-slam title scale does not recover to ~1.0: {values}"
     assert any(frame["ease"] == "back-out" for frame in frames)
     # cta-endcard snaps in with overshoot too.
     spec = _preset_spec(monkeypatch, tmp_path, "promo-cta-endcard")
     frames = _layer(spec, "cta-pill")["params"]["keyframes"]["scale"]
     values = [frame["v"] for frame in frames]
-    assert max(values) > 1.0, f"no overshoot in cta-pill scale: {values}"
+    assert max(values) > 1.0, f"no overshoot past target in cta-pill scale: {values}"
+    assert min(values) <= 1.05, f"cta-pill scale does not recover to ~1.0: {values}"
 
 
 def test_promo_preset_exit_within_025s(monkeypatch, tmp_path):
