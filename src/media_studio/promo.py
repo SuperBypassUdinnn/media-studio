@@ -889,13 +889,17 @@ def render_promo(
                     )
                     try:
                         value = _value_from_text(beat.text)
+                        # Cleanly format params so headline, subhead, and feature never overlap
+                        headline_txt = beat.text if len(beat.text) <= 45 else "Key Feature"
+                        subhead_txt = beat.text if len(beat.text) > 45 else project.title
+                        feature_txt = f"Automated {beat.kind} pipeline"
                         html_res = render_html_motion(
                             beat.template,
                             output=html_out,
                             params={
-                                "headline": beat.text,
-                                "subhead": project.title,
-                                "feature": beat.text,
+                                "headline": headline_txt,
+                                "subhead": subhead_txt,
+                                "feature": feature_txt,
                                 "label": beat.kind.upper(),
                                 "value": value,
                                 "suffix": "%",
