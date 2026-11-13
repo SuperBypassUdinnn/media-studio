@@ -418,8 +418,14 @@ def render_captions(
     accent_color: str = "#38BDF8",
     output: Path,
     engine: str = "ass",
+    fps: int = 30,
 ) -> Path:
-    """Render captions onto ``source`` and write ``output``."""
+    """Render captions onto ``source`` and write ``output``.
+
+    ``fps`` (default 30) is threaded to the HTML engine's frame math and to the
+    ASS filter's ``fps=`` normalization so caption output honors the deliverable
+    frame rate.
+    """
 
     source = Path(source)
     output = Path(output)
@@ -446,7 +452,7 @@ def render_captions(
                 },
                 width=width,
                 height=height,
-                fps=30,
+                fps=fps,
                 duration=max((c.end for c in chunks), default=3.0),
                 transparent=True,
             )
@@ -469,7 +475,7 @@ def render_captions(
                 "-i",
                 str(source),
                 "-vf",
-                f"ass={ass_path}",
+                f"ass={ass_path},fps={fps},format=yuv420p",
                 "-c:a",
                 "copy",
                 str(output),

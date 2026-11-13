@@ -420,11 +420,16 @@ def _render_solid_clip(
             "-i",
             f"anullsrc=r=48000:cl=stereo:d={duration:.4f}",
             "-vf",
-            "format=yuv420p",
+            (
+                f"scale={width}:{height}:flags=lanczos,"
+                f"scale=in_range=auto:out_range=limited,format=yuv420p"
+            ),
             "-c:v",
             "libx264",
             "-preset",
-            "ultrafast",
+            "veryfast",
+            "-crf",
+            "14",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
@@ -1010,6 +1015,7 @@ def render_promo(
                     accent_color=accent_col,
                     output=captioned_out,
                     engine="ass",
+                    fps=fps,
                 )
                 captioned = captioned_out
 

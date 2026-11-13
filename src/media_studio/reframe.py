@@ -337,6 +337,15 @@ def _run_reframe(
             out_h,
         )
 
+    # Defensive limited-range conversion at the output hand-off, applied inside
+    # the complex filtergraph (simple -vf cannot combine with filter_complex).
+    # Insert before the final [v] label so the range scale feeds the labeled output.
+    stripped = vfilter.rstrip()
+    if stripped.endswith("[v]"):
+        vfilter = stripped[: -len("[v]")] + ",scale=in_range=auto:out_range=limited[v]"
+    else:
+        vfilter = f"{stripped},scale=in_range=auto:out_range=limited"
+
     map_args: list[str] = ["-map", "[v]"]
     # Preserve source audio streams when present.
     if info.audio_codec:

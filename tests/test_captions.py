@@ -284,6 +284,63 @@ def test_extract_word_timestamps_raises_when_no_source(
 # ---------------------------------------------------------------------------
 
 
+def test_render_captions_html_engine_honors_fps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_captions must thread fps into the HTML engine's frame math."""
+    from media_studio import html_motion
+
+    captured: dict = {}
+
+    def fake_render_html_motion(
+        _template,
+        *,
+        output,
+        params,
+        width,
+        height,
+        fps,
+        duration,
+        transparent,
+        **_kwargs,
+    ):
+        captured["fps"] = fps
+        captured["width"] = width
+        captured["height"] = height
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_bytes(b"fake-html-output")
+        return output
+
+    monkeypatch.setattr(html_motion, "render_html_motion", fake_render_html_motion)
+
+    words = [W("Hello", 0.0, 1.0), W("world", 1.0, 2.0)]
+    output = tmp_path / "captioned.mp4"
+    render_captions(
+        tmp_path / "source.mp4",
+        words=words,
+        style="promo-pop",
+        aspect="9:16",
+        output=output,
+        engine="html",
+        fps=60,
+    )
+    assert captured["fps"] == 60
+    assert captured["width"] == 1080
+    assert captured["height"] == 1920
+
+    # Default fps is 30 when omitted.
+    captured.clear()
+    render_captions(
+        tmp_path / "source.mp4",
+        words=words,
+        style="promo-pop",
+        aspect="9:16",
+        output=output,
+        engine="html",
+    )
+    assert captured["fps"] == 30
+
+
 def _make_caption_source(path: Path, *, duration: int = 3) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(

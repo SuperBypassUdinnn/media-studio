@@ -850,3 +850,154 @@ def test_render_promo_prerecorded_vo_handles_captions_error(
     res = render_promo(project, plan, auto=True, deliverables=("master-16x9",), force=True)
     assert res.gated is False
     assert any("captions skipped for pre-recorded VO" in n for n in res.notes)
+
+
+def test_render_solid_clip_command_carries_intermediate_quality(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_render_solid_clip must use crf 14/veryfast, lanczos, limited-range yuv420p."""
+    from media_studio import promo
+
+    captured: dict = {}
+
+    def fake_run(command, *args, **kwargs):
+        captured["command"] = list(command)
+
+    monkeypatch.setattr(promo.media, "run_command", fake_run)
+
+    output = tmp_path / "solid.mp4"
+    promo._render_solid_clip(output, width=1080, height=1920, duration=1.0, color="#0F172A", fps=30)
+
+    cmd = captured["command"]
+    assert "-preset" in cmd and cmd[cmd.index("-preset") + 1] == "veryfast", cmd
+    assert "-crf" in cmd and cmd[cmd.index("-crf") + 1] == "14", cmd
+    assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p", cmd
+    vf_idx = cmd.index("-vf")
+    vf = cmd[vf_idx + 1]
+    assert "flags=lanczos" in vf, f"no lanczos in solid clip vf: {vf}"
+    assert "in_range=auto:out_range=limited" in vf, f"no limited range in solid clip vf: {vf}"
+
+
+def test_render_promo_passes_fps_into_render_captions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_promo must thread fps into render_captions."""
+
+    root = _make_promo_project(tmp_path)
+    project = load_project(root)
+    plan = plan_promo(
+        project,
+        script="Hook fast. Problem clear. Demo smooth. Proof real. CTA now.",
+        target_duration=2.0,
+    )
+
+    captured: dict = {}
+
+    def _fake_tts(text, *, output, words_out=None, **_kwargs):
+        _ffmpeg_test_wav(output, 2.0)
+        wpath = words_out or output.with_suffix(".json")
+        wpath.write_text(
+            json.dumps([{"word": "Hook", "start": 0.1, "end": 0.7}]),
+            encoding="utf-8",
+        )
+        return TtsResult(
+            audio_path=output,
+            words_path=wpath,
+            sidecar_path=output.with_suffix(output.suffix + ".license"),
+            duration=2.0,
+            engine="mock",
+            voice="mock",
+            words=(WordTiming("Hook", 0.1, 0.7),),
+        )
+
+    def _fake_gen(request, *, output, **_kwargs):
+        _ffmpeg_test_mp4(output, 1920, 1080, 0.8, "0x1e293b")
+        return GenResult(
+            output=output,
+            kind="video",
+            provider="mock",
+            model="mock-v1",
+            seed=42,
+            prompt="",
+            references=(),
+            sha256="0" * 64,
+            size_bytes=1,
+            duration=1.0,
+        )
+
+    def _fake_html(_template, *, output, width=1920, height=1080, fps=30, duration=1.0, **_kwargs):
+        out_mp4 = output.with_suffix(".mp4")
+        _ffmpeg_test_mp4(out_mp4, width, height, max(0.8, duration), "0x0f172a")
+        return HtmlMotionResult(
+            output=out_mp4,
+            template="saas-feature-card",
+            width=width,
+            height=height,
+            fps=fps,
+            frames=max(1, round(duration * fps)),
+            duration=duration,
+            transparent=False,
+        )
+
+    def _fake_ec(preset_name, output, *, width=1920, height=1080, fps=30, duration=1.0, **_kwargs):
+        out_mp4 = output.with_suffix(".mp4")
+        _ffmpeg_test_mp4(out_mp4, width, height, max(0.8, duration), "0x0284c7")
+        return MotionResult(
+            output=out_mp4,
+            ecp_path=output.with_suffix(".ecp"),
+            report_path=output.with_suffix(".report.json"),
+            report={"ok": True, "preset": preset_name},
+        )
+
+    def _fake_norm(source, output, *, width, height, duration, **_kwargs):
+        Path(output).write_bytes(b"fake-norm")
+        return output
+
+    monkeypatch.setattr("media_studio.promo.synthesize_speech", _fake_tts)
+    monkeypatch.setattr("media_studio.promo.generate_asset", _fake_gen)
+    monkeypatch.setattr("media_studio.promo.render_html_motion", _fake_html)
+    monkeypatch.setattr("media_studio.promo.render_promo_preset", _fake_ec)
+    monkeypatch.setattr("media_studio.promo._normalize_clip", _fake_norm)
+    monkeypatch.setattr("media_studio.promo._render_solid_clip", lambda out, **_kw: out)
+    monkeypatch.setattr(
+        "media_studio.promo._composite_overlay",
+        lambda base, overlay, output, width, height, **_kw: (
+            Path(output).parent.mkdir(parents=True, exist_ok=True),
+            Path(output).write_bytes(b""),
+            output,
+        )[-1],
+    )
+    monkeypatch.setattr(
+        "media_studio.promo.apply_transition", lambda _a, _b, *, output, **_kw: output
+    )
+    monkeypatch.setattr(
+        "media_studio.promo.media.probe",
+        lambda _p: type(
+            "Info", (), {"duration": 2.0, "width": 1920, "height": 1080, "fps": 30.0}
+        )(),
+    )
+    monkeypatch.setattr("media_studio.promo._pad_audio", lambda _s, out, **_kw: out)
+    monkeypatch.setattr("media_studio.promo._mix_vo_and_music", lambda _v, _m, out, **_kw: out)
+    monkeypatch.setattr(
+        "media_studio.promo.mix_transition_sfx", lambda _b, _c, *, output, **_kw: output
+    )
+    monkeypatch.setattr("media_studio.promo.reframe_video", lambda _s, *, output, **_kw: output)
+    monkeypatch.setattr("media_studio.promo._mux_video_and_audio", lambda _v, _a, out: out)
+
+    def _fake_captions(source, *, words, style, aspect, accent_color, output, engine, fps=30):
+        captured["fps"] = fps
+        Path(output).write_bytes(b"fake-captioned")
+        return output
+
+    monkeypatch.setattr("media_studio.promo.render_captions", _fake_captions)
+    monkeypatch.setattr(
+        "media_studio.promo.video.encode_with_loudness", lambda _i, d, *_a, **_kw: d
+    )
+    monkeypatch.setattr("media_studio.promo.video.qc_report", lambda _p, **_kw: {"ok": True})
+
+    render_promo(project, plan, auto=True, max_gen_calls=2, force=True, fps=60)
+    assert captured["fps"] == 60, captured
+
+    captured.clear()
+    render_promo(project, plan, auto=True, max_gen_calls=2, force=True)
+    assert captured["fps"] == 30, captured
