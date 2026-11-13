@@ -766,7 +766,7 @@ def render_promo(
         gen_calls_used = 0
 
         min_beat_dur = min(b.duration for b in plan.beats)
-        trans_td = min(0.25, max(0.06, min_beat_dur * 0.35))
+        trans_td = min(0.18, max(0.06, min_beat_dur * 0.35))
         trans_ms = max(60, round(trans_td * 1000))
         # Quantize td to the deliverable fps to match transition frame quantization.
         quant_td = max(1, round(trans_ms * fps / 1000.0)) / fps

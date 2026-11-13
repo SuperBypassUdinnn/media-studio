@@ -36,6 +36,15 @@ def test_transition_kinds_match_spec() -> None:
     assert TRANSITION_KINDS == KINDS
 
 
+def test_apply_transition_default_duration_ms_is_250() -> None:
+    """Standalone apply_transition keeps the 250 ms default (promo overrides to ~180)."""
+
+    import inspect
+
+    sig = inspect.signature(apply_transition)
+    assert sig.parameters["duration_ms"].default == 250
+
+
 def test_apply_transition_rejects_unknown_kind(tmp_path: Path) -> None:
     """An unknown kind raises TransitionError before ffmpeg is touched."""
 

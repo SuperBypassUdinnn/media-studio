@@ -8,6 +8,7 @@ keyframed properties, frame previews, and headless alpha ProRes 4444 / WebM VP9 
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import logging
 import re
@@ -494,6 +495,9 @@ def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
                 if params.get(optional) is not None:
                     text_params[optional] = params[optional]
             cmds.append({"id": "layer.newText", "params": text_params})
+            layer_name = text_params.get("name")
+            if layer_name and params.get("keyframes"):
+                cmds.extend(_keyframe_commands(layer_name, params["keyframes"]))
             # Apply outer glow when the layer requests it (AMV cyber titles,
             # etc.). glow_intensity is recorded in the spec; the engine's
             # outerGlow command carries no intensity parameter, so it is
@@ -520,7 +524,10 @@ def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
                 if params.get(optional) is not None:
                     solid_params[optional] = params[optional]
             cmds.append({"id": "layer.newSolid", "params": solid_params})
-            if params.get("opacity") is not None:
+            layer_name = solid_params.get("name", "Solid")
+            if params.get("keyframes"):
+                cmds.extend(_keyframe_commands(layer_name, params["keyframes"]))
+            if params.get("opacity") is not None and not params.get("keyframes", {}).get("opacity"):
                 layer_name = solid_params.get("name", "Solid")
                 raw_op = float(params["opacity"])
                 opacity_val = raw_op * 100.0 if raw_op <= 1.0 else raw_op
@@ -829,6 +836,16 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "width": 0.92,
                     "height": 0.06,
                     "position": [0.5, 0.28],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.5, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "back-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.10, "v": 0.10, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
             {
@@ -841,6 +858,19 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "font_size": 0.075,
                     "color": "{ink}",
                     "position": [0.5, 0.42],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 1.5, "ease": "back-out"},
+                            {"t": 0.15, "v": 0.96, "ease": "back-out"},
+                            {"t": 0.35, "v": 1.0, "ease": "back-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "linear"},
+                            {"t": 0.10, "v": 1.0, "ease": "linear"},
+                            {"t": 2.80, "v": 1.0, "ease": "linear"},
+                            {"t": 3.00, "v": 0.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
         ],
@@ -859,6 +889,16 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "width": 0.005,
                     "height": 0.35,
                     "position": [0.17, 0.42],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
             {
@@ -871,6 +911,16 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "font_size": 0.055,
                     "color": "{ink}",
                     "position": [0.25, 0.40],
+                    "keyframes": {
+                        "position": [
+                            {"t": 0.0, "v": [0.05, 0.40], "ease": "expo-out"},
+                            {"t": 0.30, "v": [0.25, 0.40], "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
             {
@@ -883,6 +933,12 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "font_size": 0.030,
                     "color": "{primary}",
                     "position": [0.25, 0.49],
+                    "keyframes": {
+                        "opacity": [
+                            {"t": 0.38, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.60, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
         ],
@@ -902,6 +958,16 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "width": 0.70,
                     "height": 0.17,
                     "position": [0.5, 0.40],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "back-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.30, "v": 0.92, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
             {
@@ -914,6 +980,16 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "font_size": 0.130,
                     "color": "{ink}",
                     "position": [0.5, 0.40],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "back-out"},
+                            {"t": 0.40, "v": 1.0, "ease": "back-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.40, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
             {
@@ -926,6 +1002,12 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "font_size": 0.040,
                     "color": "{ink}",
                     "position": [0.5, 0.57],
+                    "keyframes": {
+                        "opacity": [
+                            {"t": 0.05, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.45, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
         ],
@@ -944,6 +1026,16 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "width": 0.014,
                     "height": 0.15,
                     "position": [0.12, 0.78],
+                    "keyframes": {
+                        "position": [
+                            {"t": 0.0, "v": [0.0, 0.78], "ease": "expo-out"},
+                            {"t": 0.30, "v": [0.12, 0.78], "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
             {
@@ -956,6 +1048,12 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "font_size": 0.050,
                     "color": "{ink}",
                     "position": [0.18, 0.74],
+                    "keyframes": {
+                        "opacity": [
+                            {"t": 0.30, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.60, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
             {
@@ -968,6 +1066,12 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "font_size": 0.030,
                     "color": "{primary}",
                     "position": [0.18, 0.81],
+                    "keyframes": {
+                        "opacity": [
+                            {"t": 0.45, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.75, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
         ],
@@ -987,6 +1091,25 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "width": 0.60,
                     "height": 0.10,
                     "position": [0.5, 0.62],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "back-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "linear"},
+                            {"t": 0.80, "v": 1.02, "ease": "expo-out"},
+                            {"t": 1.30, "v": 1.0, "ease": "expo-out"},
+                            {"t": 1.80, "v": 1.02, "ease": "expo-out"},
+                            {"t": 2.30, "v": 1.0, "ease": "expo-out"},
+                            {"t": 2.80, "v": 1.02, "ease": "expo-out"},
+                            {"t": 3.30, "v": 1.0, "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.25, "v": 0.95, "ease": "expo-out"},
+                            {"t": 3.80, "v": 0.95, "ease": "linear"},
+                            {"t": 4.00, "v": 0.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
             {
@@ -999,6 +1122,21 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "font_size": 0.060,
                     "color": "{ink}",
                     "position": [0.5, 0.62],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "back-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "linear"},
+                            {"t": 0.80, "v": 1.02, "ease": "expo-out"},
+                            {"t": 1.30, "v": 1.0, "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "expo-out"},
+                            {"t": 3.80, "v": 1.0, "ease": "linear"},
+                            {"t": 4.00, "v": 0.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
             {
@@ -1011,6 +1149,14 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "font_size": 0.035,
                     "color": "{ink}",
                     "position": [0.5, 0.72],
+                    "keyframes": {
+                        "opacity": [
+                            {"t": 0.30, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.60, "v": 1.0, "ease": "expo-out"},
+                            {"t": 3.80, "v": 1.0, "ease": "linear"},
+                            {"t": 4.00, "v": 0.0, "ease": "expo-out"},
+                        ],
+                    },
                 },
             },
         ],
@@ -1105,6 +1251,167 @@ def _fit_promo_text(params: dict[str, Any], width: int) -> None:
             params["text"] = " ".join(words[:mid]) + "\n" + " ".join(words[mid:])
 
 
+# ---------------------------------------------------------------------------
+# Easing helpers (reused by the promo motion presets)
+# ---------------------------------------------------------------------------
+
+
+def _ease_expo_out(t: float) -> float:
+    """Expo-out ease: fast start, gentle settle. ``t`` normalised to 0..1."""
+
+    t = max(0.0, min(1.0, float(t)))
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    return 1.0 - 2.0 ** (-10.0 * t)
+
+
+def _ease_back_out(t: float, overshoot: float = 1.70158) -> float:
+    """Back-out ease: settles with an overshoot past the target. ``t`` in 0..1.
+
+    ``overshoot`` controls how far past 1.0 the curve swings before settling.
+    """
+
+    t = max(0.0, min(1.0, float(t)))
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    return (t - 1.0) ** 2 * ((overshoot + 1.0) * (t - 1.0) + overshoot) + 1.0
+
+
+def _ease_linear(t: float) -> float:
+    """Linear ease (identity). ``t`` normalised to 0..1."""
+
+    return max(0.0, min(1.0, float(t)))
+
+
+def _promo_keyframe(t: float, v: Any, ease: str = "linear") -> dict[str, Any]:
+    """Build one keyframe record: time (s), value, and easing curve name."""
+
+    return {"t": float(t), "v": v, "ease": ease}
+
+
+def _scale_keyframe_positions(
+    keyframes: dict[str, list[dict[str, Any]]], width: int, height: int
+) -> None:
+    """Scale fraction-based ``position`` keyframes to absolute canvas pixels.
+
+    Position keyframes carry ``v`` as ``[x, y]`` in ``[0, 1]`` canvas fractions,
+    mirroring the layer-level ``position`` scaling in :func:`_scale_promo_params`.
+    Scale/opacity keyframes are dimensionless and are left untouched.
+    """
+
+    for prop, frames in keyframes.items():
+        if prop != "position":
+            continue
+        for frame in frames:
+            value = frame.get("v")
+            if (
+                isinstance(value, list)
+                and len(value) == 2
+                and all(isinstance(item, (int, float)) and 0 <= item <= 1 for item in value)
+            ):
+                frame["v"] = [round(value[0] * width), round(value[1] * height)]
+
+
+def _ease_value(v0: Any, v1: Any, e: float) -> Any:
+    """Interpolate between ``v0`` and ``v1`` by eased factor ``e`` (0..1, may overshoot).
+
+    Handles scalars and equal-length lists (e.g. position vec2) component-wise.
+    """
+
+    if isinstance(v0, list) and isinstance(v1, list) and len(v0) == len(v1):
+        return [v0[i] + (v1[i] - v0[i]) * e for i in range(len(v0))]
+    return v0 + (v1 - v0) * e
+
+
+def _expand_eased_keyframes(frames: list[dict[str, Any]], samples: int = 4) -> list[dict[str, Any]]:
+    """Insert intermediate keys per segment so linear playback approximates the ease curve.
+
+    The engine interpolates linearly between keys, so each segment is resampled
+    onto its easing curve (expo-out / back-out / linear) with ``samples``
+    intermediate keys. Original endpoints are kept so start/end values are exact.
+    """
+
+    if len(frames) < 2:
+        return [dict(f) for f in frames]
+    ordered = sorted(frames, key=lambda f: f["t"])
+    expanded: list[dict[str, Any]] = [dict(ordered[0])]
+    for a, b in itertools.pairwise(ordered):
+        t0, v0 = a["t"], a["v"]
+        t1, v1 = b["t"], b["v"]
+        ease_fn = {
+            "expo-out": _ease_expo_out,
+            "back-out": _ease_back_out,
+            "linear": _ease_linear,
+        }.get(a.get("ease", "linear"), _ease_linear)
+        span = t1 - t0
+        for k in range(1, samples + 1):
+            frac = k / (samples + 1.0)
+            expanded.append(
+                {
+                    "t": round(t0 + span * frac, 4),
+                    "v": _ease_value(v0, v1, ease_fn(frac)),
+                    "ease": a.get("ease", "linear"),
+                }
+            )
+        expanded.append(dict(b))
+    return expanded
+
+
+def _keyframe_path(prop: str) -> str:
+    """Map a spec property name to the engine transform property path."""
+
+    return {
+        "scale": "transform/scale",
+        "opacity": "transform/opacity",
+        "position": "transform/position",
+    }.get(prop, prop)
+
+
+def _keyframe_value(prop: str, v: Any) -> Any:
+    """Convert a spec keyframe value (factor for scale/opacity) to engine units.
+
+    Scale and opacity are stored as 0..1 factors in the spec; the engine expects
+    percent (0..100). Position is already in canvas pixels.
+    """
+
+    if prop in ("scale", "opacity") and isinstance(v, (int, float)):
+        return round(float(v) * 100.0, 4)
+    if prop == "position" and isinstance(v, list):
+        return [round(float(x), 2) for x in v]
+    return v
+
+
+def _keyframe_commands(
+    layer_name: str, keyframes: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Build engine ``prop.addKey`` commands for one layer's keyframes.
+
+    Times are in composition seconds; values are engine units (percent for
+    scale/opacity, pixels for position).
+    """
+
+    cmds: list[dict[str, Any]] = []
+    for prop, frames in keyframes.items():
+        path = _keyframe_path(prop)
+        for frame in _expand_eased_keyframes(frames):
+            cmds.append(
+                {
+                    "id": "prop.addKey",
+                    "params": {
+                        "layer": layer_name,
+                        "path": path,
+                        "time": round(float(frame["t"]), 4),
+                        "value": _keyframe_value(prop, frame["v"]),
+                    },
+                }
+            )
+    return cmds
+
+
 def render_promo_preset(
     preset_name: str,
     output: Path,
@@ -1157,6 +1464,9 @@ def render_promo_preset(
             params["text"] = subtext
         params.pop("text_role", None)
         _scale_promo_params(params, int(width), int(height))
+        keyframes = params.get("keyframes")
+        if isinstance(keyframes, dict):
+            _scale_keyframe_positions(keyframes, int(width), int(height))
         for key in ("color", "fill", "stroke"):
             if isinstance(params.get(key), str):
                 params[key] = _resolve_token(params[key], palette)

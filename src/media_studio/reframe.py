@@ -26,6 +26,9 @@ OUTPUT_SIZE = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080)}
 
 # Exponential smoothing factor for the focal center (0 = hold, 1 = raw).
 SMOOTH_ALPHA = 0.45
+# Supersample factor for track pans: crop at 2x source resolution then
+# downscale with lanczos so integer crop steps become subpixel in output.
+SUPER_SAMPLE = 2
 # Width (px) at which grayscale frames are sampled for motion centroid.
 SAMPLE_WIDTH = 64
 # Sample the focal center every this many seconds within each scene.
@@ -253,7 +256,15 @@ def _track_filtergraph(
             crop_w=crop_w,
             crop_h=crop_h,
         )
-        return f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}:flags=lanczos[v]"
+        # Supersample: crop at 2x source resolution, then lanczos downscale to
+        # output so the integer crop step lands at subpixel precision.
+        sx, sy = x * SUPER_SAMPLE, y * SUPER_SAMPLE
+        sw, sh = crop_w * SUPER_SAMPLE, crop_h * SUPER_SAMPLE
+        return (
+            f"scale=w=iw*{SUPER_SAMPLE}:h=ih*{SUPER_SAMPLE}:flags=lanczos,"
+            f"crop={sw}:{sh}:{round(sx)}:{round(sy)},"
+            f"scale={out_w}:{out_h}:flags=lanczos[v]"
+        )
 
     filter_parts: list[str] = []
     for seg_index, ((start_s, end_s), (_, cx, cy)) in enumerate(
@@ -267,10 +278,15 @@ def _track_filtergraph(
             crop_w=crop_w,
             crop_h=crop_h,
         )
+        # Supersample each segment so pans glide subpixel-smooth; scene-cut
+        # boundaries remain instant because each segment is cropped independently.
+        sx, sy = x * SUPER_SAMPLE, y * SUPER_SAMPLE
+        sw, sh = crop_w * SUPER_SAMPLE, crop_h * SUPER_SAMPLE
         src = f"[v{seg_index}]"
         filter_parts.append(
             f"{src}trim=start={start_s:.3f}:end={end_s:.3f},setpts=PTS-STARTPTS,"
-            f"crop={crop_w}:{crop_h}:{x}:{y},scale={out_w}:{out_h}[v{seg_index}_out];"
+            f"scale=w=iw*{SUPER_SAMPLE}:h=ih*{SUPER_SAMPLE}:flags=lanczos,"
+            f"crop={sw}:{sh}:{round(sx)}:{round(sy)},scale={out_w}:{out_h}:flags=lanczos[v{seg_index}_out];"
         )
     split = f"[0:v]split={len(segments)}" + "".join(f"[v{i}]" for i in range(len(segments))) + ";"
     concat_inputs = "".join(f"[v{i}_out]" for i in range(len(segments)))

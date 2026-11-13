@@ -18,6 +18,7 @@ from media_studio.reframe import (
     _exponential_smooth,
     _scene_boundaries,
     _smooth_center,
+    _track_filtergraph,
     clamp_crop_window,
     reframe_video,
     safe_zone_for,
@@ -130,6 +131,59 @@ def test_smooth_center_no_cuts_monotone_toward_target() -> None:
     # Without a reset the center pans slowly across the cut.
     assert smoothed[9][1] < smoothed[10][1] < smoothed[19][1]
     assert smoothed[19][1] < 900.0
+
+
+# ---------------------------------------------------------------------------
+# track filtergraph: supersampled, subpixel-smooth pans
+# ---------------------------------------------------------------------------
+
+
+def test_track_filtergraph_supersamples_before_crop() -> None:
+    """Track pans crop at 2x source resolution then downscale with lanczos."""
+
+    segments = [(0.0, 3.0)]
+    smoothed = [(0.0, 960.0, 540.0)]  # centre of a 1920x1080 source
+    vfilter = _track_filtergraph(
+        segments,
+        smoothed,
+        source_w=1920,
+        source_h=1080,
+        crop_w=608,
+        crop_h=1080,
+        out_w=1080,
+        out_h=1920,
+    )
+    # Supersample: scale the source to 2x before cropping.
+    assert "scale=w=iw*2:h=ih*2:flags=lanczos" in vfilter, vfilter
+    # Crop window expressed in 2x space (crop_w*2, crop_h*2, x*2, y*2).
+    assert "crop=1216:2160:1312:0," in vfilter, vfilter
+    # Lanczos downscale to the deliverable resolution.
+    assert "scale=1080:1920:flags=lanczos[v]" in vfilter, vfilter
+
+
+def test_track_filtergraph_per_segment_independent_crops() -> None:
+    """Multi-segment track keeps scene-cut resets instant (independent crops)."""
+
+    segments = [(0.0, 1.5), (1.5, 3.0)]
+    smoothed = [(0.0, 500.0, 540.0), (1.5, 1400.0, 540.0)]
+    vfilter = _track_filtergraph(
+        segments,
+        smoothed,
+        source_w=1920,
+        source_h=1080,
+        crop_w=608,
+        crop_h=1080,
+        out_w=1080,
+        out_h=1920,
+    )
+    # Each segment is trimmed and cropped independently.
+    assert "trim=start=0.000:end=1.500" in vfilter
+    assert "trim=start=1.500:end=3.000" in vfilter
+    # Two independent lanczos supersampled crop chains.
+    assert vfilter.count("scale=w=iw*2:h=ih*2:flags=lanczos") == 2
+    assert vfilter.count("scale=1080:1920:flags=lanczos") == 2
+    # Concat rejoins the segments; no cross-fade/glide across the cut.
+    assert "concat=n=2:v=1:a=0[v]" in vfilter
 
 
 # ---------------------------------------------------------------------------
