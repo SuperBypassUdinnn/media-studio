@@ -277,6 +277,20 @@ def _still_to_motion(
     _run_ffmpeg(command)
 
 
+def _brand_primary(project: Project | None) -> str:
+    """Brand primary color from ``project.brand.palette`` or the dark default."""
+    if project is None:
+        return "#0F172A"
+    return project.brand.palette.get("primary", "#0F172A")
+
+
+def _brand_accent(project: Project | None) -> str:
+    """Brand accent color from ``project.brand.palette`` or the cyan default."""
+    if project is None:
+        return "#38BDF8"
+    return project.brand.palette.get("accent", "#38BDF8")
+
+
 def _deterministic_card(
     output: Path,
     *,
@@ -566,6 +580,8 @@ def generate_asset(
             duration=request.duration,
             fps=request.fps,
             resolution=request.resolution,
+            primary=_brand_primary(project),
+            accent=_brand_accent(project),
         )
         return _finalize(
             output=output,

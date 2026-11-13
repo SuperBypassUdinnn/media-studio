@@ -76,7 +76,7 @@ def _install_fakes(monkeypatch, providers) -> None:
     monkeypatch.setattr("media_studio.gen.pipeline.acquire_asset", lambda *a, **k: None)
 
 
-def _write_dummy_ffmpeg(output, *, duration=0.0, fps=30, resolution="1920x1080") -> None:
+def _write_dummy_ffmpeg(output, *, duration=0.0, fps=30, resolution="1920x1080", **_kwargs) -> None:
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(FAKE_VIDEO)
@@ -424,7 +424,47 @@ def test_deterministic_card_uses_branded_slate_not_testsrc2(tmp_path, monkeypatc
         f"no accent brand glow: {joined}"
     )
     assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p", cmd
-    assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p", cmd
+
+
+def test_deterministic_card_respects_project_brand_palette(tmp_path, monkeypatch) -> None:
+    """_deterministic_card uses project.brand.palette colors when a project is supplied."""
+    from media_studio.gen import pipeline
+    from media_studio.manifest import load_project
+    from media_studio.project import scaffold_project
+
+    captured: dict = {}
+
+    def fake_run_ffmpeg(command):
+        captured["command"] = list(command)
+        return subprocess.CompletedProcess(args=command, returncode=0)
+
+    monkeypatch.setattr(pipeline, "_run_ffmpeg", fake_run_ffmpeg)
+
+    # Project with a custom brand palette.
+    scaffold = scaffold_project("custom-brand", root=tmp_path)
+    project = load_project(scaffold.path)
+    project.brand.palette["primary"] = "#112233"
+    project.brand.palette["accent"] = "#44DDEE"
+
+    output = tmp_path / "slate.mp4"
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    pipeline._deterministic_card(
+        output,
+        duration=2.0,
+        fps=30,
+        resolution="1920x1080",
+        primary=pipeline._brand_primary(project),
+        accent=pipeline._brand_accent(project),
+    )
+
+    cmd = " ".join(captured["command"]).lower()
+    # Custom primary #112233 -> solid base.
+    assert "0x112233" in cmd, f"no custom primary base color: {cmd}"
+    # Custom accent #44DDEE = (68, 221, 238) applied via geq glow.
+    assert "68/255" in cmd and "221/255" in cmd and "238/255" in cmd, (
+        f"no custom accent glow: {cmd}"
+    )
 
 
 def test_image_all_providers_fail_returns_deterministic_fallback(

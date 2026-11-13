@@ -447,8 +447,9 @@ def encode_with_loudness(
         "libx264",
         "-preset",
         "veryfast" if preview else "medium",
-        "-crf",
-        "28" if preview else "18",
+        # Bitrate/ABR targeting (via -b:v/-maxrate/-bufsize) replaces CRF:
+        # x264 ignores CRF under constrained VBV, so omit it to avoid command
+        # confusion and let the VBV bucket govern the bitrate.
         "-b:v",
         bitrate,
         "-maxrate",
