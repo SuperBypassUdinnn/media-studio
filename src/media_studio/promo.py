@@ -967,6 +967,39 @@ def render_promo(
                 beat_clips.append(final_beat_clip)
                 if idx > 0:
                     sfx_cues.append(SfxCue(path_or_id=beat.sfx, at=max(0.0, elapsed), gain_db=-4.0))
+
+                # Intra-beat motion SFX: sync sound effects to visual progress/clicks
+                if beat.template == "metric-counter":
+                    # Emit rhythmic tick pops across the counter progress timeline (every 0.5s)
+                    tick_step = 0.5
+                    t_curr = tick_step
+                    while t_curr < clip_dur - 0.2:
+                        sfx_cues.append(
+                            SfxCue(
+                                path_or_id="ui-pop",
+                                at=max(0.0, elapsed + t_curr),
+                                gain_db=-10.0,
+                            )
+                        )
+                        t_curr += tick_step
+                    # Final impact pop at counter completion
+                    sfx_cues.append(
+                        SfxCue(
+                            path_or_id="ui-pop",
+                            at=max(0.0, elapsed + clip_dur - 0.1),
+                            gain_db=-3.0,
+                        )
+                    )
+                elif beat.template == "saas-feature-card":
+                    # Click pop at t = 78% of clip duration when cursor clicks button
+                    sfx_cues.append(
+                        SfxCue(
+                            path_or_id="ui-pop",
+                            at=max(0.0, elapsed + clip_dur * 0.78),
+                            gain_db=-4.0,
+                        )
+                    )
+
                 elapsed += beat.duration
 
             # Join clips sequentially with transitions at the deliverable aspect.

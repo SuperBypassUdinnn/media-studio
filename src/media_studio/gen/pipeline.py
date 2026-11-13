@@ -303,15 +303,51 @@ def _deterministic_card(
     """Write a clean branded dark motion slate when every generative path fails.
 
     Renders a solid base in the brand ``primary`` with a subtle accent radial
-    glow (``geq``) so the fallback is a sleek brand card, never FFmpeg's
-    ``testsrc2`` diagnostic pattern which reads as GPU corruption to viewers.
+    glow so the fallback is a sleek brand card, never FFmpeg's ``testsrc2``
+    diagnostic pattern which reads as GPU corruption to viewers.
     """
 
     width_text, _, height_text = str(resolution).lower().partition("x")
     width, height = int(width_text), int(height_text)
     p = primary.lstrip("#")
+    pr, pg, pb = int(p[0:2], 16), int(p[2:4], 16), int(p[4:6], 16)
     a = accent.lstrip("#")
     ar, ag, ab = int(a[0:2], 16), int(a[2:4], 16), int(a[4:6], 16)
+
+    # Fast 1-frame PNG generation via PIL to avoid heavy per-pixel geq math over 600 frames
+    tmp_png = output.with_suffix(".tmp.png")
+    try:
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGB", (width, height), (pr, pg, pb))
+        draw = ImageDraw.Draw(img)
+        cx, cy = width // 2, height // 2
+        max_r = width // 2
+        for r in range(max_r, 0, -8):
+            factor = (1.0 - (r / max_r)) ** 2 * 0.25
+            nr = int(pr + (ar - pr) * factor)
+            ng = int(pg + (ag - pg) * factor)
+            nb = int(pb + (ab - pb) * factor)
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(nr, ng, nb))
+        img.save(tmp_png, "PNG")
+    except Exception:
+        # Fallback to single-frame color if PIL is unavailable
+        cmd_png = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=0x{p}:s={width}x{height}:d=0.04",
+            "-frames:v",
+            "1",
+            str(tmp_png),
+        ]
+        _run_ffmpeg(cmd_png)
+
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -319,26 +355,31 @@ def _deterministic_card(
         "-loglevel",
         "error",
         "-y",
-        "-f",
-        "lavfi",
+        "-loop",
+        "1",
         "-i",
-        f"color=c=0x{p}:s={width}x{height}:rate={fps}:duration={duration:.3f}",
+        str(tmp_png),
         "-vf",
-        (
-            f"geq=r='clip(r(X,Y)+{ar}/255*0.12*exp(-(hypot(X-W/2,Y-H/2)/({width}/5))^2),0,255)':"
-            f"g='clip(g(X,Y)+{ag}/255*0.12*exp(-(hypot(X-W/2,Y-H/2)/({width}/5))^2),0,255)':"
-            f"b='clip(b(X,Y)+{ab}/255*0.12*exp(-(hypot(X-W/2,Y-H/2)/({width}/5))^2),0,255)',"
-            f"format=yuv420p"
-        ),
+        f"scale={width}:{height},format=yuv420p",
+        "-t",
+        f"{duration:.3f}",
+        "-r",
+        str(fps),
         "-c:v",
         "libx264",
+        "-preset",
+        "veryfast",
         "-pix_fmt",
         "yuv420p",
         "-movflags",
         "+faststart",
         str(output),
     ]
-    _run_ffmpeg(command)
+    try:
+        _run_ffmpeg(command)
+    finally:
+        if tmp_png.exists():
+            tmp_png.unlink()
 
 
 def _deterministic_slate(output: Path, *, size: str = "1024x1024") -> None:

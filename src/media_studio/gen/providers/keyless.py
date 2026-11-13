@@ -34,8 +34,12 @@ class KeylessProvider(GenProvider):
     ) -> GenerateOutput:
         width, height = _parse_size(size)
         seed_param = f"&seed={seed}" if seed is not None else ""
+        quality_prompt = (
+            f"{prompt}, 4k resolution, sharp focus, "
+            "cinematic lighting, photorealistic, depth of field"
+        )
         url = (
-            API_URL.format(quote(prompt, safe=""))
+            API_URL.format(quote(quality_prompt, safe=""))
             + f"?width={width}&height={height}{seed_param}&nologo=true"
         )
         try:
