@@ -413,7 +413,7 @@ def _render_solid_clip(
             "-i",
             (
                 f"gradients=s={width}x{height}:r={fps}:d={duration:.4f}"
-                f":c0=0x{col}:c1=0x1e293b:c2=0x0f172a:c3=0x1e293b:speed=0.2"
+                f":c0=0x{col}:c1=0x1e293b:c2=0x0f172a:c3=0x334155:speed=0.8"
             ),
             "-f",
             "lavfi",
@@ -422,7 +422,8 @@ def _render_solid_clip(
             "-vf",
             (
                 f"scale={width}:{height}:flags=lanczos,"
-                f"scale=in_range=auto:out_range=limited,format=yuv420p"
+                "scale=in_range=auto:out_range=limited,"
+                "noise=alls=6:allf=t+u,format=yuv420p"
             ),
             "-c:v",
             "libx264",
