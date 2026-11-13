@@ -45,3 +45,23 @@ Replaced FFmpeg's `testsrc2` diagnostic pattern in the deterministic video fallb
 ## Commit
 
 `fix(gen,promo): replace testsrc2 with branded slate, apply YouTube 12Mbps bitrate and BT.709 color tags` (commit `51273fb`, branch `feat/promo-generative-pipeline`).
+
+## Fix Round 1 (review feedback)
+
+Addressed review findings:
+
+1. Wired `project.brand.palette` into `_deterministic_card` via new helpers `_brand_primary`/`_brand_accent`; `generate_asset` now passes `primary`/`accent` from the project's palette (defaults `#0F172A`/`#38BDF8` when no project) so custom brand colors are respected in the fallback slate.
+2. Removed the dead `-crf` argument from `video.py` `encode_with_loudness` since x264 ignores CRF under constrained VBV/ABR bitrate targeting.
+3. Strengthened test coverage: added `test_deterministic_card_respects_project_brand_palette` asserting custom palette colors drive the slate base/geq glow; updated the `_write_dummy_ffmpeg` monkeypatch to accept the new `primary`/`accent` kwargs.
+
+### Verification (Fix Round 1)
+
+- `pytest tests/test_gen_pipeline.py tests/test_promo.py tests/test_transitions.py tests/test_cli_package.py -q -p no:cacheprovider` — 46 passed.
+- `~/.local/bin/ruff check src tests` — all checks passed.
+- `~/.local/bin/ruff format --check src tests` — 147 files already formatted.
+- `codegraph sync .` — done.
+- `/tmp/opencode/promo-*` scratch verified cleaned (no leftovers).
+
+### Commit (Fix Round 1)
+
+`fix(gen,video): wire project brand palette to fallback slate and remove dead crf flag` (commit `429df51`, branch `feat/promo-generative-pipeline`).
