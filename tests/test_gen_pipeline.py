@@ -397,6 +397,36 @@ def test_still_to_motion_limited_range_output(tmp_path, monkeypatch) -> None:
     )
 
 
+def test_deterministic_card_uses_branded_slate_not_testsrc2(tmp_path, monkeypatch) -> None:
+    """_deterministic_card must render a branded dark motion slate, never FFmpeg testsrc2."""
+    from media_studio.gen import pipeline
+
+    captured: dict = {}
+
+    def fake_run_ffmpeg(command):
+        captured["command"] = list(command)
+        return subprocess.CompletedProcess(args=command, returncode=0)
+
+    monkeypatch.setattr(pipeline, "_run_ffmpeg", fake_run_ffmpeg)
+    output = tmp_path / "slate.mp4"
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    pipeline._deterministic_card(output, duration=2.0, fps=30, resolution="1920x1080")
+
+    cmd = captured["command"]
+    joined = " ".join(cmd).lower()
+    # No FFmpeg diagnostic test pattern may appear in user-facing fallback assets.
+    assert "testsrc2" not in joined, f"testsrc2 leaked into fallback: {joined}"
+    # Branded dark slate colors from the primary/accent palette.
+    assert "0x0f172a" in joined, f"no primary brand color: {joined}"
+    # Accent #38BDF8 = (56, 189, 248) applied via geq glow.
+    assert "56/255" in joined and "189/255" in joined and "248/255" in joined, (
+        f"no accent brand glow: {joined}"
+    )
+    assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p", cmd
+    assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p", cmd
+
+
 def test_image_all_providers_fail_returns_deterministic_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

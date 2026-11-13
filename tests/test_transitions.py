@@ -76,6 +76,48 @@ def test_apply_transition_rejects_bad_duration(tmp_path: Path, bad_duration: int
         )
 
 
+def test_apply_transition_tags_bt709_color_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apply_transition must append explicit BT.709 color metadata flags to its encode."""
+    from media_studio import transitions
+
+    captured: dict = {}
+
+    def fake_ffmpeg(command):
+        captured["command"] = list(command)
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostats", "-y", *command], capture_output=True, text=True
+        )
+
+    monkeypatch.setattr(transitions, "_ffmpeg", fake_ffmpeg)
+
+    clip_a = tmp_path / "a.mp4"
+    clip_b = tmp_path / "b.mp4"
+    _make_clip(clip_a, 1.0)
+    _make_clip(clip_b, 1.0)
+
+    apply_transition(
+        clip_a,
+        clip_b,
+        kind="whip_pan_left",
+        output=tmp_path / "out.mp4",
+        duration_ms=250,
+        width=1080,
+        height=1920,
+        fps=30,
+    )
+
+    cmd = captured["command"]
+    joined = " ".join(cmd)
+    assert "-color_range" in joined and joined.split("-color_range")[1].split()[0] == "tv", joined
+    assert "-colorspace" in joined and joined.split("-colorspace")[1].split()[0] == "bt709", joined
+    assert (
+        "-color_primaries" in joined and joined.split("-color_primaries")[1].split()[0] == "bt709"
+    ), joined
+    assert "-color_trc" in joined and joined.split("-color_trc")[1].split()[0] == "bt709", joined
+
+
 def test_apply_transition_command_uses_high_quality_intermediate_flags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -217,8 +217,22 @@ def apply_transition(
         "veryfast",
         "-crf",
         "14",
+        "-threads",
+        "1",
+        # libx264 slice-threaded encoding segfaults on the ``slideup`` xfade
+        # filter when explicit BT.709 color metadata is also set (ffmpeg 9.0.2).
+        # Single-threaded encode keeps the color tags correct without crashing;
+        # transition clips are short so the cost is negligible.
         "-pix_fmt",
         "yuv420p",
+        "-color_range",
+        "tv",
+        "-colorspace",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
     ]
     if has_a or has_b:
         command.extend(

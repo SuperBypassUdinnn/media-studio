@@ -1110,6 +1110,60 @@ def test_render_solid_clip_command_carries_intermediate_quality(
     assert "in_range=auto:out_range=limited" in vf, f"no limited range in solid clip vf: {vf}"
 
 
+def test_encode_with_loudness_carries_youtube_bitrate_and_bt709(tmp_path, monkeypatch) -> None:
+    """Final deliverable encode targets YouTube bitrate and tags BT.709 color metadata."""
+    from media_studio import video
+
+    captured: dict = {}
+
+    def fake_run_command(command, *, label, expect_stdout=True):
+        captured["command"] = list(command)
+        return subprocess.CompletedProcess(args=command, returncode=0)
+
+    monkeypatch.setattr(video.media, "run_command", fake_run_command)
+    monkeypatch.setattr(
+        video.media,
+        "measure_loudness",
+        lambda path, target=-14.0: type(
+            "L",
+            (),
+            {
+                "integrated_lufs": -14.0,
+                "true_peak_dbtp": -1.5,
+                "loudness_range": 11.0,
+                "threshold": -14.0,
+                "offset": 0.0,
+                "as_loudnorm_arguments": lambda self: (
+                    "measured_I=-14.00:measured_LRA=11.00:measured_TP=-1.50:measured_thresh=-14.00:offset=0.00:linear=true"
+                ),
+            },
+        )(),
+    )
+
+    output = tmp_path / "deliverable.mp4"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"fake")
+
+    video.encode_with_loudness(tmp_path / "intermediate.mkv", output, target_lufs=-14.0, fps=60)
+
+    cmd = captured["command"]
+    joined = " ".join(cmd)
+    assert "-b:v" in joined and joined.split("-b:v")[1].split()[0] == "12M", joined
+    assert "-maxrate" in joined and joined.split("-maxrate")[1].split()[0] == "14M", joined
+    assert "-bufsize" in joined and joined.split("-bufsize")[1].split()[0] == "24M", joined
+    assert "-color_range" in joined and joined.split("-color_range")[1].split()[0] == "tv", joined
+    assert "-colorspace" in joined and joined.split("-colorspace")[1].split()[0] == "bt709", joined
+    assert (
+        "-color_primaries" in joined and joined.split("-color_primaries")[1].split()[0] == "bt709"
+    ), joined
+    assert "-color_trc" in joined and joined.split("-color_trc")[1].split()[0] == "bt709", joined
+
+    captured.clear()
+    video.encode_with_loudness(tmp_path / "intermediate.mkv", output, target_lufs=-14.0, fps=30)
+    joined30 = " ".join(captured["command"])
+    assert "-b:v" in joined30 and joined30.split("-b:v")[1].split()[0] == "8M", joined30
+
+
 def test_render_promo_passes_fps_into_render_captions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

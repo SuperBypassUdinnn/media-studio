@@ -1022,7 +1022,9 @@ def render_promo(
                 )
                 captioned = captioned_out
 
-            video.encode_with_loudness(captioned, final_mp4, target_lufs=project.loudness_lufs)
+            video.encode_with_loudness(
+                captioned, final_mp4, target_lufs=project.loudness_lufs, fps=fps
+            )
             rendered_paths[deliv_id] = final_mp4
             qc_results[deliv_id] = video.qc_report(
                 final_mp4,

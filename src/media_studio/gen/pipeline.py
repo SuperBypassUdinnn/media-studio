@@ -277,11 +277,27 @@ def _still_to_motion(
     _run_ffmpeg(command)
 
 
-def _deterministic_card(output: Path, *, duration: float, fps: int, resolution: str) -> None:
-    """Write a clean FFmpeg gradient motion card when every generative path fails."""
+def _deterministic_card(
+    output: Path,
+    *,
+    duration: float,
+    fps: int,
+    resolution: str,
+    primary: str = "#0F172A",
+    accent: str = "#38BDF8",
+) -> None:
+    """Write a clean branded dark motion slate when every generative path fails.
+
+    Renders a solid base in the brand ``primary`` with a subtle accent radial
+    glow (``geq``) so the fallback is a sleek brand card, never FFmpeg's
+    ``testsrc2`` diagnostic pattern which reads as GPU corruption to viewers.
+    """
 
     width_text, _, height_text = str(resolution).lower().partition("x")
     width, height = int(width_text), int(height_text)
+    p = primary.lstrip("#")
+    a = accent.lstrip("#")
+    ar, ag, ab = int(a[0:2], 16), int(a[2:4], 16), int(a[4:6], 16)
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -292,7 +308,14 @@ def _deterministic_card(output: Path, *, duration: float, fps: int, resolution: 
         "-f",
         "lavfi",
         "-i",
-        f"testsrc2=duration={duration:.3f}:size={width}x{height}:rate={fps}",
+        f"color=c=0x{p}:s={width}x{height}:rate={fps}:duration={duration:.3f}",
+        "-vf",
+        (
+            f"geq=r='clip(r(X,Y)+{ar}/255*0.12*exp(-(hypot(X-W/2,Y-H/2)/({width}/5))^2),0,255)':"
+            f"g='clip(g(X,Y)+{ag}/255*0.12*exp(-(hypot(X-W/2,Y-H/2)/({width}/5))^2),0,255)':"
+            f"b='clip(b(X,Y)+{ab}/255*0.12*exp(-(hypot(X-W/2,Y-H/2)/({width}/5))^2),0,255)',"
+            f"format=yuv420p"
+        ),
         "-c:v",
         "libx264",
         "-pix_fmt",
@@ -548,7 +571,7 @@ def generate_asset(
             output=output,
             kind="video",
             provider="deterministic",
-            model="ffmpeg-testsrc2",
+            model="ffmpeg-branded-slate",
             seed=None,
             prompt=request.prompt,
             references=(),

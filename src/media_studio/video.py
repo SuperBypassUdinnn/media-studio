@@ -414,11 +414,26 @@ def encode_with_loudness(
     target_lufs: float,
     *,
     preview: bool = False,
+    fps: int = 30,
 ) -> media.Loudness:
-    """Encode to H.264/AAC, normalising loudness with the measurement loudnorm asks for."""
+    """Encode to H.264/AAC, normalising loudness with the measurement loudnorm asks for.
+
+    Final deliverables target YouTube's recommended upload bitrate: 12 Mbps at
+    60 fps (1080p60) and 8 Mbps at 30 fps, via constrained VBV/ABR
+    (``-b:v`` / ``-maxrate`` / ``-bufsize``). Explicit BT.709 color metadata is
+    tagged so players report ``color_range=tv``, ``color_space=bt709``,
+    ``color_primaries=bt709`` and ``color_transfer=bt709`` instead of guessing.
+    """
 
     measured = media.measure_loudness(intermediate, target_lufs)
     destination.parent.mkdir(parents=True, exist_ok=True)
+
+    # YouTube recommended upload bitrate for 1080p SDR.
+    if fps == 60:
+        bitrate, maxrate, bufsize = "12M", "14M", "24M"
+    else:
+        bitrate, maxrate, bufsize = "8M", "10M", "16M"
+
     command = [
         media.FFMPEG,
         "-hide_banner",
@@ -434,10 +449,24 @@ def encode_with_loudness(
         "veryfast" if preview else "medium",
         "-crf",
         "28" if preview else "18",
+        "-b:v",
+        bitrate,
+        "-maxrate",
+        maxrate,
+        "-bufsize",
+        bufsize,
         "-profile:v",
         "high" if not preview else "main",
         "-pix_fmt",
         "yuv420p",
+        "-color_range",
+        "tv",
+        "-colorspace",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
         "-c:a",
         "aac",
         "-b:a",
