@@ -389,7 +389,7 @@ def clean_voiceover(
     chain (highpass, afftdn denoise, acompressor, equalizer presence boost)
     followed by two-pass loudness normalization to ``target_lufs``.
 
-    ``profile="tts``: neural-TTS-safe cleanup. No denoise (afftdn omitted) and no
+    ``profile="tts"``: neural-TTS-safe cleanup. No denoise (afftdn omitted) and no
     aggressive compression -- gentle highpass, gentle presence EQ, light peak
     control -- then two-pass loudness normalization to ``target_lufs``. The ffmpeg
     light chain is always used for this profile so a denoising engine (e.g.
