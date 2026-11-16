@@ -526,6 +526,19 @@ def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
                     solid_params[optional] = params[optional]
             cmds.append({"id": "layer.newSolid", "params": solid_params})
             layer_name = solid_params.get("name", "Solid")
+            if params.get("position") is not None and not params.get("keyframes", {}).get(
+                "position"
+            ):
+                cmds.append(
+                    {
+                        "id": "layer.setTransform",
+                        "params": {
+                            "layers": [layer_name],
+                            "prop": "position",
+                            "value": params["position"],
+                        },
+                    }
+                )
             if params.get("keyframes"):
                 cmds.extend(_keyframe_commands(layer_name, params["keyframes"]))
             if params.get("opacity") is not None and not params.get("keyframes", {}).get("opacity"):
@@ -535,7 +548,11 @@ def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
                 cmds.append(
                     {
                         "id": "layer.setTransform",
-                        "params": {"layers": [layer_name], "prop": "opacity", "value": opacity_val},
+                        "params": {
+                            "layers": [layer_name],
+                            "prop": "opacity",
+                            "value": opacity_val,
+                        },
                     }
                 )
 
@@ -887,9 +904,9 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                 "name": "accent-rule",
                 "params": {
                     "color": "{accent}",
-                    "width": 0.005,
-                    "height": 0.35,
-                    "position": [0.12, 0.42],
+                    "width": 0.006,
+                    "height": 0.28,
+                    "position": [0.15, 0.45],
                     "keyframes": {
                         "scale": [
                             {"t": 0.0, "v": 0.0, "ease": "expo-out"},
@@ -909,13 +926,14 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                 "params": {
                     "text": "{text}",
                     "font": "{heading}",
-                    "font_size": 0.050,
+                    "font_size": 0.045,
                     "color": "{ink}",
-                    "position": [0.15, 0.40],
+                    "justify": "left",
+                    "position": [0.18, 0.40],
                     "keyframes": {
                         "position": [
-                            {"t": 0.0, "v": [0.10, 0.40], "ease": "expo-out"},
-                            {"t": 0.30, "v": [0.15, 0.40], "ease": "expo-out"},
+                            {"t": 0.0, "v": [0.14, 0.40], "ease": "expo-out"},
+                            {"t": 0.30, "v": [0.18, 0.40], "ease": "expo-out"},
                         ],
                         "opacity": [
                             {"t": 0.0, "v": 0.0, "ease": "expo-out"},
@@ -931,13 +949,18 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                 "params": {
                     "text": "{subtext}",
                     "font": "{body}",
-                    "font_size": 0.030,
-                    "color": "{primary}",
-                    "position": [0.25, 0.49],
+                    "font_size": 0.026,
+                    "color": "{accent}",
+                    "justify": "left",
+                    "position": [0.18, 0.54],
                     "keyframes": {
+                        "position": [
+                            {"t": 0.0, "v": [0.14, 0.54], "ease": "expo-out"},
+                            {"t": 0.30, "v": [0.18, 0.54], "ease": "expo-out"},
+                        ],
                         "opacity": [
-                            {"t": 0.38, "v": 0.0, "ease": "expo-out"},
-                            {"t": 0.60, "v": 1.0, "ease": "expo-out"},
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "expo-out"},
                         ],
                     },
                 },

@@ -841,19 +841,49 @@ def _write_storyboard(project: Project, plan: PromoPlan, destination: Path) -> P
         thumbnail_drawn = False
         if beat.asset_id and beat.asset_id in project.assets:
             asset_path = project.root / project.assets[beat.asset_id]
-            if asset_path.is_file() and asset_path.suffix.lower() in (".png", ".jpg", ".jpeg"):
-                try:
-                    with Image.open(asset_path) as aim:
-                        aim_thumb = aim.copy()
-                        aim_thumb.thumbnail((box_x1 - box_x0 - 8, box_y1 - box_y0 - 8))
-                        tx = box_x0 + ((box_x1 - box_x0) - aim_thumb.width) // 2
-                        ty = box_y0 + ((box_y1 - box_y0) - aim_thumb.height) // 2
-                        canvas.paste(
-                            aim_thumb, (tx, ty), aim_thumb if aim_thumb.mode == "RGBA" else None
-                        )
+            if asset_path.is_file():
+                aim = None
+                if asset_path.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                    try:
+                        aim = Image.open(asset_path).copy()
+                    except Exception:
+                        aim = None
+                elif asset_path.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
+                    try:
+                        import io
+
+                        cmd = [
+                            media.FFMPEG,
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-ss",
+                            "0.1",
+                            "-i",
+                            str(asset_path),
+                            "-vframes",
+                            "1",
+                            "-f",
+                            "image2pipe",
+                            "-vcodec",
+                            "png",
+                            "-",
+                        ]
+                        cp = subprocess.run(cmd, capture_output=True, timeout=5, check=False)
+                        if cp.returncode == 0 and cp.stdout:
+                            aim = Image.open(io.BytesIO(cp.stdout)).copy()
+                    except Exception:
+                        aim = None
+
+                if aim is not None:
+                    try:
+                        aim.thumbnail((box_x1 - box_x0 - 8, box_y1 - box_y0 - 8))
+                        tx = box_x0 + ((box_x1 - box_x0) - aim.width) // 2
+                        ty = box_y0 + ((box_y1 - box_y0) - aim.height) // 2
+                        canvas.paste(aim, (tx, ty), aim if aim.mode == "RGBA" else None)
                         thumbnail_drawn = True
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
 
         if not thumbnail_drawn:
             badge_text = ""
@@ -917,15 +947,25 @@ def _render_solid_clip(
     output: Path, *, width: int, height: int, duration: float, color: str, fps: int = 30
 ) -> Path:
     col = color.lstrip("#")
-    if col.lower() in {"0f172a", "000000", "000"}:
+
+    def _luma(h: str) -> float:
+        try:
+            return 0.299 * int(h[0:2], 16) + 0.587 * int(h[2:4], 16) + 0.114 * int(h[4:6], 16)
+        except Exception:
+            return 0.0
+
+    if _luma(col) < 32.0:
         col = "1e293b"
+
     vf = (
-        f"scale={width}:{height}:flags=lanczos,"
-        "vignette=angle=PI/5,"
-        "scale=in_range=auto:out_range=limited,"
-        "format=yuv420p"
+        f"scale={width}:{height}:flags=lanczos,scale=in_range=auto:out_range=limited,format=yuv420p"
     )
-    bg_input = f"color=c=0x{col}:s={width}x{height}:r={fps}:d={duration:.4f}"
+    # Slow cinematic breathing gradient: speed=0.03 (1 rev / 33s) avoids dizzy spinning while
+    # keeping the background subtly alive and preventing H.264 flat-freeze artifacts.
+    bg_input = (
+        f"gradients=s={width}x{height}:r={fps}:d={duration:.4f}:"
+        f"c0=0x{col}:c1=0x182234:c2=0x{col}:c3=0x253347:speed=0.03"
+    )
 
     def build(encoder_flags: list[str]) -> list[str]:
         return [
@@ -1352,7 +1392,7 @@ def render_promo(
                 # (bypassing cache) while all other beats reuse a cached clip when one
                 # exists and store newly rendered clips to the cache.
                 force_render = beats is not None and idx in set(beats)
-                use_cache = beats is not None and not force_render
+                use_cache = not force_render
                 cache_key = compute_beat_cache_key(project, beat, idx, aspect=aspect, fps=fps)
                 cache_dir = project.root / "out" / "promo" / "cache"
                 cached_clip = get_cached_beat(cache_dir, cache_key) if use_cache else None

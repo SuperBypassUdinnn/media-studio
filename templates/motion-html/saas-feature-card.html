@@ -109,7 +109,9 @@
     if (card) {
       const cardScale = params && params.card_scale !== undefined ? Math.max(0.05, params.card_scale) : 1;
       const cardAnchorY = params && params.card_anchor_y !== undefined ? params.card_anchor_y : 0.46;
-      card.style.transform = `translate(-50%, -${cardAnchorY * 100}%) scale(${Math.max(0.05, spring * cardScale)})`;
+      // Gentle cinematic breathing float (smooth 6px vertical oscillation)
+      const floatY = Math.sin(progress * Math.PI * 4) * 6;
+      card.style.transform = `translate(-50%, calc(-${cardAnchorY * 100}% + ${floatY}px)) scale(${Math.max(0.05, spring * cardScale)})`;
     }
 
     const rect = target.getBoundingClientRect();
