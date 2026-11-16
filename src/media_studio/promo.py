@@ -8,6 +8,7 @@ and FFprobe/LUFS/`ms see` quality control.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from media_studio.gen.base import GenError, GenRequest
 from media_studio.gen.pipeline import generate_asset
 from media_studio.html_motion import HtmlMotionError, render_html_motion
 from media_studio.manifest import Project
+from media_studio.mlt import Clip, Timeline
 from media_studio.reframe import ASPECTS, OUTPUT_SIZE, reframe_video, safe_zone_for
 from media_studio.see import SeeError, peek
 from media_studio.sfx import SfxCue, SfxError, mix_transition_sfx
@@ -354,6 +356,221 @@ class PromoRenderResult:
     deliverables: dict[str, Path]
     qc: dict[str, Any]
     notes: tuple[str, ...] = ()
+    otio_path: Path | None = None
+    mlt_path: Path | None = None
+
+
+def _sha256_of_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def compute_beat_cache_key(
+    project: Project,
+    beat: PromoBeat,
+    idx: int,
+    *,
+    aspect: str,
+    fps: int,
+) -> str:
+    """Content-addressed cache key for one rendered beat.
+
+    Deterministic SHA256 over the beat payload, aspect/fps, target resolution,
+    any referenced asset file hash, and brand palette/font tokens.
+    """
+
+    mixed = hashlib.sha256()
+    mixed.update(json.dumps(beat.to_dict(), sort_keys=True).encode("utf-8"))
+    mixed.update(f"|aspect={aspect}|fps={fps}".encode())
+
+    out_w, out_h = OUTPUT_SIZE[aspect]
+    mixed.update(f"|resolution={out_w}x{out_h}".encode())
+
+    if beat.asset_id:
+        asset_rel = project.assets.get(beat.asset_id)
+        if asset_rel:
+            asset_path = project.root / asset_rel
+            if asset_path.is_file():
+                mixed.update(f"|asset={beat.asset_id}:{_sha256_of_file(asset_path)}".encode())
+
+    brand_tokens = {
+        "primary": project.brand.palette.get("primary"),
+        "accent": project.brand.palette.get("accent"),
+        "heading": project.brand.fonts.get("heading"),
+        "body": project.brand.fonts.get("body"),
+    }
+    mixed.update(f"|brand={json.dumps(brand_tokens, sort_keys=True)}".encode())
+
+    return mixed.hexdigest()
+
+
+def get_cached_beat(cache_dir: Path, key: str) -> Path | None:
+    """Return the cached clip path for ``key`` if it exists, else ``None``."""
+
+    candidate = Path(cache_dir) / f"{key}.mp4"
+    return candidate if candidate.is_file() else None
+
+
+def put_cached_beat(cache_dir: Path, key: str, clip: Path) -> Path:
+    """Atomically copy a rendered clip into the cache as ``<key>.mp4``.
+
+    A missing source (e.g. a stubbed render in a unit test) is skipped gracefully
+    so the caller is not forced to materialise a file just to populate the cache.
+    """
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / f"{key}.mp4"
+    source = Path(clip)
+    if not source.is_file():
+        return target
+    temporary = cache_dir / f"{key}.tmp"
+    shutil.copyfile(source, temporary)
+    temporary.replace(target)
+    return target
+
+
+def _rational_time(value: float, rate: int) -> dict[str, Any]:
+    return {"OTIO_SCHEMA": "RationalTime.1", "value": float(value), "rate": int(rate)}
+
+
+def _time_range(start: float, duration: float, rate: int) -> dict[str, Any]:
+    return {
+        "OTIO_SCHEMA": "TimeRange.1",
+        "start_time": _rational_time(start, rate),
+        "duration": _rational_time(duration, rate),
+    }
+
+
+def _external_reference(target_url: str) -> dict[str, Any]:
+    return {"OTIO_SCHEMA": "ExternalReference.1", "target_url": target_url}
+
+
+def export_otio_timeline(
+    project: Project,
+    plan: PromoPlan,
+    deliverable_id: str,
+    deliverable_path: Path,
+    *,
+    fps: int,
+) -> Path:
+    """Write an OpenTimelineIO 1.0 JSON timeline for the assembled promo."""
+
+    out_dir = project.root / "out" / "promo"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / "timeline.otio.json"
+
+    video_children: list[dict[str, Any]] = []
+    cursor = 0.0
+    for idx, beat in enumerate(plan.beats):
+        video_children.append(
+            {
+                "OTIO_SCHEMA": "Clip.1",
+                "name": f"beat-{idx:02d}",
+                "source_range": _time_range(cursor, beat.duration, fps),
+                "media_reference": _external_reference(str(deliverable_path)),
+            }
+        )
+        if idx < len(plan.beats) - 1:
+            out_point = cursor + beat.duration
+            video_children.append(
+                {
+                    "OTIO_SCHEMA": "Transition.1",
+                    "name": beat.transition,
+                    "transition_type": "Custom",
+                    "in_offset": _rational_time(max(0.0, out_point - 0.18), fps),
+                    "out_offset": _rational_time(out_point, fps),
+                }
+            )
+        cursor += beat.duration
+
+    tracks = [
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Video Track",
+            "kind": "Video",
+            "children": video_children,
+        },
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Voiceover Track",
+            "kind": "Audio",
+            "children": [
+                {
+                    "OTIO_SCHEMA": "Clip.1",
+                    "name": "voiceover",
+                    "source_range": _time_range(0.0, plan.total_duration, fps),
+                    "media_reference": _external_reference(str(deliverable_path)),
+                }
+            ],
+        },
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Music Track",
+            "kind": "Audio",
+            "children": [
+                {
+                    "OTIO_SCHEMA": "Clip.1",
+                    "name": "music",
+                    "source_range": _time_range(0.0, plan.total_duration, fps),
+                    "media_reference": _external_reference(str(deliverable_path)),
+                }
+            ],
+        },
+    ]
+
+    payload = {
+        "OTIO_SCHEMA": "Timeline.1",
+        "name": f"{project.slug}-promo",
+        "global_start_time": _rational_time(0.0, fps),
+        "tracks": {"OTIO_SCHEMA": "Stack.1", "children": tracks},
+    }
+    target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def export_mlt_timeline(
+    project: Project,
+    plan: PromoPlan,
+    deliverable_id: str,
+    deliverable_path: Path,
+    *,
+    fps: int,
+) -> Path:
+    """Write an MLT XML timeline for the assembled promo."""
+
+    out_dir = project.root / "out" / "promo"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / "timeline.mlt"
+
+    aspect = _aspect_for_deliverable(project, deliverable_id)
+    out_w, out_h = OUTPUT_SIZE[aspect]
+
+    clips: list[Clip] = []
+    cursor = 0.0
+    for idx, beat in enumerate(plan.beats):
+        clips.append(
+            Clip(
+                resource=deliverable_path,
+                duration=beat.duration,
+                in_point=cursor,
+                transition=beat.transition if idx > 0 else "cut",
+            )
+        )
+        cursor += beat.duration
+
+    timeline = Timeline(
+        width=out_w,
+        height=out_h,
+        fps=float(fps),
+        clips=tuple(clips),
+        title=f"{project.slug}-promo",
+    )
+    target.write_text(timeline.to_xml(), encoding="utf-8")
+    return target
 
 
 def save_promo_plan(plan: PromoPlan, path: Path) -> Path:
@@ -893,12 +1110,18 @@ def render_promo(
     deliverables: tuple[str, ...] = DEFAULT_DELIVERABLES,
     tts_engine: str = "auto",
     fps: int = 30,
+    beats: tuple[int, ...] | list[int] | None = None,
 ) -> PromoRenderResult:
     """Render a promotional video plan, enforcing the Storyboard/Quota Gate unless ``auto=True``.
 
     ``fps`` sets the deliverable frame rate (default 30; use 60 for high-motion
     promo output) and is threaded through every beat render, transition,
     caption burn, and the final encode.
+
+    ``beats`` selects which beat indices to (re)render. When ``None`` every beat
+    renders fresh (the default). When a non-empty list/tuple is given, only those
+    indices bypass the cache and re-render; every other beat reuses a cached clip
+    when available and is stored to the cache when newly rendered.
     """
 
     if not plan.beats:
@@ -1042,42 +1265,23 @@ def render_promo(
                     notes.append(f"{deliv_id} beat {idx} ({beat.kind}): " + "; ".join(collisions))
                 base_clip = scratch / f"{deliv_id}-beat-{idx:02d}-base.mp4"
 
-                asset_rel = project.assets.get(beat.asset_id) if beat.asset_id else None
-                if asset_rel and (project.root / asset_rel).is_file():
-                    normalized = scratch / f"{deliv_id}-beat-{idx:02d}-norm.mp4"
-                    _normalize_clip(
-                        project.root / asset_rel,
-                        normalized,
-                        width=1920,
-                        height=1080,
-                        duration=clip_dur,
-                        fps=fps,
-                    )
-                    reframed = scratch / f"{deliv_id}-beat-{idx:02d}-reframed.mp4"
-                    reframe_video(normalized, aspect=aspect, mode="auto", output=reframed, fps=fps)
-                    base_clip = reframed
-                elif beat.gen_prompt and gen_calls_used < max_gen_calls:
-                    gen_out = (
-                        project.root / "assets" / "video" / f"gen-{project.slug}-{idx:02d}.mp4"
-                    )
-                    try:
-                        gen_res = generate_asset(
-                            GenRequest(
-                                kind="video",
-                                prompt=beat.gen_prompt,
-                                duration=clip_dur,
-                                fps=fps,
-                                resolution="1920x1080",
-                                references=ref_paths,
-                            ),
-                            project=project,
-                            output=gen_out,
-                            max_gen_calls=max(1, max_gen_calls - gen_calls_used),
-                        )
-                        gen_calls_used += 1
+                # Selective beat regeneration: beats in ``beats`` are force-rendered
+                # (bypassing cache) while all other beats reuse a cached clip when one
+                # exists and store newly rendered clips to the cache.
+                force_render = beats is not None and idx in set(beats)
+                use_cache = beats is not None and not force_render
+                cache_key = compute_beat_cache_key(project, beat, idx, aspect=aspect, fps=fps)
+                cache_dir = project.root / "out" / "promo" / "cache"
+                cached_clip = get_cached_beat(cache_dir, cache_key) if use_cache else None
+
+                if cached_clip is not None:
+                    final_beat_clip = cached_clip
+                else:
+                    asset_rel = project.assets.get(beat.asset_id) if beat.asset_id else None
+                    if asset_rel and (project.root / asset_rel).is_file():
                         normalized = scratch / f"{deliv_id}-beat-{idx:02d}-norm.mp4"
                         _normalize_clip(
-                            gen_res.output,
+                            project.root / asset_rel,
                             normalized,
                             width=1920,
                             height=1080,
@@ -1089,108 +1293,145 @@ def render_promo(
                             normalized, aspect=aspect, mode="auto", output=reframed, fps=fps
                         )
                         base_clip = reframed
-                    except GenError as error:
-                        notes.append(f"gen fallback on beat {idx}: {error}")
+                    elif beat.gen_prompt and gen_calls_used < max_gen_calls:
+                        gen_out = (
+                            project.root / "assets" / "video" / f"gen-{project.slug}-{idx:02d}.mp4"
+                        )
+                        try:
+                            gen_res = generate_asset(
+                                GenRequest(
+                                    kind="video",
+                                    prompt=beat.gen_prompt,
+                                    duration=clip_dur,
+                                    fps=fps,
+                                    resolution="1920x1080",
+                                    references=ref_paths,
+                                ),
+                                project=project,
+                                output=gen_out,
+                                max_gen_calls=max(1, max_gen_calls - gen_calls_used),
+                            )
+                            gen_calls_used += 1
+                            normalized = scratch / f"{deliv_id}-beat-{idx:02d}-norm.mp4"
+                            _normalize_clip(
+                                gen_res.output,
+                                normalized,
+                                width=1920,
+                                height=1080,
+                                duration=clip_dur,
+                                fps=fps,
+                            )
+                            reframed = scratch / f"{deliv_id}-beat-{idx:02d}-reframed.mp4"
+                            reframe_video(
+                                normalized, aspect=aspect, mode="auto", output=reframed, fps=fps
+                            )
+                            base_clip = reframed
+                        except GenError as error:
+                            notes.append(f"gen fallback on beat {idx}: {error}")
+                            _render_solid_clip(
+                                base_clip,
+                                width=out_w,
+                                height=out_h,
+                                duration=clip_dur,
+                                color=primary_col,
+                            )
+                    elif beat.template:
+                        html_out = scratch / f"{deliv_id}-beat-{idx:02d}-html.mov"
                         _render_solid_clip(
                             base_clip,
                             width=out_w,
                             height=out_h,
                             duration=clip_dur,
                             color=primary_col,
-                        )
-                elif beat.template:
-                    html_out = scratch / f"{deliv_id}-beat-{idx:02d}-html.mov"
-                    _render_solid_clip(
-                        base_clip,
-                        width=out_w,
-                        height=out_h,
-                        duration=clip_dur,
-                        color=primary_col,
-                        fps=fps,
-                    )
-                    try:
-                        value = _value_from_text(beat.text)
-                        # Cleanly format params so headline, subhead, and feature never overlap
-                        headline_txt = beat.text if len(beat.text) <= 45 else "Key Feature"
-                        subhead_txt = beat.text if len(beat.text) > 45 else project.title
-                        feature_txt = f"Automated {beat.kind} pipeline"
-                        html_res = render_html_motion(
-                            beat.template,
-                            output=html_out,
-                            params={
-                                "headline": headline_txt,
-                                "subhead": subhead_txt,
-                                "feature": feature_txt,
-                                "label": beat.kind.upper(),
-                                "value": value,
-                                "suffix": "%",
-                                "ink": "#0F172A",
-                                "card_anchor_y": placement["anchor_y"],
-                                "card_scale": placement["scale"],
-                                "layout_zone": placement["zone"],
-                            },
-                            project=project,
-                            width=out_w,
-                            height=out_h,
                             fps=fps,
-                            duration=clip_dur,
-                            transparent=True,
                         )
-                        if html_res.output.is_file():
-                            if html_res.transparent:
-                                composited = scratch / f"{deliv_id}-beat-{idx:02d}-html-comp.mp4"
-                                _composite_overlay(
-                                    base_clip,
-                                    html_res.output,
-                                    composited,
-                                    width=out_w,
-                                    height=out_h,
-                                )
-                                base_clip = composited
-                            else:
-                                _normalize_clip(
-                                    html_res.output,
-                                    base_clip,
-                                    width=out_w,
-                                    height=out_h,
-                                    duration=clip_dur,
-                                    fps=fps,
-                                )
-                    except HtmlMotionError as error:
-                        notes.append(f"html_motion fallback on beat {idx}: {error}")
-                else:
-                    _render_solid_clip(
-                        base_clip,
-                        width=out_w,
-                        height=out_h,
-                        duration=clip_dur,
-                        color=primary_col,
-                        fps=fps,
-                    )
-
-                final_beat_clip = base_clip
-                if beat.preset:
-                    preset_out = scratch / f"{deliv_id}-beat-{idx:02d}-preset.mov"
-                    try:
-                        ec_res = render_promo_preset(
-                            beat.preset,
-                            preset_out,
-                            text=beat.text,
-                            subtext=project.title,
-                            project=project,
-                            width=out_w,
-                            height=out_h,
-                            fps=fps,
-                            duration=clip_dur,
-                        )
-                        if ec_res.ok and ec_res.output.is_file():
-                            composited = scratch / f"{deliv_id}-beat-{idx:02d}-comp.mp4"
-                            _composite_overlay(
-                                base_clip, ec_res.output, composited, width=out_w, height=out_h
+                        try:
+                            value = _value_from_text(beat.text)
+                            # Cleanly format params so headline, subhead, and feature never overlap
+                            headline_txt = beat.text if len(beat.text) <= 45 else "Key Feature"
+                            subhead_txt = beat.text if len(beat.text) > 45 else project.title
+                            feature_txt = f"Automated {beat.kind} pipeline"
+                            html_res = render_html_motion(
+                                beat.template,
+                                output=html_out,
+                                params={
+                                    "headline": headline_txt,
+                                    "subhead": subhead_txt,
+                                    "feature": feature_txt,
+                                    "label": beat.kind.upper(),
+                                    "value": value,
+                                    "suffix": "%",
+                                    "ink": "#0F172A",
+                                    "card_anchor_y": placement["anchor_y"],
+                                    "card_scale": placement["scale"],
+                                    "layout_zone": placement["zone"],
+                                },
+                                project=project,
+                                width=out_w,
+                                height=out_h,
+                                fps=fps,
+                                duration=clip_dur,
+                                transparent=True,
                             )
-                            final_beat_clip = composited
-                    except EffectCraftError as error:
-                        notes.append(f"effectcraft fallback on beat {idx}: {error}")
+                            if html_res.output.is_file():
+                                if html_res.transparent:
+                                    composited = (
+                                        scratch / f"{deliv_id}-beat-{idx:02d}-html-comp.mp4"
+                                    )
+                                    _composite_overlay(
+                                        base_clip,
+                                        html_res.output,
+                                        composited,
+                                        width=out_w,
+                                        height=out_h,
+                                    )
+                                    base_clip = composited
+                                else:
+                                    _normalize_clip(
+                                        html_res.output,
+                                        base_clip,
+                                        width=out_w,
+                                        height=out_h,
+                                        duration=clip_dur,
+                                        fps=fps,
+                                    )
+                        except HtmlMotionError as error:
+                            notes.append(f"html_motion fallback on beat {idx}: {error}")
+                    else:
+                        _render_solid_clip(
+                            base_clip,
+                            width=out_w,
+                            height=out_h,
+                            duration=clip_dur,
+                            color=primary_col,
+                            fps=fps,
+                        )
+
+                    final_beat_clip = base_clip
+                    if beat.preset:
+                        preset_out = scratch / f"{deliv_id}-beat-{idx:02d}-preset.mov"
+                        try:
+                            ec_res = render_promo_preset(
+                                beat.preset,
+                                preset_out,
+                                text=beat.text,
+                                subtext=project.title,
+                                project=project,
+                                width=out_w,
+                                height=out_h,
+                                fps=fps,
+                                duration=clip_dur,
+                            )
+                            if ec_res.ok and ec_res.output.is_file():
+                                composited = scratch / f"{deliv_id}-beat-{idx:02d}-comp.mp4"
+                                _composite_overlay(
+                                    base_clip, ec_res.output, composited, width=out_w, height=out_h
+                                )
+                                final_beat_clip = composited
+                        except EffectCraftError as error:
+                            notes.append(f"effectcraft fallback on beat {idx}: {error}")
+
+                    put_cached_beat(cache_dir, cache_key, final_beat_clip)
 
                 beat_clips.append(final_beat_clip)
                 if idx > 0:
@@ -1294,12 +1535,20 @@ def render_promo(
                 engine="promo",
             )
 
+        # 6. Canonical timeline interchange export (based on the primary deliverable).
+        primary_deliv = deliverables[0]
+        primary_path = rendered_paths[primary_deliv]
+        otio_path = export_otio_timeline(project, plan, primary_deliv, primary_path, fps=fps)
+        mlt_path = export_mlt_timeline(project, plan, primary_deliv, primary_path, fps=fps)
+
         return PromoRenderResult(
             gated=False,
             storyboard=storyboard_path if storyboard_path.is_file() else None,
             deliverables=rendered_paths,
             qc=qc_results,
             notes=tuple(notes),
+            otio_path=otio_path,
+            mlt_path=mlt_path,
         )
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

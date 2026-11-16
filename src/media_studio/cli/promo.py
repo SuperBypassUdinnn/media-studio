@@ -89,6 +89,11 @@ def register_promo_parser(subparsers: argparse._SubParsersAction) -> None:
         default=30,
         help="deliverable frame rate in fps (default: 30; use 60 for high-motion output)",
     )
+    render_parser.add_argument(
+        "--beat",
+        default=None,
+        help="beat index(es) to (re)render: --beat 2, --beat 0,2, or --beat 1-3",
+    )
     render_parser.set_defaults(func=cmd_promo_render)
 
     qc_parser = sub.add_parser("qc", help="verify promo deliverables and generate contact sheets")
@@ -121,6 +126,32 @@ def _split_csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _parse_beats(value: str | None) -> tuple[int, ...] | None:
+    """Parse a ``--beat`` value into sorted unique beat indices.
+
+    Accepts ``--beat 2``, ``--beat 0,2``, or ``--beat 1-3``. Returns ``None`` when
+    no value is given (meaning every beat renders fresh).
+    """
+
+    if value is None:
+        return None
+    indices: set[int] = set()
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_str, end_str = part.split("-", 1)
+            start = int(start_str.strip())
+            end = int(end_str.strip())
+            if end < start:
+                raise ValueError(f"invalid beat range {part!r}: end is before start")
+            indices.update(range(start, end + 1))
+        else:
+            indices.add(int(part))
+    return tuple(sorted(indices))
+
+
 def cmd_promo_plan(args: argparse.Namespace) -> int:
     try:
         project = load_project(args.project)
@@ -151,6 +182,7 @@ def cmd_promo_render(args: argparse.Namespace) -> int:
         plan_path = args.plan or (project.root / "out" / "promo" / "promo-plan.json")
         plan = load_promo_plan(plan_path)
         deliverables = _split_csv(args.deliverables)
+        beats = _parse_beats(args.beat)
         result = render_promo(
             project,
             plan,
@@ -160,8 +192,9 @@ def cmd_promo_render(args: argparse.Namespace) -> int:
             deliverables=deliverables,
             tts_engine=args.tts_engine,
             fps=args.fps,
+            beats=beats,
         )
-    except (PromoError, ManifestError, OSError) as error:
+    except (PromoError, ManifestError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILURE
 
