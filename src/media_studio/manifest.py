@@ -746,7 +746,7 @@ def validate_project(project: Project) -> ValidationReport:
             and not getattr(deliverable, "preview", False)
         ):
             width, height = parse_resolution(deliverable.resolution)
-            if width < 1920 or height < 1080:
+            if min(width, height) < 1080:
                 errors.append(
                     f"deliverable {deliverable.id}: resolution {deliverable.resolution} is below "
                     "the 1920x1080 minimum floor (mark preview: true to permit)"
