@@ -187,3 +187,59 @@ def test_deep_checks_reports_torch_venvs_as_optional(monkeypatch: pytest.MonkeyP
         check = by_name[expected]
         assert check.ok is False
         assert "optional" in check.detail.lower() or "missing venv" in check.detail.lower()
+
+
+def test_check_effectcraft_update_detects_newer_version(tmp_path: Path) -> None:
+    from media_studio.tools import check_effectcraft_update
+
+    cache = tmp_path / "ec-update.json"
+    result = check_effectcraft_update(
+        installed_version="0.19.0",
+        cache_path=cache,
+        force=True,
+        opener=lambda: "0.24.1",
+    )
+    assert result["update_available"] is True
+    assert result["installed"] == "0.19.0"
+    assert result["latest"] == "0.24.1"
+    assert result["error"] is None
+
+    # Cached read should return the same
+    cached_result = check_effectcraft_update(
+        installed_version="0.19.0",
+        cache_path=cache,
+        force=False,
+    )
+    assert cached_result["update_available"] is True
+    assert cached_result["latest"] == "0.24.1"
+
+
+def test_check_effectcraft_update_up_to_date(tmp_path: Path) -> None:
+    from media_studio.tools import check_effectcraft_update
+
+    cache = tmp_path / "ec-update.json"
+    result = check_effectcraft_update(
+        installed_version="0.24.1",
+        cache_path=cache,
+        force=True,
+        opener=lambda: "0.24.1",
+    )
+    assert result["update_available"] is False
+    assert result["installed"] == "0.24.1"
+
+
+def test_check_effectcraft_update_handles_opener_error(tmp_path: Path) -> None:
+    from media_studio.tools import check_effectcraft_update
+
+    def broken_opener() -> str:
+        raise OSError("network down")
+
+    cache = tmp_path / "ec-update.json"
+    result = check_effectcraft_update(
+        installed_version="0.24.1",
+        cache_path=cache,
+        force=True,
+        opener=broken_opener,
+    )
+    assert result["update_available"] is False
+    assert result["error"] == "network down"

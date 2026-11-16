@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 PROBE_TIMEOUT_SECONDS = 30
 VERSION_WIDTH = 96
@@ -24,6 +27,7 @@ TORCH_VENVS = (
     ("DeepFilterNet", Path("~/.clone/Github/DeepFilterNet/.venv")),
     ("demucs (UVR)", Path("~/.clone/Github/ultimatevocalremovergui/.venv")),
 )
+EFFECTCRAFT_UPDATE_CACHE = Path("~/.cache/media-studio/effectcraft-update.json")
 
 
 @dataclass(frozen=True)
@@ -388,7 +392,137 @@ def deep_checks(
     else:
         results.append(CheckResult("media-engines.json", False, f"missing: {engines_cfg}"))
 
+    # Automated EffectCraft update check (uses cached metadata to avoid slowing down checks)
+    ec_update = check_effectcraft_update()
+    if ec_update.get("error"):
+        results.append(CheckResult("EffectCraft update", True, f"skipped ({ec_update['error']})"))
+    elif ec_update.get("update_available"):
+        cur = ec_update["installed"]
+        lat = ec_update["latest"]
+        results.append(
+            CheckResult(
+                "EffectCraft update",
+                False,
+                f"update available: v{cur} -> v{lat} ({ec_update['url']})",
+            )
+        )
+    else:
+        results.append(
+            CheckResult(
+                "EffectCraft update",
+                True,
+                f"up to date (v{ec_update.get('installed', 'unknown')})",
+            )
+        )
+
     return results
+
+
+def _is_newer(latest: str | None, current: str | None) -> bool:
+    if not latest or not current or current == "unknown":
+        return False
+
+    def nums(s: str) -> tuple[int, ...]:
+        return tuple(int(x) for x in re.findall(r"\d+", s))
+
+    return nums(latest) > nums(current)
+
+
+def check_effectcraft_update(
+    *,
+    installed_version: str | None = None,
+    cache_path: Path | None = None,
+    cache_ttl_seconds: int = 86400,
+    timeout: float = 2.0,
+    force: bool = False,
+    opener: Callable[[], str | None] | None = None,
+) -> dict[str, Any]:
+    """Check whether a newer release of EffectCraft is available on GitHub."""
+    if installed_version is None:
+        cli = shutil.which("effectcraft-cli")
+        if cli:
+            try:
+                proc = subprocess.run(
+                    [cli, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    line = first_line(proc.stdout or proc.stderr)
+                    m = re.search(r"(\d+\.\d+(?:\.\d+)?)", line)
+                    if m:
+                        installed_version = m.group(1)
+            except Exception:
+                pass
+
+    current_ver = installed_version or "unknown"
+    release_url = "https://github.com/storytold/effectcraft/releases/latest"
+    api_url = "https://api.github.com/repos/storytold/effectcraft/releases/latest"
+
+    target_cache = (cache_path or EFFECTCRAFT_UPDATE_CACHE).expanduser()
+    now_ts = time.time()
+
+    if not force and target_cache.is_file():
+        try:
+            with target_cache.open("r", encoding="utf-8") as f:
+                cached = json.load(f)
+            cached_ts = cached.get("checked_at", 0)
+            if now_ts - cached_ts < cache_ttl_seconds:
+                latest_ver = cached.get("latest")
+                return {
+                    "installed": current_ver,
+                    "latest": latest_ver,
+                    "update_available": _is_newer(latest_ver, current_ver),
+                    "error": cached.get("error"),
+                    "url": release_url,
+                }
+        except Exception:
+            pass
+
+    latest_ver = None
+    fetch_error = None
+    if opener is not None:
+        try:
+            latest_ver = opener()
+        except Exception as err:
+            fetch_error = str(err)
+    else:
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(api_url, headers={"User-Agent": "media-studio"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                tag = data.get("tag_name", "").lstrip("v")
+                m = re.search(r"(\d+\.\d+(?:\.\d+)?)", tag)
+                if m:
+                    latest_ver = m.group(1)
+        except Exception as err:
+            fetch_error = f"network error: {err}"
+
+    try:
+        target_cache.parent.mkdir(parents=True, exist_ok=True)
+        with target_cache.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "checked_at": now_ts,
+                    "latest": latest_ver,
+                    "error": fetch_error,
+                },
+                f,
+            )
+    except Exception:
+        pass
+
+    return {
+        "installed": current_ver,
+        "latest": latest_ver,
+        "update_available": _is_newer(latest_ver, current_ver) if latest_ver else False,
+        "error": fetch_error,
+        "url": release_url,
+    }
 
 
 def _venv_torch_version(venv: Path) -> str | None:
