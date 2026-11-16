@@ -81,7 +81,10 @@ Codifies the visual-first pre-production and iteration loop:
 - Mandates the Storyboard Self-Iteration Loop (`ms storyboard build` -> `ms critique --stage storyboard` -> visual `read` inspection -> targeted scene revision) prior to presenting `storyboard.png` at the Human Approval Gate.
 
 ### 3.6 `.agents/skills/multimodal-critic-gate/SKILL.md` & `.agents/skills/feature-dev-workflow/SKILL.md`
-Documents the Dual-Gate verification protocol (`submodules/media-mcp` deterministic metrics + 5-axis Multimodal Vision Rubric) and repository development standards (TDD, CodeGraph sync, Ruff linting, sub-600-line module boundaries).
+Documents the Dual-Gate verification protocol (`submodules/media-mcp` deterministic metrics + Color Palette Harmony + 6-axis Multimodal Vision Rubric) and repository development standards (TDD, CodeGraph sync, Ruff linting, sub-600-line module boundaries). Includes the **60-30-10 Color Theory Standard**:
+- **60% Dominant Tone** (`brand.palette.primary`): Deep environment/studio foundation (e.g., obsidian `#080B11` for nocturnal luxury, warm ivory for botanical skincare, deep slate for developer tooling).
+- **30% Secondary Structural Tone** (`brand.palette.secondary`): Pedestal, glass shadow, and ambient rim lighting.
+- **10% Specular Accent & Ink** (`brand.palette.accent` + `brand.palette.ink`): High-contrast focal highlights (metallic gold, electric cyan) with mandatory WCAG contrast ratio `>= 4.5:1` against the dominant tone.
 
 ---
 
@@ -188,18 +191,19 @@ Before presenting `storyboard.png` to the user:
 - Repository `https://github.com/SuperBypassUdinnn/media-mcp.git` is registered in `.gitmodules` and checked out at `submodules/media-mcp`.
 - `src/media_studio/critique.py` imports `media-mcp` analytics directly (`media.media`, `media.artifacts`, `rhythm`), removing the legacy "best-effort subprocess hook" that silently passed when errors or unsynced cuts occurred.
 
-### 6.2 Gate 1: Hard Quantitative Gates (`submodules/media-mcp`)
-`ms critique <project> [--stage storyboard|video]` enforces four deterministic blocking gates (`severity: "error"` blocks `ok: true` and returns exit code `1`):
+### 6.2 Gate 1: Hard Quantitative Gates (`submodules/media-mcp` + Palette Analyzer)
+`ms critique <project> [--stage storyboard|video]` enforces five deterministic blocking gates (`severity: "error"` blocks `ok: true` and returns exit code `1`):
 
 | Gate | Underlying Sensor | Blocking Threshold (`severity: "error"`) | Actionable Corrective Guidance |
 |---|---|---|---|
 | **1. Motion Energy & Anti-Hold** | `media_motion` (`analysis_fps=10`) | Any scene with static hold (`max_diff < 2.0`) exceeding `35%` of scene duration, OR total video hold ratio exceeding `20%`. | Add continuous 3D camera motion (`slow-dolly-in`, `orbital-reveal`), particle emitter, or active 3D text animation to the static scene. |
 | **2. Contextual & Anti-Boilerplate OCR** | `media_ocr` (per-scene midpoint) | Presence of any forbidden template leak (`"New feature"`, `"Try it free"`, `"Up from last period"`, `"Key Feature"`, `"Automated demo"`), OR expected `typography_3d.text` missing/truncated (`< 60%` token match). | Remove hardcoded template strings; adjust 3D text camera distance, font size, or line wrapping in `typography_3d`. |
 | **3. Frame Image Quality & Exposure** | `media_image_quality` & `media_frames` | Any scene keyframe rated `tier == "poor"`, mean luminance `< 18` (crushed black) or `> 240` (blown highlight), or RMS contrast `< 12`. | Adjust 3D key/rim light power, HDRI strength, or EffectCraft exposure/glow parameters. |
-| **4. Audio-Visual Beat & Loudness** | `media_beats`, `media_avsync`, FFprobe EBU R128 | Integrated loudness outside `-14.0 LUFS +- 1.0`, true peak `> -1.0 dBTP`, black/frozen segments `> 0`, or `color_space != "bt709"` / `color_range != "tv"`. | Re-normalize audio mix, snap scene durations to beat grid onsets, and enforce BT.709 limited range. |
+| **4. Color Palette Selection, Contrast, & 60-30-10 Adherence** | `critique_palette` (WCAG + CIELAB $\Delta E$ K-means cluster analyzer on `media_frames`) | (a) Declared `brand.palette` fails WCAG luminance contrast (`ink`/`accent` vs `primary` `< 4.5:1`) or uses uncurated template defaults (`#38BDF8` sky-blue on non-tech genres); (b) Rendered scene keyframe dominant color clusters deviate from `brand.palette` (`min CIELAB Delta-E > 38.0`, e.g., unstyled `#FFFFFF` cards on a dark luxury palette); or (c) Accent color exceeds `25%` frame area (violating the 60-30-10 balance). | Recalibrate `brand.palette` to match product archetype; align 3D light colors, PBR materials, and `ec.color.lumetri` / `ec.color.curves` grading with the declared palette. |
+| **5. Audio-Visual Beat & Loudness** | `media_beats`, `media_avsync`, FFprobe EBU R128 | Integrated loudness outside `-14.0 LUFS +- 1.0`, true peak `> -1.0 dBTP`, black/frozen segments `> 0`, or `color_space != "bt709"` / `color_range != "tv"`. | Re-normalize audio mix, snap scene durations to beat grid onsets, and enforce BT.709 limited range. |
 
-### 6.3 Gate 2: Mandatory Multimodal Vision Rubric
-Quantitative metrics alone cannot judge whether a 3D perfume bottle looks luxurious or whether 3D typography is artistically integrated. Therefore, `ms critique` requires a signed **Vision Critique Report (`<project>/out/reports/vision-critique.json`)** evaluated by a capable vision model (`google/antigravity-gemini-3.8-flash` or main session native vision) after inspecting the extracted scene keyframes via `read`:
+### 6.3 Gate 2: Mandatory Multimodal Vision Rubric (6 Axes)
+Quantitative metrics alone cannot judge whether a 3D perfume bottle looks luxurious, whether the color palette evokes the right mood, or whether 3D typography is artistically integrated. Therefore, `ms critique` requires a signed **Vision Critique Report (`<project>/out/reports/vision-critique.json`)** evaluated by a capable vision model (`google/antigravity-gemini-3.8-flash` or main session native vision) after inspecting the extracted scene keyframes via `read`:
 
 ```json
 {
@@ -210,14 +214,15 @@ Quantitative metrics alone cannot judge whether a 3D perfume bottle looks luxuri
     "three_d_object_and_environment_depth": 5,
     "three_d_and_kinetic_typography_craft": 5,
     "camera_choreography_and_motion_energy": 4,
-    "lighting_and_color_continuity": 5,
+    "color_palette_selection_and_harmony": 5,
+    "lighting_and_atmospheric_continuity": 5,
     "conceptual_fit_to_brief": 5
   },
   "defects": [],
   "passed": true
 }
 ```
-- **Blocking Rule**: Every rubric axis is scored `1..5`. If `vision-critique.json` is absent, stale (older than the rendered file), has any axis score `< 4`, or lists any unresolved visual defect, `ms critique` returns `ok: false` (exit code `1`) with defect category `"vision-rubric"`.
+- **Blocking Rule**: Every rubric axis is scored `1..5`. If `vision-critique.json` is absent, stale (older than the rendered file), has any axis score `< 4` (including `color_palette_selection_and_harmony`), or lists any unresolved visual defect, `ms critique` returns `ok: false` (exit code `1`) with defect category `"vision-rubric"`.
 
 ---
 
@@ -231,7 +236,7 @@ Quantitative metrics alone cannot judge whether a 3D perfume bottle looks luxuri
    - Delete all legacy directories inside `~/Projects/*` (`amv-demonslayer-3d`, `aura-noir-perfume`, `lumina-motion-v2`, `scr2026-*`) so zero polluted artifacts remain.
    - Audit `src/media_studio/` against the Phase 1 skill contracts; retire `src/media_studio/promo.py` and `src/media_studio/cli/promo.py` (retaining a thin deprecation shim or migrating callers to `ms scene` / `ms storyboard` / `ms critique`).
 3. **Phase 3 — Git Submodule `media-mcp` & Dual-Gate Critic (`src/media_studio/critique.py`)**:
-   - Add `submodules/media-mcp` and wire the 4 quantitative gates + Gate 2 Vision Rubric validation into `ms critique`.
+   - Add `submodules/media-mcp` and wire the 5 quantitative gates (including Color Palette Selection, WCAG Contrast, & CIELAB 60-30-10 Cluster Adherence) + Gate 2 6-Axis Vision Rubric validation into `ms critique`.
 4. **Phase 4 — 3D Scene Engine, 3D Typography Presets, & Scene-Graph Orchestrator**:
    - Expand `src/media_studio/blender.py` with procedural/asset 3D product stage builders (glass/liquid/metal PBR shaders, studio pedestal, water droplets, HDRI lighting, and `slow-dolly-in` / `macro-surface-pan` / `orbital-reveal` camera rigs).
    - Expand `src/media_studio/effectcraft.py` with true 3D & kinetic typography builders (`text-orbit-3d`, per-character 3D animators, `camera.newCamera`, `light.newLight`, `ec.stylize.cclightsweep`, `ec.stylize.glow`, `ec.sim.particleworld`).
