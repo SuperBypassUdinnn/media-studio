@@ -1,10 +1,11 @@
 """Google Flow generative provider backed by the multi-account credit waterfall.
 
-Routes image generation to ``Nano Banana Pro`` (wire key ``GEM_PIX_2``, 0 credits) and
-video generation to ``Veo 3.1 - Lite`` (wire key ``veo_3_1_i2v_lite``, 10 credits per
-batch) with ``Omni 1.2 Flash`` (wire key ``abra_t2v_10s``, 24 credits per 8s @ 720p) as
-the quality fallback. Deprecated models (``veo_3_1_fast``, ``veo_3_1_quality``,
-``abra_t2v_8s``) are never used.
+Routes image generation to ``Nano Banana Pro`` (wire key ``GEM_PIX_2``, 0 credits) by
+default, also supporting ``Nano Banana 2.1`` (wire key ``BELUGA``) and ``Nano Banana 2 Lite``
+(wire key ``HARBOR_SEAL``), and routes video generation to ``Veo 3.1 - Lite`` (wire key
+``veo_3_1_i2v_lite``, 10 credits per batch) with ``Omni 1.2 Flash`` (wire key
+``abra_t2v_10s``, 24 credits per 8s @ 720p) as the quality fallback. Deprecated models
+(``veo_3_1_fast``, ``veo_3_1_quality``, ``abra_t2v_8s``) are never used.
 
 Coordinates with :class:`FlowAccountManager` / :class:`FlowCreditStore` to acquire the
 active account, run the predictive pre-check, and record credit spend. Raises
@@ -25,7 +26,11 @@ FLOW_BASE = "https://flow.googleapis.com/v1"
 
 IMAGE_MODEL = "nano-banana-pro"
 IMAGE_WIRE_KEY = "GEM_PIX_2"
-# Also supported image models (wire keys): BELUGA, HARBOR_SEAL.
+IMAGE_WIRE_KEYS: dict[str, str] = {
+    "nano-banana-pro": "GEM_PIX_2",
+    "nano-banana-2.1": "BELUGA",
+    "nano-banana-2-lite": "HARBOR_SEAL",
+}
 
 VIDEO_MODEL = "veo-3.1-lite"
 VIDEO_WIRE_KEY = "veo_3_1_i2v_lite"
@@ -99,7 +104,9 @@ class GoogleFlowProvider(GenProvider):
             response = httpx.request(method, url, headers=headers, json=payload, timeout=120)
         except httpx.HTTPError as error:
             raise ProviderQuotaError(f"google_flow request failed: {error}") from error
-        if response.status_code == 429 or "quota" in response.text.lower():
+        if response.status_code == 429 or (
+            response.status_code >= 400 and "quota" in response.text.lower()
+        ):
             retry_after = None
             try:
                 retry_after = int(response.headers.get("Retry-After") or 0) or None
@@ -114,9 +121,11 @@ class GoogleFlowProvider(GenProvider):
             )
         return response.content
 
-    def _generate_image(self, account, prompt: str, size: str, seed, references: list) -> bytes:
+    def _generate_image(
+        self, account, prompt: str, size: str, seed, references: list, wire_key: str
+    ) -> bytes:
         payload = {
-            "model": IMAGE_WIRE_KEY,
+            "model": wire_key,
             "prompt": prompt,
             "aspect_ratio": _aspect_ratio(size),
             "seed": seed,
@@ -147,8 +156,11 @@ class GoogleFlowProvider(GenProvider):
         size: str,
         seed: int | None,
         references: list[str],
+        model: str | None = None,
     ) -> GenerateOutput:
-        cost = self._credit_store.cost(IMAGE_MODEL)
+        selected_model = model or IMAGE_MODEL
+        wire_key = IMAGE_WIRE_KEYS.get(selected_model, IMAGE_WIRE_KEY)
+        cost = self._credit_store.cost(selected_model)
         excluded: set[str] = set()
         account = self._select_account(cost, excluded, allow_monthly_pool=False)
         if account is None:
@@ -156,18 +168,22 @@ class GoogleFlowProvider(GenProvider):
                 "google_flow: no account with sufficient credit for image generation"
             )
         try:
-            image_bytes = self._generate_image(account, prompt, size, seed, list(references))
+            image_bytes = self._generate_image(
+                account, prompt, size, seed, list(references), wire_key
+            )
         except ProviderQuotaError:
             excluded.add(account.id)
             account = self._select_account(cost, excluded, allow_monthly_pool=False)
             if account is None:
                 raise
-            image_bytes = self._generate_image(account, prompt, size, seed, list(references))
+            image_bytes = self._generate_image(
+                account, prompt, size, seed, list(references), wire_key
+            )
         self._credit_store.record_spend(
-            account.id, cost, IMAGE_MODEL, pool="daily", tier=account.tier
+            account.id, cost, selected_model, pool="daily", tier=account.tier
         )
         output.write_bytes(image_bytes)
-        return GenerateOutput(model=IMAGE_MODEL, seed=seed, references=tuple(references))
+        return GenerateOutput(model=selected_model, seed=seed, references=tuple(references))
 
     def generate_video(
         self,
@@ -197,10 +213,6 @@ class GoogleFlowProvider(GenProvider):
                         account, prompt, wire_key, duration, fps, resolution, seed
                     )
                 except ProviderQuotaError:
-                    excluded.add(account.id)
-                    account = None
-                    continue
-                except httpx.HTTPError:
                     excluded.add(account.id)
                     account = None
                     continue

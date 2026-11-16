@@ -127,10 +127,36 @@ def test_image_uses_nano_banana_pro_zero_credits(env_paths, tmp_path: Path, monk
     assert captured["payload"]["aspect_ratio"] == "IMAGE_ASPECT_RATIO_PORTRAIT"
     assert captured["payload"]["prompt"] == "a cinematic product shot"
     # Image gen costs 0: nothing spent.
-    assert (
-        store._read(account_id="free-1") is None
-        or store._read(account_id="free-1").get("daily_spent", 0) == 0
-    )
+    state = store._read(account_id="free-1")
+    assert state is not None and state.get("daily_spent", 0) == 0
+
+
+def test_image_beluga_harbor_seal_wire_keys(env_paths, tmp_path: Path, monkeypatch) -> None:
+    provider, _store = _make_provider(env_paths)
+
+    def make_case(model_name: str, expected_wire_key: str) -> None:
+        output = tmp_path / f"out_{model_name}.png"
+        captured: dict = {}
+
+        def fake_request(method, url, headers, json, timeout):
+            captured["payload"] = json
+            return FakeResponse(200, FAKE_IMAGE_BYTES)
+
+        monkeypatch.setattr("media_studio.gen.providers.google_flow.httpx.request", fake_request)
+        result = provider.generate_image(
+            "a cinematic product shot",
+            output=output,
+            size="1024x1024",
+            seed=1,
+            references=[],
+            model=model_name,
+        )
+
+        assert result.model == model_name
+        assert captured["payload"]["model"] == expected_wire_key
+
+    make_case("nano-banana-2.1", "BELUGA")
+    make_case("nano-banana-2-lite", "HARBOR_SEAL")
 
 
 def test_video_uses_veo_3_1_lite_ten_credits(env_paths, tmp_path: Path, monkeypatch) -> None:
