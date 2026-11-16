@@ -91,3 +91,20 @@ def test_run_ffmpeg_encode_with_fallback_retries_with_cpu(tmp_path, monkeypatch)
     assert len(captured) == 2
     assert any("h264_nvenc" in flags for flags in captured[0])
     assert captured[1][:2] == ["-c:v", "libx264"]
+
+
+def test_run_ffmpeg_encode_with_fallback_re_raises_non_nvenc_error(tmp_path, monkeypatch):
+    output = tmp_path / "out.mp4"
+    output.write_bytes(b"")
+
+    def command_builder(flags: list[str]) -> list[str]:
+        return ["ffmpeg", "-y", *flags, str(output)]
+
+    def fake_run(command, *, label, expect_stdout=False):
+        # A generic ffmpeg failure with no NVENC/CUDA/device terms must propagate.
+        raise media.MediaError("filter graph error: invalid argument")
+
+    monkeypatch.setattr(media, "run_command", fake_run)
+
+    with pytest.raises(media.MediaError, match="filter graph error"):
+        video.run_ffmpeg_encode_with_fallback(command_builder, output=output, label="encode")

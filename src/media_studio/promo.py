@@ -176,6 +176,136 @@ def check_layout_collisions(beat: PromoBeat, *, aspect: str, width: int, height:
     return issues
 
 
+def resolve_layout_placement(
+    beat: PromoBeat, *, aspect: str, width: int, height: int
+) -> dict[str, Any]:
+    """Resolve a non-colliding card placement for ``beat``.
+
+    Calculates the card bounding box for ``beat.layout_zone`` and compares it
+    against the caption box and the platform safe zone (via
+    :func:`safe_zone_for`). When an overlap or safe-zone intrusion is detected,
+    automatically adjusts the card ``anchor_y`` (shifting toward the center /
+    away from the caption band) and/or shrinks the card ``scale`` so the
+    adjusted element fits strictly within the safe area without colliding with
+    captions.
+
+    Returns a dict with ``anchor_y``, ``scale``, ``adjusted``,
+    ``collision_avoided`` and ``reason`` suitable for passing as
+    ``card_anchor_y`` / ``card_scale`` params to the HTML motion templates.
+    """
+
+    zone_name = beat.layout_zone or "hero-center"
+    boxes = LAYOUT_ZONE_BOXES.get(zone_name, LAYOUT_ZONE_BOXES["hero-center"])
+    safe = safe_zone_for(aspect, width, height)
+
+    card_box = dict(boxes["card"])
+    caption_box = dict(boxes["caption"])
+
+    # Safe-zone limits expressed as canvas fractions (0..1), matching the card box units.
+    top_limit = safe["top"] / height
+    bottom_limit = (height - safe["bottom"]) / height
+
+    anchor_y = card_box["top"] + (card_box["bottom"] - card_box["top"]) / 2.0
+    scale = 1.0
+    adjusted = False
+    reasons: list[str] = []
+
+    def overlaps(a: dict[str, float], b: dict[str, float]) -> bool:
+        return not (
+            a["right"] <= b["left"]
+            or a["left"] >= b["right"]
+            or a["bottom"] <= b["top"]
+            or a["top"] >= b["bottom"]
+        )
+
+    # 1. Card/caption overlap: shrink the card until it clears the caption zone.
+    if overlaps(card_box, caption_box):
+        # Scale down around the card center until no overlap (max 6 shrink steps).
+        for _ in range(6):
+            trial = scale * 0.85
+            cx = (card_box["left"] + card_box["right"]) / 2.0
+            cy = anchor_y
+            card_w = (card_box["right"] - card_box["left"]) * trial
+            card_h = (card_box["bottom"] - card_box["top"]) * trial
+            trial_box = {
+                "top": cy - card_h / 2.0,
+                "bottom": cy + card_h / 2.0,
+                "left": cx - card_w / 2.0,
+                "right": cx + card_w / 2.0,
+            }
+            if not overlaps(trial_box, caption_box):
+                scale = trial
+                adjusted = True
+                reasons.append("scaled card down to clear caption zone")
+                break
+            scale = trial
+
+    # 2. Safe-zone intrusions: shift anchor_y away from platform UI bands.
+    card_w = (card_box["right"] - card_box["left"]) * scale
+    card_h = (card_box["bottom"] - card_box["top"]) * scale
+
+    # Keep the whole scaled card inside [top_limit, bottom_limit] vertically.
+    min_anchor_y = top_limit + card_h / 2.0
+    max_anchor_y = bottom_limit - card_h / 2.0
+
+    if anchor_y < min_anchor_y:
+        anchor_y = min_anchor_y
+        adjusted = True
+        reasons.append("shifted card anchor Y down out of top safe zone")
+    if anchor_y > max_anchor_y:
+        anchor_y = max_anchor_y
+        adjusted = True
+        reasons.append("shifted card anchor Y up out of bottom safe zone")
+
+    # If still colliding after shifting, fall back to scaling further.
+    trial_box = {
+        "top": anchor_y - card_h / 2.0,
+        "bottom": anchor_y + card_h / 2.0,
+        "left": (card_box["left"] + card_box["right"]) / 2.0 - card_w / 2.0,
+        "right": (card_box["left"] + card_box["right"]) / 2.0 + card_w / 2.0,
+    }
+    still_bad = (
+        overlaps(trial_box, caption_box)
+        or trial_box["top"] < top_limit
+        or trial_box["bottom"] > bottom_limit
+    )
+    if still_bad:
+        for _ in range(6):
+            scale *= 0.85
+            card_h = (card_box["bottom"] - card_box["top"]) * scale
+            card_w = (card_box["right"] - card_box["left"]) * scale
+            anchor_y = min(max(anchor_y, top_limit + card_h / 2.0), bottom_limit - card_h / 2.0)
+            trial_box = {
+                "top": anchor_y - card_h / 2.0,
+                "bottom": anchor_y + card_h / 2.0,
+                "left": (card_box["left"] + card_box["right"]) / 2.0 - card_w / 2.0,
+                "right": (card_box["left"] + card_box["right"]) / 2.0 + card_w / 2.0,
+            }
+            if (
+                not overlaps(trial_box, caption_box)
+                and trial_box["top"] >= top_limit
+                and trial_box["bottom"] <= bottom_limit
+            ):
+                adjusted = True
+                reasons.append("scaled card further to fit safe zone")
+                break
+
+    collision_avoided = (
+        not overlaps(trial_box, caption_box)
+        and trial_box["top"] >= top_limit
+        and trial_box["bottom"] <= bottom_limit
+    )
+
+    return {
+        "zone": zone_name,
+        "anchor_y": round(anchor_y, 4),
+        "scale": round(scale, 4),
+        "adjusted": adjusted,
+        "collision_avoided": collision_avoided,
+        "reason": "; ".join(reasons) if reasons else "no collision",
+    }
+
+
 @dataclass(frozen=True)
 class PromoPlan:
     """Complete beat-by-beat promotional video plan."""
@@ -907,6 +1037,7 @@ def render_promo(
             for idx, beat in enumerate(plan.beats):
                 clip_dur = beat.duration + (quant_td if idx > 0 else 0.0)
                 collisions = check_layout_collisions(beat, aspect=aspect, width=out_w, height=out_h)
+                placement = resolve_layout_placement(beat, aspect=aspect, width=out_w, height=out_h)
                 if collisions:
                     notes.append(f"{deliv_id} beat {idx} ({beat.kind}): " + "; ".join(collisions))
                 base_clip = scratch / f"{deliv_id}-beat-{idx:02d}-base.mp4"
@@ -994,6 +1125,9 @@ def render_promo(
                                 "value": value,
                                 "suffix": "%",
                                 "ink": "#0F172A",
+                                "card_anchor_y": placement["anchor_y"],
+                                "card_scale": placement["scale"],
+                                "layout_zone": placement["zone"],
                             },
                             project=project,
                             width=out_w,

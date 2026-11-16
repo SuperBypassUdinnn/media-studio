@@ -115,7 +115,9 @@
     const spring = window.__msSpring({frame: frameIndex, fps, damping: 14, stiffness: 110, mass: 1});
     const card = document.querySelector('.card');
     if (card) {
-      card.style.transform = `translate(-50%, -50%) scale(${Math.max(0.05, spring)})`;
+      const cardScale = params && params.card_scale !== undefined ? Math.max(0.05, params.card_scale) : 1;
+      const cardAnchorY = params && params.card_anchor_y !== undefined ? params.card_anchor_y : 0.46;
+      card.style.transform = `translate(-50%, -${cardAnchorY * 100}%) scale(${Math.max(0.05, spring * cardScale)})`;
     }
 
     // Highlight ring: expands then fades around the target.

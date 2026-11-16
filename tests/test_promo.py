@@ -24,6 +24,7 @@ from media_studio.promo import (
     plan_promo,
     qc_promo,
     render_promo,
+    resolve_layout_placement,
 )
 from media_studio.tts import TtsResult, WordTiming
 
@@ -1313,3 +1314,154 @@ def test_check_layout_collisions_detects_safe_zone_intrusion():
     issues = check_layout_collisions(beat, aspect="1:1", width=100, height=100)
     assert issues, "expected safe-zone intrusion to be flagged"
     assert any("safe zone" in issue for issue in issues)
+
+
+def test_resolve_layout_placement_no_adjustment_when_clean():
+    beat = PromoBeat(kind="demo", text="hello", duration=1.0, layout_zone="hero-center")
+    placement = resolve_layout_placement(beat, aspect="9:16", width=1080, height=1920)
+    assert placement["adjusted"] is False
+    assert placement["scale"] == 1.0
+    assert placement["collision_avoided"] is True
+    assert placement["reason"] == "no collision"
+
+
+def test_resolve_layout_placement_adjusts_when_crowded():
+    # A 9:16 canvas small enough to push the hero-center card into the top/bottom
+    # safe zone forces placement to scale down and shift anchor Y while avoiding collision.
+    beat = PromoBeat(kind="demo", text="hello", duration=1.0, layout_zone="hero-center")
+    placement = resolve_layout_placement(beat, aspect="9:16", width=394, height=700)
+    assert placement["adjusted"] is True
+    assert placement["scale"] < 1.0
+    assert 0.0 < placement["anchor_y"] < 700.0
+    assert placement["collision_avoided"] is True
+
+
+def test_resolve_layout_placement_all_zones_avoid_collision():
+    for zone in ("hero-center", "split-stage", "card-focus", "cta-centered"):
+        beat = PromoBeat(kind="demo", text="hello", duration=1.0, layout_zone=zone)
+        placement = resolve_layout_placement(beat, aspect="9:16", width=1080, height=1920)
+        assert placement["collision_avoided"] is True, (zone, placement)
+
+
+def test_render_promo_passes_adjusted_placement_params(tmp_path, monkeypatch):
+    """render_promo threads resolve_layout_placement output into HTML motion params."""
+    root = _make_promo_project(tmp_path)
+    project = load_project(root)
+    plan = plan_promo(
+        project,
+        script="Hook fast. Problem clear. Demo smooth. Proof real. CTA now.",
+        target_duration=4.0,
+    )
+
+    def _fake_tts(text, *, output, words_out=None, **_kwargs):
+        _ffmpeg_test_wav(output, 4.0)
+        wpath = words_out or output.with_suffix(".json")
+        wpath.write_text(json.dumps([{"word": "Hook", "start": 0.1, "end": 0.7}]), encoding="utf-8")
+        sidecar = output.with_suffix(output.suffix + ".license")
+        sidecar.write_text("SPDX-License-Identifier: CC0-1.0\n", encoding="utf-8")
+        return TtsResult(
+            audio_path=output,
+            words_path=wpath,
+            sidecar_path=sidecar,
+            duration=4.0,
+            engine="mock",
+            voice="mock",
+            words=(WordTiming("Hook", 0.1, 0.7),),
+        )
+
+    def _fake_gen(request, *, output, **_kwargs):
+        _ffmpeg_test_mp4(output, 1920, 1080, 0.8, "0x1e293b")
+        return GenResult(
+            output=output,
+            kind="video",
+            provider="mock",
+            model="mock-v1",
+            seed=42,
+            prompt=str(getattr(request, "prompt", "")),
+            references=(),
+            sha256="0" * 64,
+            size_bytes=1,
+            duration=1.0,
+        )
+
+    captured_params: dict[str, object] = {}
+
+    def _fake_html(_template, *, output, width, height, fps, duration, params=None, **_kwargs):
+        captured_params["params"] = dict(params or {})
+        out_mp4 = output.with_suffix(".mp4")
+        _ffmpeg_test_mp4(out_mp4, width, height, max(0.8, duration), "0x0f172a")
+        return HtmlMotionResult(
+            output=out_mp4,
+            template="saas-feature-card",
+            width=width,
+            height=height,
+            fps=fps,
+            frames=max(1, round(duration * fps)),
+            duration=duration,
+            transparent=False,
+        )
+
+    def _fake_ec(preset_name, output, *, width=1920, height=1080, fps=30, duration=1.0, **_kwargs):
+        out_mp4 = output.with_suffix(".mp4")
+        _ffmpeg_test_mp4(out_mp4, width, height, max(0.8, duration), "0x0284c7")
+        return MotionResult(
+            output=out_mp4,
+            ecp_path=output.with_suffix(".ecp"),
+            report_path=output.with_suffix(".report.json"),
+            report={"ok": True, "preset": preset_name},
+        )
+
+    def _fake_apply(a, b, *, kind, output, duration_ms, width, height, fps):
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_bytes(b"fake-transition")
+        return output
+
+    # Monkeypatch placement resolution to return an adjusted placement, then assert
+    # render_promo threads it into the HTML motion params.
+    monkeypatch.setattr(
+        "media_studio.promo.resolve_layout_placement",
+        lambda beat, *, aspect, width, height: {
+            "zone": "hero-center",
+            "anchor_y": 0.30,
+            "scale": 0.50,
+            "adjusted": True,
+            "collision_avoided": True,
+            "reason": "test adjustment",
+        },
+    )
+
+    monkeypatch.setattr("media_studio.promo.synthesize_speech", _fake_tts)
+    monkeypatch.setattr("media_studio.promo.generate_asset", _fake_gen)
+    monkeypatch.setattr("media_studio.promo.render_html_motion", _fake_html)
+    monkeypatch.setattr("media_studio.promo.render_promo_preset", _fake_ec)
+    monkeypatch.setattr("media_studio.promo.apply_transition", _fake_apply)
+    monkeypatch.setattr("media_studio.promo._normalize_clip", lambda _s, out, **_kw: out)
+    monkeypatch.setattr("media_studio.promo._render_solid_clip", lambda out, **_kw: out)
+    monkeypatch.setattr(
+        "media_studio.promo._composite_overlay",
+        lambda base, overlay, output, width, height, **_kw: output,
+    )
+    monkeypatch.setattr(
+        "media_studio.promo.media.probe",
+        lambda _p: type(
+            "Info", (), {"duration": 2.0, "width": 1920, "height": 1080, "fps": 30.0}
+        )(),
+    )
+    monkeypatch.setattr("media_studio.promo._pad_audio", lambda _s, out, **_kw: out)
+    monkeypatch.setattr("media_studio.promo._mix_vo_and_music", lambda _v, _m, out, **_kw: out)
+    monkeypatch.setattr(
+        "media_studio.promo.mix_transition_sfx", lambda _b, _c, *, output, **_kw: output
+    )
+    monkeypatch.setattr("media_studio.promo.reframe_video", lambda _s, *, output, **_kw: output)
+    monkeypatch.setattr("media_studio.promo._mux_video_and_audio", lambda _v, _a, out: out)
+    monkeypatch.setattr("media_studio.promo.render_captions", lambda _s, *, output, **_kw: output)
+    monkeypatch.setattr(
+        "media_studio.promo.video.encode_with_loudness", lambda _i, d, *_a, **_kw: d
+    )
+    monkeypatch.setattr("media_studio.promo.video.qc_report", lambda _p, **_kw: {"ok": True})
+
+    render_promo(project, plan, auto=True, max_gen_calls=2, force=True)
+    params = captured_params.get("params", {})
+    assert params.get("card_anchor_y") == 0.30, params
+    assert params.get("card_scale") == 0.50, params
+    assert params.get("layout_zone") == "hero-center", params

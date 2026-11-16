@@ -486,11 +486,29 @@ def run_ffmpeg_encode_with_fallback(
     try:
         media.run_command(command_builder(gpu_flags), label=label, expect_stdout=False)
     except media.MediaError as error:
+        if not _is_nvenc_error(error):
+            raise
         logger.warning("dGPU NVENC failed (%s); falling back to CPU libx264", error)
         _, cpu_flags = resolve_video_encoder_flags(
             is_intermediate=is_intermediate, fps=fps, use_gpu=False
         )
         media.run_command(command_builder(cpu_flags), label=label, expect_stdout=False)
+
+
+def _is_nvenc_error(error: media.MediaError) -> bool:
+    """True when ``error`` looks like an NVENC/CUDA/device failure worth a CPU fallback."""
+
+    text = str(error).lower()
+    nvenc_terms = (
+        "nvenc",
+        "cuda",
+        "nvidia",
+        "device",
+        "invalid device",
+        "no such device",
+        "driver",
+    )
+    return any(term in text for term in nvenc_terms)
 
 
 def _encode_loudness_command(

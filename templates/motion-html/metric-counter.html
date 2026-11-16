@@ -111,6 +111,12 @@
     const fps = (params && params.fps) || 30;
     // Organic counter bounce: value springs past the target then settles.
     const spring = window.__msSpring({frame: frameIndex, fps, damping: 10, stiffness: 90, mass: 1});
+    const cardScale = params && params.card_scale !== undefined ? Math.max(0.05, params.card_scale) : 1;
+    const cardAnchorY = params && params.card_anchor_y !== undefined ? params.card_anchor_y : 0.5;
+    const card = document.querySelector('.card');
+    if (card) {
+      card.style.transform = `translate(-50%, -${cardAnchorY * 100}%) scale(${Math.max(0.05, spring * cardScale)})`;
+    }
     const value = Math.round((root.__targetValue || 0) * spring);
     counter.textContent = root.__prefix + value.toLocaleString() + root.__suffix;
     fill.style.width = Math.round(Math.max(0, Math.min(100, spring)) * 100) + '%';
