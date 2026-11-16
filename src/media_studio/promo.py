@@ -689,6 +689,15 @@ def plan_promo(
     references = _collect_references(project)
     visual_assets = _visual_asset_candidates(project)
 
+    has_product = "product-cutout" in project.assets or (
+        bool(
+            project.brand
+            and project.brand.references
+            and getattr(project.brand.references, "product", ())
+        )
+    )
+    demo_template = "cinematic-product-hero" if has_product else "saas-feature-card"
+
     beat_configs: dict[str, dict[str, Any]] = {
         "hook": {
             "preset": "promo-hook-slam",
@@ -706,7 +715,7 @@ def plan_promo(
         },
         "demo": {
             "preset": None,
-            "template": "saas-feature-card",
+            "template": demo_template,
             "transition": "zoom_punch_in",
             "sfx": "ui-pop",
             "needs_broll": False,
@@ -839,8 +848,12 @@ def _write_storyboard(project: Project, plan: PromoPlan, destination: Path) -> P
         )
 
         thumbnail_drawn = False
-        if beat.asset_id and beat.asset_id in project.assets:
-            asset_path = project.root / project.assets[beat.asset_id]
+        target_asset = beat.asset_id
+        if not target_asset and beat.template == "cinematic-product-hero":
+            target_asset = "product-cutout" if "product-cutout" in project.assets else "logo"
+
+        if target_asset and target_asset in project.assets:
+            asset_path = project.root / project.assets[target_asset]
             if asset_path.is_file():
                 aim = None
                 if asset_path.suffix.lower() in (".png", ".jpg", ".jpeg"):
@@ -1471,10 +1484,38 @@ def render_promo(
                         )
                         try:
                             value = _value_from_text(beat.text)
-                            # Cleanly format params so headline, subhead, and feature never overlap
-                            headline_txt = beat.text if len(beat.text) <= 45 else "Key Feature"
-                            subhead_txt = beat.text if len(beat.text) > 45 else project.title
-                            feature_txt = f"Automated {beat.kind} pipeline"
+                            product_img_src = ""
+                            if "product-cutout" in project.assets:
+                                product_img_src = str(
+                                    project.root / project.assets["product-cutout"]
+                                )
+                            elif "logo" in project.assets:
+                                product_img_src = str(project.root / project.assets["logo"])
+
+                            is_product_hero = beat.template == "cinematic-product-hero"
+                            if is_product_hero or "product-cutout" in project.assets:
+                                is_perfume = (
+                                    "perfume" in project.slug.lower()
+                                    or "fragrance" in project.title.lower()
+                                )
+                                sub_label = "Pure Essence" if is_perfume else "Verified Quality"
+                                target_btn = "Explore Collection &rarr;"
+                                feature_txt = project.title
+                            else:
+                                sub_label = "Key Metric"
+                                target_btn = "Learn more &rarr;"
+                                feature_txt = f"{project.title} Standard"
+
+                            headline_txt = (
+                                beat.text
+                                if len(beat.text) <= 45
+                                else (project.title if beat.kind == "demo" else "Verified Quality")
+                            )
+                            subhead_txt = (
+                                beat.text if len(beat.text) > 45 else f"{project.title} Craft"
+                            )
+                            ink_color = "#0F172A"
+
                             html_res = render_html_motion(
                                 beat.template,
                                 output=html_out,
@@ -1483,9 +1524,18 @@ def render_promo(
                                     "subhead": subhead_txt,
                                     "feature": feature_txt,
                                     "label": beat.kind.upper(),
+                                    "sub": sub_label,
+                                    "target": target_btn,
+                                    "product_image": product_img_src,
+                                    "eyebrow": project.title,
+                                    "badge": (
+                                        "Mastercraft Edition"
+                                        if "perfume" in project.slug.lower()
+                                        else "Studio Standard"
+                                    ),
                                     "value": value,
                                     "suffix": "%",
-                                    "ink": "#0F172A",
+                                    "ink": ink_color,
                                     "card_anchor_y": placement["anchor_y"],
                                     "card_scale": placement["scale"],
                                     "layout_zone": placement["zone"],

@@ -259,13 +259,14 @@ def test_render_html_motion_raises_when_playwright_missing(tmp_path: Path, monke
 
 
 def test_html_motion_templates_contains_bundled_names() -> None:
-    """HTML_MOTION_TEMPLATES lists the four bundled templates."""
+    """HTML_MOTION_TEMPLATES lists the bundled templates."""
 
     assert "saas-feature-card.html" in html_motion.HTML_MOTION_TEMPLATES
     assert "device-mockup.html" in html_motion.HTML_MOTION_TEMPLATES
     assert "metric-counter.html" in html_motion.HTML_MOTION_TEMPLATES
     assert "kinetic-captions.html" in html_motion.HTML_MOTION_TEMPLATES
-    assert len(html_motion.HTML_MOTION_TEMPLATES) == 4
+    assert "cinematic-product-hero.html" in html_motion.HTML_MOTION_TEMPLATES
+    assert len(html_motion.HTML_MOTION_TEMPLATES) == 5
 
 
 def test_motion_html_templates_use_vmin_sizing() -> None:

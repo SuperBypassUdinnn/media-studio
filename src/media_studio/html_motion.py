@@ -54,6 +54,7 @@ HTML_MOTION_TEMPLATES: tuple[str, ...] = (
     "device-mockup.html",
     "metric-counter.html",
     "kinetic-captions.html",
+    "cinematic-product-hero.html",
 )
 
 

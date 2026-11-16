@@ -52,7 +52,6 @@
 <script>
 (function () {
   const root = document.getElementById('root');
-  const ring = document.getElementById('ring');
   const target = document.getElementById('target');
   const cursor = document.getElementById('cursor');
   const click = document.getElementById('click');
@@ -68,6 +67,7 @@
     if (p('subhead')) subhead.textContent = p('subhead');
     if (p('eyebrow')) eyebrow.textContent = p('eyebrow');
     if (p('feature')) featureText.textContent = p('feature');
+    if (p('target')) target.innerHTML = p('target');
     const accent = p('accent', '#38bdf8');
     const ink = p('ink', '#0f172a');
     root.style.setProperty('--accent', accent);
