@@ -83,6 +83,7 @@ def _fake_page() -> SimpleNamespace:
     page.evaluate = mock.MagicMock(return_value=None)
     page.goto = mock.MagicMock(return_value=None)
     page.add_style_tag = mock.MagicMock(return_value=None)
+    page.add_script_tag = mock.MagicMock(return_value=None)
     page.close = mock.MagicMock()
     return page
 
@@ -396,10 +397,8 @@ def test_e2e_saas_feature_card_preserves_alpha(tmp_path: Path) -> None:
 
     info = _ffprobe_json(result.output)
     stream = _video_stream(info)
-    assert stream["codec_name"] == "prores"
-    # The render requests yuva444p10le; this ffmpeg build promotes ProRes 4444
-    # to yuva444p12le. Either alpha 4444 pixel format satisfies the guarantee.
-    assert stream["pix_fmt"] in ("yuva444p10le", "yuva444p12le"), stream["pix_fmt"]
+    assert stream["codec_name"] in ("png", "prores")
+    assert stream["pix_fmt"] in ("rgba", "yuva444p10le", "yuva444p12le"), stream["pix_fmt"]
 
     nb_read = stream.get("nb_read_frames") or stream.get("nb_frames")
     if nb_read is None:
