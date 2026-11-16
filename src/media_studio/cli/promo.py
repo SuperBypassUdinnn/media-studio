@@ -6,12 +6,14 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from media_studio.manifest import ManifestError, load_project
 from media_studio.promo import (
     DEFAULT_ASPECTS,
     DEFAULT_DELIVERABLES,
     PromoError,
+    critique_promo,
     load_promo_plan,
     plan_promo,
     qc_promo,
@@ -109,6 +111,34 @@ def register_promo_parser(subparsers: argparse._SubParsersAction) -> None:
         help="skip optional media-mcp verification hook",
     )
     qc_parser.set_defaults(func=cmd_promo_qc)
+
+    critique_parser = sub.add_parser(
+        "critique", help="critique rendered promo deliverables for visual defects"
+    )
+    critique_parser.add_argument("project", help="project directory or slug")
+    critique_parser.add_argument(
+        "--plan",
+        type=Path,
+        default=None,
+        help="path to promo-plan.json (default: <project>/out/promo/promo-plan.json)",
+    )
+    critique_parser.add_argument(
+        "--deliverables",
+        default=",".join(DEFAULT_DELIVERABLES),
+        help="comma-separated deliverable ids (default: reel-9x16,master-16x9)",
+    )
+    critique_parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="write the structured JSON report to this path",
+    )
+    critique_parser.add_argument(
+        "--numbered",
+        action="store_true",
+        help="show a leading # row-number column in the table",
+    )
+    critique_parser.set_defaults(func=cmd_promo_critique)
 
 
 def _read_script_arg(value: str) -> str:
@@ -221,4 +251,73 @@ def cmd_promo_qc(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     print(json.dumps(report, indent=2))
+    return EXIT_OK if report.get("ok") else EXIT_FAILURE
+
+
+def _print_critique_table(report: dict[str, Any], *, numbered: bool = False) -> None:
+    """Print the defects of a critique report as a fixed-width table."""
+
+    defects = report.get("defects") or []
+    headers = (
+        ["#", "Deliverable", "Beat", "Time", "Severity", "Defect", "Corrective Action"]
+        if numbered
+        else ["Deliverable", "Beat", "Time", "Severity", "Defect", "Corrective Action"]
+    )
+    rows: list[list[str]] = []
+    for index, defect in enumerate(defects, 1):
+        row = [
+            str(index) if numbered else "",
+            str(defect.get("deliverable", "-")),
+            str(defect.get("beat_index", "-")),
+            f"{float(defect.get('timestamp') or 0.0):.2f}",
+            str(defect.get("severity", "-")),
+            str(defect.get("defect", "")),
+            str(defect.get("corrective_action", "")),
+        ]
+        if not numbered:
+            row.pop(0)
+        rows.append(row)
+
+    if not rows:
+        print("No defects found — critique passed.")
+        return
+
+    columns = zip(headers, *rows, strict=False)
+    widths = [max(len(str(cell)) for cell in column) for column in columns]
+
+    def render_row(cells: list[str]) -> str:
+        return " | ".join(cell.ljust(width) for cell, width in zip(cells, widths, strict=False))
+
+    print(render_row(headers))
+    print("-+-".join("-" * width for width in widths))
+    for row in rows:
+        print(render_row(row))
+
+    summary = report.get("summary") or {}
+    errors = int(summary.get("errors", 0))
+    warnings = int(summary.get("warnings", 0))
+    status = "PASSED" if report.get("ok") else "FAILED"
+    print(
+        f"critique: {errors} errors, {warnings} warnings — {status} "
+        f"({'no defects' if not defects else len(defects)} defect(s))"
+    )
+
+
+def cmd_promo_critique(args: argparse.Namespace) -> int:
+    try:
+        project = load_project(args.project)
+        plan_path = args.plan or (project.root / "out" / "promo" / "promo-plan.json")
+        plan = load_promo_plan(plan_path) if plan_path.is_file() else None
+        deliverables = _split_csv(args.deliverables)
+        report = critique_promo(project, plan=plan, deliverables=deliverables)
+    except (PromoError, ManifestError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    if args.out is not None:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    _print_critique_table(report, numbered=args.numbered)
     return EXIT_OK if report.get("ok") else EXIT_FAILURE

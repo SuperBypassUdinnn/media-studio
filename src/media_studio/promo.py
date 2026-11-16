@@ -37,6 +37,11 @@ SCRATCH_ROOT = Path("/tmp/opencode")
 BEAT_KINDS = ("hook", "problem", "demo", "proof", "cta")
 DEFAULT_ASPECTS = ("9:16", "16:9")
 DEFAULT_DELIVERABLES = ("reel-9x16", "master-16x9")
+
+# Pacing thresholds (words per second) and acceptable beat duration window.
+TEXT_DENSITY_MAX_WPS = 4.5
+BEAT_MIN_SECONDS = 1.0
+BEAT_MAX_SECONDS = 12.0
 DELIVERABLE_ASPECT_MAP = {
     "reel-9x16": "9:16",
     "master-16x9": "16:9",
@@ -1647,3 +1652,270 @@ def qc_promo(
         results[deliv_id] = report
 
     return {"project": project.slug, "ok": all_ok, "deliverables": results}
+
+
+def _probe_video_color(path: Path) -> dict[str, str | None]:
+    """Report ``color_range``, ``color_space`` and ``pix_fmt`` of the first video stream."""
+
+    completed = media.run_command(
+        [
+            media.FFPROBE,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=color_range,color_space,pix_fmt",
+            "-of",
+            "json",
+            str(path),
+        ],
+        label=f"ffprobe color {path.name}",
+    )
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    streams = payload.get("streams") or []
+    return streams[0] if streams else {}
+
+
+def _layout_defects(
+    deliverable_id: str,
+    beat: PromoBeat,
+    idx: int,
+    timestamp: float,
+    *,
+    aspect: str,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    """Return layout/safe-zone defect dicts for one beat on one deliverable."""
+
+    zone_name = beat.layout_zone or "hero-center"
+    boxes = LAYOUT_ZONE_BOXES.get(zone_name, LAYOUT_ZONE_BOXES["hero-center"])
+    safe = safe_zone_for(aspect, width, height)
+
+    card = {
+        "top": round(boxes["card"]["top"] * height),
+        "bottom": round(boxes["card"]["bottom"] * height),
+        "left": round(boxes["card"]["left"] * width),
+        "right": round(boxes["card"]["right"] * width),
+    }
+    caption = {
+        "top": round(boxes["caption"]["top"] * height),
+        "bottom": round(boxes["caption"]["bottom"] * height),
+        "left": round(boxes["caption"]["left"] * width),
+        "right": round(boxes["caption"]["right"] * width),
+    }
+
+    defects: list[dict[str, Any]] = []
+
+    if _rects_overlap(card, caption):
+        overlap_w = max(
+            0, min(card["right"], caption["right"]) - max(card["left"], caption["left"])
+        )
+        overlap_h = max(
+            0, min(card["bottom"], caption["bottom"]) - max(card["top"], caption["top"])
+        )
+        overlap_px = overlap_w * overlap_h
+        defects.append(
+            {
+                "deliverable": deliverable_id,
+                "beat_index": idx,
+                "timestamp": timestamp,
+                "severity": "error",
+                "category": "layout",
+                "defect": f"Card bounding box intersects caption band by {overlap_px} pixels",
+                "corrective_action": (
+                    "Shift card_anchor_y up or reduce card_scale to clear safe zone"
+                ),
+            }
+        )
+
+    bottom_limit = height - safe["bottom"]
+    if card["top"] < safe["top"]:
+        defects.append(
+            {
+                "deliverable": deliverable_id,
+                "beat_index": idx,
+                "timestamp": timestamp,
+                "severity": "error",
+                "category": "layout",
+                "defect": f"Card intrudes into top safe zone ({safe['top']}px)",
+                "corrective_action": "Shift card anchor Y down into the safe zone",
+            }
+        )
+    if card["bottom"] > bottom_limit:
+        defects.append(
+            {
+                "deliverable": deliverable_id,
+                "beat_index": idx,
+                "timestamp": timestamp,
+                "severity": "error",
+                "category": "layout",
+                "defect": f"Card intrudes into bottom safe zone ({safe['bottom']}px)",
+                "corrective_action": "Shift card anchor Y up into the safe zone",
+            }
+        )
+
+    return defects
+
+
+def _pacing_defects(
+    deliverable_id: str,
+    beat: PromoBeat,
+    idx: int,
+    timestamp: float,
+) -> list[dict[str, Any]]:
+    """Return pacing/text-density defect dicts for one beat."""
+
+    defects: list[dict[str, Any]] = []
+    duration = beat.duration
+    words = len(beat.text.split())
+    wps = words / duration if duration > 0 else float("inf")
+
+    if wps > TEXT_DENSITY_MAX_WPS:
+        defects.append(
+            {
+                "deliverable": deliverable_id,
+                "beat_index": idx,
+                "timestamp": timestamp,
+                "severity": "warning",
+                "category": "pacing",
+                "defect": f"High text density ({wps:.1f} wps)",
+                "corrective_action": "Extend beat duration or trim text",
+            }
+        )
+    if duration < BEAT_MIN_SECONDS or duration > BEAT_MAX_SECONDS:
+        defects.append(
+            {
+                "deliverable": deliverable_id,
+                "beat_index": idx,
+                "timestamp": timestamp,
+                "severity": "warning",
+                "category": "pacing",
+                "defect": (
+                    f"Pacing anomaly: {duration}s beat outside {BEAT_MIN_SECONDS}s-"
+                    f"{BEAT_MAX_SECONDS}s"
+                ),
+                "corrective_action": "Adjust beat duration to fall within 1.0s-12.0s",
+            }
+        )
+
+    return defects
+
+
+def critique_promo(
+    project: Project,
+    *,
+    plan: PromoPlan | None = None,
+    deliverables: tuple[str, ...] = DEFAULT_DELIVERABLES,
+) -> dict[str, Any]:
+    """Critique rendered promo deliverables for visual, color, pacing and A/V defects.
+
+    Evaluates every beat of ``plan`` against each deliverable's aspect and
+    resolution (safe-zone compliance and card/caption collisions), inspects each
+    deliverable with ffprobe for BT.709 limited-range color metadata
+    (``color_range=tv``, ``color_space=bt709``, ``pix_fmt=yuv420p``), checks
+    pacing/text density per beat, and runs the optional media-mcp A/V sync hook
+    per deliverable. Returns a structured defect report: ``project``, ``ok``
+    (no error-severity defects), ``defects`` and ``summary`` counts.
+
+    When ``plan`` is not given it is loaded from
+    ``<project.root>/out/promo/promo-plan.json`` if present; beat-level checks
+    are then skipped entirely when no plan is available.
+    """
+
+    if not deliverables:
+        raise PromoError("deliverables must not be empty")
+
+    defects: list[dict[str, Any]] = []
+
+    if plan is None:
+        plan_path = project.root / "out" / "promo" / "promo-plan.json"
+        if plan_path.is_file():
+            plan = load_promo_plan(plan_path)
+
+    for deliv_id in deliverables:
+        path = project.root / "out" / "video" / f"{deliv_id}.mp4"
+        aspect = _aspect_for_deliverable(project, deliv_id)
+        width, height = OUTPUT_SIZE[aspect]
+
+        if not path.is_file():
+            defects.append(
+                {
+                    "deliverable": deliv_id,
+                    "beat_index": -1,
+                    "timestamp": 0.0,
+                    "severity": "error",
+                    "category": "missing",
+                    "defect": f"Deliverable not found: {path}",
+                    "corrective_action": "Render the missing deliverable before critique",
+                }
+            )
+            continue
+
+        color = _probe_video_color(path)
+        color_range = color.get("color_range")
+        color_space = color.get("color_space")
+        pix_fmt = color.get("pix_fmt")
+        compliant = color_range == "tv" and color_space == "bt709" and pix_fmt == "yuv420p"
+        if not compliant:
+            defects.append(
+                {
+                    "deliverable": deliv_id,
+                    "beat_index": -1,
+                    "timestamp": 0.0,
+                    "severity": "error",
+                    "category": "color",
+                    "defect": (
+                        f"{deliv_id}: non-compliant color metadata "
+                        f"(range={color_range}, space={color_space}, pix_fmt={pix_fmt}); "
+                        "expected tv/bt709/yuv420p"
+                    ),
+                    "corrective_action": (
+                        "Re-encode with -color_range tv -color_space bt709 "
+                        "-color_trc bt709 -pix_fmt yuv420p"
+                    ),
+                }
+            )
+
+        mcp = _run_media_mcp_checks(path)
+        if mcp.get("status") == "error":
+            tail = str(mcp.get("error", ""))[:200]
+            defects.append(
+                {
+                    "deliverable": deliv_id,
+                    "beat_index": -1,
+                    "timestamp": 0.0,
+                    "severity": "warning",
+                    "category": "av-sync",
+                    "defect": f"A/V sync check failed: {tail}" if tail else "A/V sync check failed",
+                    "corrective_action": (
+                        "Verify transition cuts align with music onsets and re-render if needed"
+                    ),
+                }
+            )
+
+        if plan is not None:
+            cursor = 0.0
+            for idx, beat in enumerate(plan.beats):
+                defects.extend(
+                    _layout_defects(
+                        deliv_id, beat, idx, cursor, aspect=aspect, width=width, height=height
+                    )
+                )
+                defects.extend(_pacing_defects(deliv_id, beat, idx, cursor))
+                cursor += beat.duration
+
+    errors = sum(1 for defect in defects if defect["severity"] == "error")
+    warnings = sum(1 for defect in defects if defect["severity"] == "warning")
+    ok = errors == 0
+
+    return {
+        "project": project.slug,
+        "ok": ok,
+        "defects": defects,
+        "summary": {"errors": errors, "warnings": warnings, "critique_passed": ok},
+    }
