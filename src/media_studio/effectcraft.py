@@ -11,6 +11,7 @@ import copy
 import itertools
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -1285,6 +1286,59 @@ def _ease_linear(t: float) -> float:
     return max(0.0, min(1.0, float(t)))
 
 
+def calc_spring(
+    t: float,
+    *,
+    duration: float = 1.0,
+    damping: float = 12.0,
+    stiffness: float = 100.0,
+    mass: float = 1.0,
+) -> float:
+    """Damped harmonic oscillator spring value at time ``t``.
+
+    Returns the normalised spring position: starts at 0, naturally overshoots
+    past 1.0, then settles back to 1.0. Based on the analytical damped harmonic
+    oscillator::
+
+        omega_n = sqrt(k / m)
+        zeta    = c / (2 * sqrt(k * m))
+        omega_d = omega_n * sqrt(1 - zeta^2)
+        val(t)  = 1 - e^(-zeta * omega_n * t)
+                  * (cos(omega_d * t) + (zeta * omega_n / omega_d) * sin(omega_d * t))
+
+    Parameters
+    ----------
+    t:
+        Time in seconds from the start of the spring motion.
+    duration:
+        Total animation duration; values at or beyond this are treated as settled (1.0).
+    damping:
+        Damping coefficient ``c``. Higher values reduce oscillation.
+    stiffness:
+        Spring stiffness ``k``. Higher values oscillate faster.
+    mass:
+        Oscillating mass ``m``.
+    """
+
+    t = max(0.0, float(t))
+    duration = max(float(duration), 1e-6)
+    if t >= duration or stiffness <= 0.0 or mass <= 0.0:
+        return 1.0
+
+    omega_n = math.sqrt(stiffness / mass)
+    zeta = damping / (2.0 * math.sqrt(stiffness * mass))
+
+    if zeta >= 1.0:
+        # Critically or over-damped: monotonic settle, no overshoot.
+        return 1.0 - math.exp(-omega_n * t) * (1.0 + omega_n * t)
+
+    omega_d = omega_n * math.sqrt(1.0 - zeta * zeta)
+    envelope = math.exp(-zeta * omega_n * t)
+    return 1.0 - envelope * (
+        math.cos(omega_d * t) + (zeta * omega_n / omega_d) * math.sin(omega_d * t)
+    )
+
+
 def _promo_keyframe(t: float, v: Any, ease: str = "linear") -> dict[str, Any]:
     """Build one keyframe record: time (s), value, and easing curve name."""
 
@@ -1340,19 +1394,26 @@ def _expand_eased_keyframes(frames: list[dict[str, Any]], samples: int = 8) -> l
     for a, b in itertools.pairwise(ordered):
         t0, v0 = a["t"], a["v"]
         t1, v1 = b["t"], b["v"]
-        ease_fn = {
-            "expo-out": _ease_expo_out,
-            "back-out": _ease_back_out,
-            "linear": _ease_linear,
-        }.get(a.get("ease", "linear"), _ease_linear)
+        ease_name = a.get("ease", "linear")
         span = t1 - t0
+        if ease_name == "spring":
+
+            def ease_fn(frac: float, _t0: float = t0, _span: float = span) -> float:
+                return calc_spring(_span * frac, duration=_span)
+
+        else:
+            ease_fn = {
+                "expo-out": _ease_expo_out,
+                "back-out": _ease_back_out,
+                "linear": _ease_linear,
+            }.get(ease_name, _ease_linear)
         for k in range(1, samples + 1):
             frac = k / (samples + 1.0)
             expanded.append(
                 {
                     "t": round(t0 + span * frac, 4),
                     "v": _ease_value(v0, v1, ease_fn(frac)),
-                    "ease": a.get("ease", "linear"),
+                    "ease": ease_name,
                 }
             )
         expanded.append(dict(b))

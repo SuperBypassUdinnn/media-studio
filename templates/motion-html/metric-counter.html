@@ -76,6 +76,19 @@
 
   function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
+  // Damped harmonic oscillator spring: 0 -> overshoot past 1 -> settle at 1.
+  window.__msSpring = function ({frame, fps = 30, damping = 12, stiffness = 100, mass = 1} = {}) {
+    const t = Math.max(0, frame / fps);
+    const omegaN = Math.sqrt(stiffness / mass);
+    const zeta = damping / (2 * Math.sqrt(stiffness * mass));
+    if (zeta >= 1) {
+      return 1 - Math.exp(-omegaN * t) * (1 + omegaN * t);
+    }
+    const omegaD = omegaN * Math.sqrt(1 - zeta * zeta);
+    const envelope = Math.exp(-zeta * omegaN * t);
+    return 1 - envelope * (Math.cos(omegaD * t) + (zeta * omegaN / omegaD) * Math.sin(omegaD * t));
+  };
+
   // Deterministic sparkline from a seeded pseudo-random sequence.
   function sparkPoints(width, height, count) {
     let x = 0, y = height / 2, v = 0.5;
@@ -95,9 +108,12 @@
     applyParams(params);
     const progress = totalFrames > 1 ? frameIndex / (totalFrames - 1) : 0;
     const ease = easeOutCubic(progress);
-    const value = Math.round((root.__targetValue || 0) * ease);
+    const fps = (params && params.fps) || 30;
+    // Organic counter bounce: value springs past the target then settles.
+    const spring = window.__msSpring({frame: frameIndex, fps, damping: 10, stiffness: 90, mass: 1});
+    const value = Math.round((root.__targetValue || 0) * spring);
     counter.textContent = root.__prefix + value.toLocaleString() + root.__suffix;
-    fill.style.width = Math.round(ease * 100) + '%';
+    fill.style.width = Math.round(Math.max(0, Math.min(100, spring)) * 100) + '%';
     const w = 200, h = 70;
     sparkLine.setAttribute('points', sparkPoints(w, h, 14));
     // Animate sparkline dash offset so the line draws on over time.

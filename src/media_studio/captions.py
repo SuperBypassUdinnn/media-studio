@@ -16,8 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from media_studio import media
-from media_studio.media import MediaError
+from media_studio import media, video
 from media_studio.reframe import OUTPUT_SIZE, safe_zone_for
 from media_studio.tts import WordTiming
 
@@ -465,8 +464,9 @@ def render_captions(
     ass_path = scratch / f"{output.stem}.ass"
     try:
         _write_ass(chunks, style, zone, accent_color, ass_path, width=width, height=height)
-        media.run_command(
-            [
+
+        def build(encoder_flags: list[str]) -> list[str]:
+            return [
                 media.FFMPEG,
                 "-hide_banner",
                 "-loglevel",
@@ -476,12 +476,7 @@ def render_captions(
                 str(source),
                 "-vf",
                 f"ass={ass_path},fps={fps},format=yuv420p",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "14",
+                *encoder_flags,
                 "-color_range",
                 "tv",
                 "-colorspace",
@@ -493,12 +488,14 @@ def render_captions(
                 "-c:a",
                 "copy",
                 str(output),
-            ],
-            label=f"ffmpeg burn captions {engine}",
-            expect_stdout=False,
-        )
-    except MediaError as error:
-        raise CaptionsError(str(error)) from error
+            ]
+
+        try:
+            video.run_ffmpeg_encode_with_fallback(
+                build, output=output, label=f"ffmpeg burn captions {engine}"
+            )
+        except (media.MediaError, video.VideoError) as error:
+            raise CaptionsError(str(error)) from error
     finally:
         import shutil
 

@@ -267,6 +267,23 @@ def render_html_motion(
                             page.add_style_tag(
                                 content="html, body { background: transparent !important; }"
                             )
+                        page.add_script_tag(
+                            content=(
+                                "window.__msSpring = function ({frame, fps = 30,"
+                                " damping = 12, stiffness = 100, mass = 1} = {}) {"
+                                "const t = Math.max(0, frame / fps);"
+                                "const omegaN = Math.sqrt(stiffness / mass);"
+                                "const zeta = damping / (2 * Math.sqrt(stiffness * mass));"
+                                "if (zeta >= 1) {"
+                                "return 1 - Math.exp(-omegaN * t) * (1 + omegaN * t);"
+                                "}"
+                                "const omegaD = omegaN * Math.sqrt(1 - zeta * zeta);"
+                                "const envelope = Math.exp(-zeta * omegaN * t);"
+                                "return 1 - envelope * (Math.cos(omegaD * t)"
+                                " + (zeta * omegaN / omegaD) * Math.sin(omegaD * t));"
+                                "};"
+                            ),
+                        )
                         for frame in range(total_frames):
                             time_sec = frame / fps
                             page.evaluate(

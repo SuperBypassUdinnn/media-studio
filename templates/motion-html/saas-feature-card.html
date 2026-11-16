@@ -92,11 +92,31 @@
 
   function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
+  // Damped harmonic oscillator spring: 0 -> overshoot past 1 -> settle at 1.
+  window.__msSpring = function ({frame, fps = 30, damping = 12, stiffness = 100, mass = 1} = {}) {
+    const t = Math.max(0, frame / fps);
+    const omegaN = Math.sqrt(stiffness / mass);
+    const zeta = damping / (2 * Math.sqrt(stiffness * mass));
+    if (zeta >= 1) {
+      return 1 - Math.exp(-omegaN * t) * (1 + omegaN * t);
+    }
+    const omegaD = omegaN * Math.sqrt(1 - zeta * zeta);
+    const envelope = Math.exp(-zeta * omegaN * t);
+    return 1 - envelope * (Math.cos(omegaD * t) + (zeta * omegaN / omegaD) * Math.sin(omegaD * t));
+  };
+
   window.__msSeek = function (timeSec, frameIndex, totalFrames, params) {
     applyParams(params);
     const progress = totalFrames > 1 ? frameIndex / (totalFrames - 1) : 0;
     const cycle = Math.sin(progress * Math.PI * 2);
     const ease = easeOutCubic(progress);
+    const fps = (params && params.fps) || 30;
+    // Organic card pop-in: scale springs from 0, overshoots, settles at 1.
+    const spring = window.__msSpring({frame: frameIndex, fps, damping: 14, stiffness: 110, mass: 1});
+    const card = document.querySelector('.card');
+    if (card) {
+      card.style.transform = `translate(-50%, -50%) scale(${Math.max(0.05, spring)})`;
+    }
 
     // Highlight ring: expands then fades around the target.
     const rect = target.getBoundingClientRect();
@@ -107,11 +127,13 @@
     ring.classList.toggle('active', progress > 0.25 && progress < 0.85);
 
     // Floating cursor: travels across the card and clicks near the target at the end.
+    const clickSpring = window.__msSpring({frame: frameIndex, fps, damping: 10, stiffness: 90, mass: 1});
     const cx = 60 + ease * (rect.left + rect.width / 2 - 60);
     const cy = 120 + ease * (rect.top + rect.height / 2 - 120);
     cursor.style.left = cx + 'px';
     cursor.style.top = cy + 'px';
     click.classList.toggle('active', progress > 0.78);
+    click.style.transform = `translate(-50%, -50%) scale(${Math.max(0.05, clickSpring)})`;
   };
 })();
 </script>

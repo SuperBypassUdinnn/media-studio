@@ -19,6 +19,7 @@ from media_studio.promo import (
     PromoError,
     PromoPlan,
     PromoRenderResult,
+    check_layout_collisions,
     load_promo_plan,
     plan_promo,
     qc_promo,
@@ -1087,7 +1088,7 @@ def test_render_promo_prerecorded_vo_handles_captions_error(
 def test_render_solid_clip_command_carries_intermediate_quality(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """_render_solid_clip must use crf 14/veryfast, lanczos, limited-range yuv420p."""
+    """_render_solid_clip must use intermediate CPU quality (veryfast/crf 18) when NVENC is off."""
     from media_studio import promo
 
     captured: dict = {}
@@ -1096,13 +1097,14 @@ def test_render_solid_clip_command_carries_intermediate_quality(
         captured["command"] = list(command)
 
     monkeypatch.setattr(promo.media, "run_command", fake_run)
+    monkeypatch.setattr(promo.media, "detect_nvenc_available", lambda: False)
 
     output = tmp_path / "solid.mp4"
     promo._render_solid_clip(output, width=1080, height=1920, duration=1.0, color="#0F172A", fps=30)
 
     cmd = captured["command"]
     assert "-preset" in cmd and cmd[cmd.index("-preset") + 1] == "veryfast", cmd
-    assert "-crf" in cmd and cmd[cmd.index("-crf") + 1] == "14", cmd
+    assert "-crf" in cmd and cmd[cmd.index("-crf") + 1] == "18", cmd
     assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p", cmd
     vf_idx = cmd.index("-vf")
     vf = cmd[vf_idx + 1]
@@ -1287,3 +1289,27 @@ def test_render_promo_passes_fps_into_render_captions(
     captured.clear()
     render_promo(project, plan, auto=True, max_gen_calls=2, force=True)
     assert captured["fps"] == 30, captured
+
+
+def test_promo_beat_has_layout_zone_default():
+    beat = PromoBeat(kind="demo", text="hello", duration=1.0)
+    assert beat.layout_zone == "hero-center"
+
+
+def test_check_layout_collisions_no_collision_at_9x16():
+    beat = PromoBeat(kind="demo", text="hello", duration=1.0, layout_zone="hero-center")
+    assert check_layout_collisions(beat, aspect="9:16", width=1080, height=1920) == []
+
+
+def test_check_layout_collisions_all_zones_clean_at_9x16():
+    for zone in ("hero-center", "split-stage", "card-focus", "cta-centered"):
+        beat = PromoBeat(kind="demo", text="hello", duration=1.0, layout_zone=zone)
+        assert check_layout_collisions(beat, aspect="9:16", width=1080, height=1920) == []
+
+
+def test_check_layout_collisions_detects_safe_zone_intrusion():
+    # A tiny canvas forces the hero-center card into the platform safe zone.
+    beat = PromoBeat(kind="demo", text="hello", duration=1.0, layout_zone="hero-center")
+    issues = check_layout_collisions(beat, aspect="1:1", width=100, height=100)
+    assert issues, "expected safe-zone intrusion to be flagged"
+    assert any("safe zone" in issue for issue in issues)

@@ -9,11 +9,10 @@ filling any missing bed) or the output is emitted as silent, clean video.
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from media_studio import media
+from media_studio import media, video
 
 
 class TransitionError(RuntimeError):
@@ -113,18 +112,6 @@ def _post_effect(kind: str) -> str:
         # Warm tint: lift reds, hold greens, dim blues.
         return "geq=r='r(X,Y)*1.12':g='g(X,Y)*1.04':b='b(X,Y)*0.88'"
     raise TransitionError(f"no post effect defined for {kind!r}")
-
-
-def _ffmpeg(command: list[str]) -> None:
-    completed = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-nostats", "-y", *command],
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise TransitionError(
-            f"ffmpeg failed with exit {completed.returncode}:\n{completed.stderr[-1500:]}"
-        )
 
 
 def apply_transition(
@@ -240,58 +227,69 @@ def apply_transition(
 
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    command: list[str] = [
-        "-i",
-        str(clip_a),
-        "-i",
-        str(clip_b),
-        "-filter_complex",
-        filter_complex,
-        "-map",
-        "[outv]",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "14",
-        "-threads",
-        "1",
-        # libx264 slice-threaded encoding segfaults on the ``slideup`` xfade
-        # filter when explicit BT.709 color metadata is also set (ffmpeg 9.0.2).
-        # Single-threaded encode keeps the color tags correct without crashing;
-        # transition clips are short so the cost is negligible.
-        "-pix_fmt",
-        "yuv420p",
-        "-color_range",
-        "tv",
-        "-colorspace",
-        "bt709",
-        "-color_primaries",
-        "bt709",
-        "-color_trc",
-        "bt709",
-    ]
-    if has_a or has_b:
+
+    def build(encoder_flags: list[str]) -> list[str]:
+        command: list[str] = [
+            media.FFMPEG,
+            "-hide_banner",
+            "-nostats",
+            "-y",
+            "-i",
+            str(clip_a),
+            "-i",
+            str(clip_b),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[outv]",
+        ]
+        command.extend(encoder_flags)
         command.extend(
             [
-                "-map",
-                "[outa]",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-ar",
-                str(AUDIO_RATE),
-                "-ac",
-                "2",
+                "-threads",
+                "1",
+                # libx264 slice-threaded encoding segfaults on the ``slideup`` xfade
+                # filter when explicit BT.709 color metadata is also set (ffmpeg 9.0.2).
+                # Single-threaded encode keeps the color tags correct without crashing;
+                # transition clips are short so the cost is negligible.
+                "-pix_fmt",
+                "yuv420p",
+                "-color_range",
+                "tv",
+                "-colorspace",
+                "bt709",
+                "-color_primaries",
+                "bt709",
+                "-color_trc",
+                "bt709",
             ]
         )
-    else:
-        command.append("-an")
-    command.extend(["-t", f"{out_duration:.6f}", "-movflags", "+faststart", str(output)])
+        if has_a or has_b:
+            command.extend(
+                [
+                    "-map",
+                    "[outa]",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "128k",
+                    "-ar",
+                    str(AUDIO_RATE),
+                    "-ac",
+                    "2",
+                ]
+            )
+        else:
+            command.append("-an")
+        command.extend(["-t", f"{out_duration:.6f}", "-movflags", "+faststart", str(output)])
+        return command
 
-    _ffmpeg(command)
+    try:
+        video.run_ffmpeg_encode_with_fallback(
+            build, output=output, label=f"transition {kind} {output.name}"
+        )
+    except (media.MediaError, video.VideoError) as error:
+        raise TransitionError(f"ffmpeg transition {kind} failed: {error}") from error
 
     result_info = media.probe(output)
     return TransitionResult(

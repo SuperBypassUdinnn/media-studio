@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from media_studio import media
+from media_studio import media, video
 from media_studio.transitions import (
     TRANSITION_KINDS,
     TransitionError,
@@ -80,17 +80,36 @@ def test_apply_transition_tags_bt709_color_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """apply_transition must append explicit BT.709 color metadata flags to its encode."""
-    from media_studio import transitions
-
     captured: dict = {}
 
-    def fake_ffmpeg(command):
-        captured["command"] = list(command)
+    def fake_run_fallback(command_builder, *, output, label):
+        captured["command"] = command_builder(
+            ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14"]
+        )
         subprocess.run(
-            ["ffmpeg", "-hide_banner", "-nostats", "-y", *command], capture_output=True, text=True
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostats",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=1080x1920:rate=30:duration=0.1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-t",
+                "0.1",
+                "-an",
+                str(output),
+            ],
+            capture_output=True,
+            check=True,
         )
 
-    monkeypatch.setattr(transitions, "_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(video, "run_ffmpeg_encode_with_fallback", fake_run_fallback)
 
     clip_a = tmp_path / "a.mp4"
     clip_b = tmp_path / "b.mp4"
@@ -122,18 +141,36 @@ def test_apply_transition_command_uses_high_quality_intermediate_flags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """apply_transition must use crf 14, preset veryfast, lanczos scale, limited range."""
-    from media_studio import transitions
-
     captured: dict = {}
 
-    def fake_ffmpeg(command):
-        captured["command"] = list(command)
-        # Delegate to real ffmpeg so the output file exists for the probe in apply_transition.
+    def fake_run_fallback(command_builder, *, output, label):
+        captured["command"] = command_builder(
+            ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14"]
+        )
         subprocess.run(
-            ["ffmpeg", "-hide_banner", "-nostats", "-y", *command], capture_output=True, text=True
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostats",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=1080x1920:rate=30:duration=0.1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-t",
+                "0.1",
+                "-an",
+                str(output),
+            ],
+            capture_output=True,
+            check=True,
         )
 
-    monkeypatch.setattr(transitions, "_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(video, "run_ffmpeg_encode_with_fallback", fake_run_fallback)
 
     clip_a = tmp_path / "a.mp4"
     clip_b = tmp_path / "b.mp4"

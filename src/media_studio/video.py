@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -30,6 +31,8 @@ from .mlt import AudioPlan, Clip, Timeline, Title, ducking_from_speech, timeline
 from .parallax import ParallaxError, compose_parallax
 from .presets import PresetError, resolve_effects
 from .sidecar import UNKNOWN_SPDX
+
+logger = logging.getLogger(__name__)
 
 SCRATCH_ROOT = Path("/tmp/opencode")
 DEFAULT_SHOT_SECONDS = 3.0
@@ -408,6 +411,140 @@ def _geometry(deliverable: Deliverable) -> tuple[int, int, float]:
     return width, height, float(deliverable.fps or 30.0)
 
 
+def resolve_video_encoder_flags(
+    *,
+    is_intermediate: bool = False,
+    fps: int = 30,
+    use_gpu: bool = True,
+) -> tuple[str, list[str]]:
+    """Resolve the video encoder name and FFmpeg flags.
+
+    Prefers the dGPU NVENC encoder (``h264_nvenc``) when available and ``use_gpu``
+    is True, otherwise falls back to the CPU ``libx264`` encoder.
+
+    Final deliverables use constrained VBV/ABR (``-b:v``/``-maxrate``/``-bufsize``)
+    targeting YouTube's recommended 1080p upload bitrate (12M/14M/24M at 60 fps,
+    8M/10M/16M at 30 fps). Intermediates use constant quality (``-cq 14`` on NVENC,
+    ``-crf 18`` on libx264).
+    """
+
+    if use_gpu and media.detect_nvenc_available():
+        name = "h264_nvenc"
+        if is_intermediate:
+            flags = ["-c:v", name, "-preset", "p2", "-cq", "14"]
+        else:
+            preset = "p4"
+            if fps == 60:
+                bitrate, maxrate, bufsize = "12M", "14M", "24M"
+            else:
+                bitrate, maxrate, bufsize = "8M", "10M", "16M"
+            flags = [
+                "-c:v",
+                name,
+                "-preset",
+                preset,
+                "-b:v",
+                bitrate,
+                "-maxrate",
+                maxrate,
+                "-bufsize",
+                bufsize,
+            ]
+        return name, flags
+
+    name = "libx264"
+    if is_intermediate:
+        flags = ["-c:v", name, "-preset", "veryfast", "-crf", "18"]
+    else:
+        flags = ["-c:v", name, "-preset", "medium", "-crf", "23"]
+    return name, flags
+
+
+def run_ffmpeg_encode_with_fallback(
+    command_builder,
+    *,
+    output,
+    label,
+    fps: int = 30,
+    is_intermediate: bool = False,
+    use_gpu: bool = True,
+) -> None:
+    """Encode ``output`` with dGPU NVENC first, falling back to CPU libx264.
+
+    ``command_builder`` is a callable that receives the encoder-specific flag list
+    (as returned by :func:`resolve_video_encoder_flags`) and returns the complete
+    FFmpeg command. On NVENC/driver/device failure a warning is logged and the
+    command is rebuilt with the CPU encoder and retried once. ``fps`` and
+    ``is_intermediate`` are threaded to the encoder-flag resolver so bitrate/quality
+    settings match the deliverable.
+    """
+
+    output = Path(output)
+    _, gpu_flags = resolve_video_encoder_flags(
+        is_intermediate=is_intermediate, fps=fps, use_gpu=use_gpu
+    )
+    try:
+        media.run_command(command_builder(gpu_flags), label=label, expect_stdout=False)
+    except media.MediaError as error:
+        logger.warning("dGPU NVENC failed (%s); falling back to CPU libx264", error)
+        _, cpu_flags = resolve_video_encoder_flags(
+            is_intermediate=is_intermediate, fps=fps, use_gpu=False
+        )
+        media.run_command(command_builder(cpu_flags), label=label, expect_stdout=False)
+
+
+def _encode_loudness_command(
+    intermediate: Path,
+    destination: Path,
+    target_lufs: float,
+    measured: media.Loudness,
+    fps: int,
+    preview: bool,
+    encoder_flags: list[str],
+) -> list[str]:
+    """Build the loudnorm two-pass encode command for the given encoder flags."""
+
+    command = [
+        media.FFMPEG,
+        "-hide_banner",
+        "-nostats",
+        "-y",
+        "-i",
+        str(intermediate),
+        "-af",
+        f"loudnorm=I={target_lufs}:TP={TRUE_PEAK_CEILING}:LRA=11:{measured.as_loudnorm_arguments()}",
+    ]
+    command.extend(encoder_flags)
+    command.extend(
+        [
+            "-profile:v",
+            "high" if not preview else "main",
+            "-pix_fmt",
+            "yuv420p",
+            "-color_range",
+            "tv",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k" if preview else "192k",
+            "-ar",
+            "48000",
+            "-movflags",
+            "+faststart",
+        ]
+    )
+    if preview:
+        command.extend(["-vf", "scale=640:-2"])
+    command.append(str(destination))
+    return command
+
+
 def encode_with_loudness(
     intermediate: Path,
     destination: Path,
@@ -426,63 +563,17 @@ def encode_with_loudness(
     """
 
     measured = media.measure_loudness(intermediate, target_lufs)
+    destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    # YouTube recommended upload bitrate for 1080p SDR.
-    if fps == 60:
-        bitrate, maxrate, bufsize = "12M", "14M", "24M"
-    else:
-        bitrate, maxrate, bufsize = "8M", "10M", "16M"
+    def build(encoder_flags: list[str]) -> list[str]:
+        return _encode_loudness_command(
+            intermediate, destination, target_lufs, measured, fps, preview, encoder_flags
+        )
 
-    command = [
-        media.FFMPEG,
-        "-hide_banner",
-        "-nostats",
-        "-y",
-        "-i",
-        str(intermediate),
-        "-af",
-        f"loudnorm=I={target_lufs}:TP={TRUE_PEAK_CEILING}:LRA=11:{measured.as_loudnorm_arguments()}",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast" if preview else "medium",
-        # Bitrate/ABR targeting (via -b:v/-maxrate/-bufsize) replaces CRF:
-        # x264 ignores CRF under constrained VBV, so omit it to avoid command
-        # confusion and let the VBV bucket govern the bitrate.
-        "-b:v",
-        bitrate,
-        "-maxrate",
-        maxrate,
-        "-bufsize",
-        bufsize,
-        "-profile:v",
-        "high" if not preview else "main",
-        "-pix_fmt",
-        "yuv420p",
-        "-color_range",
-        "tv",
-        "-colorspace",
-        "bt709",
-        "-color_primaries",
-        "bt709",
-        "-color_trc",
-        "bt709",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k" if preview else "192k",
-        "-ar",
-        "48000",
-        "-movflags",
-        "+faststart",
-    ]
-    if preview:
-        command.extend(["-vf", "scale=640:-2"])
-    command.append(str(destination))
-    media.run_command(command, label=f"encode {destination.name}", expect_stdout=False)
-    if not destination.is_file():
-        raise VideoError(f"ffmpeg did not write {destination}")
+    run_ffmpeg_encode_with_fallback(
+        build, output=destination, label=f"encode {destination.name}", fps=fps
+    )
     return measured
 
 

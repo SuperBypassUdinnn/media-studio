@@ -25,7 +25,7 @@ from media_studio.gen.base import GenError, GenRequest
 from media_studio.gen.pipeline import generate_asset
 from media_studio.html_motion import HtmlMotionError, render_html_motion
 from media_studio.manifest import Project
-from media_studio.reframe import ASPECTS, OUTPUT_SIZE, reframe_video
+from media_studio.reframe import ASPECTS, OUTPUT_SIZE, reframe_video, safe_zone_for
 from media_studio.see import SeeError, peek
 from media_studio.sfx import SfxCue, SfxError, mix_transition_sfx
 from media_studio.transitions import TransitionError, apply_transition
@@ -61,6 +61,7 @@ class PromoBeat:
     transition: str = "whip_pan_left"
     sfx: str = "whoosh-fast"
     gen_prompt: str | None = None
+    layout_zone: str = "hero-center"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +74,7 @@ class PromoBeat:
             "transition": self.transition,
             "sfx": self.sfx,
             "gen_prompt": self.gen_prompt,
+            "layout_zone": self.layout_zone,
         }
 
     @classmethod
@@ -87,7 +89,91 @@ class PromoBeat:
             transition=str(data.get("transition") or "whip_pan_left"),
             sfx=str(data.get("sfx") or "whoosh-fast"),
             gen_prompt=data.get("gen_prompt"),
+            layout_zone=str(data.get("layout_zone") or "hero-center"),
         )
+
+
+#: Bounding boxes (fractions of canvas, 0..1) for each layout zone. Every zone
+#: places a card/preset box and a caption box so they can be checked for overlap
+#: against each other and against the platform safe zone.
+LAYOUT_ZONE_BOXES: dict[str, dict[str, dict[str, float]]] = {
+    "hero-center": {
+        "card": {"top": 0.30, "bottom": 0.62, "left": 0.15, "right": 0.85},
+        "caption": {"top": 0.78, "bottom": 0.92, "left": 0.10, "right": 0.90},
+    },
+    "split-stage": {
+        "card": {"top": 0.25, "bottom": 0.70, "left": 0.05, "right": 0.48},
+        "caption": {"top": 0.30, "bottom": 0.60, "left": 0.52, "right": 0.95},
+    },
+    "card-focus": {
+        "card": {"top": 0.20, "bottom": 0.80, "left": 0.10, "right": 0.90},
+        "caption": {"top": 0.82, "bottom": 0.94, "left": 0.10, "right": 0.90},
+    },
+    "cta-centered": {
+        "card": {"top": 0.55, "bottom": 0.72, "left": 0.20, "right": 0.80},
+        "caption": {"top": 0.78, "bottom": 0.90, "left": 0.10, "right": 0.90},
+    },
+}
+
+
+def _rects_overlap(a: dict[str, float], b: dict[str, float]) -> bool:
+    """True when two axis-aligned ``{top, bottom, left, right}`` rects overlap."""
+
+    return not (
+        a["right"] <= b["left"]
+        or a["left"] >= b["right"]
+        or a["bottom"] <= b["top"]
+        or a["top"] >= b["bottom"]
+    )
+
+
+def check_layout_collisions(beat: PromoBeat, *, aspect: str, width: int, height: int) -> list[str]:
+    """Check a beat's layout zone for card/caption and safe-zone collisions.
+
+    Computes the pixel bounding box of the card/preset and the word-highlight
+    caption zone for ``beat.layout_zone``, then compares them against each other
+    and against ``safe_zone_for(aspect, width, height)``. Returns a list of
+    human-readable adjustment messages (empty when there is no collision). The
+    messages describe how the card anchor Y or card scale should be adjusted so
+    UI cards, titles, and captions never collide with platform UI or captions.
+    """
+
+    zone_name = beat.layout_zone or "hero-center"
+    boxes = LAYOUT_ZONE_BOXES.get(zone_name, LAYOUT_ZONE_BOXES["hero-center"])
+    safe = safe_zone_for(aspect, width, height)
+
+    def to_pixels(box: dict[str, float]) -> dict[str, float]:
+        return {
+            "top": round(box["top"] * height),
+            "bottom": round(box["bottom"] * height),
+            "left": round(box["left"] * width),
+            "right": round(box["right"] * width),
+        }
+
+    card = to_pixels(boxes["card"])
+    caption = to_pixels(boxes["caption"])
+
+    issues: list[str] = []
+
+    if _rects_overlap(card, caption):
+        issues.append(
+            f"layout_zone={zone_name}: card box overlaps caption box; "
+            "scale card down or shift card anchor Y to avoid collision"
+        )
+
+    bottom_limit = height - safe["bottom"]
+    if card["top"] < safe["top"]:
+        issues.append(
+            f"layout_zone={zone_name}: card intrudes into top safe zone "
+            f"({safe['top']}px); shift card anchor Y down"
+        )
+    if card["bottom"] > bottom_limit:
+        issues.append(
+            f"layout_zone={zone_name}: card intrudes into bottom safe zone "
+            f"({safe['bottom']}px); shift card anchor Y up"
+        )
+
+    return issues
 
 
 @dataclass(frozen=True)
@@ -401,8 +487,18 @@ def _render_solid_clip(
     col = color.lstrip("#")
     if col.lower() in {"0f172a", "000000", "000"}:
         col = "1e293b"
-    media.run_command(
-        [
+    vf = (
+        f"scale={width}:{height}:flags=lanczos,"
+        "scale=in_range=auto:out_range=limited,"
+        "noise=alls=6:allf=t+u,format=yuv420p"
+    )
+    gradient = (
+        f"gradients=s={width}x{height}:r={fps}:d={duration:.4f}"
+        f":c0=0x{col}:c1=0x1e293b:c2=0x0f172a:c3=0x334155:speed=0.8"
+    )
+
+    def build(encoder_flags: list[str]) -> list[str]:
+        return [
             media.FFMPEG,
             "-hide_banner",
             "-loglevel",
@@ -411,26 +507,14 @@ def _render_solid_clip(
             "-f",
             "lavfi",
             "-i",
-            (
-                f"gradients=s={width}x{height}:r={fps}:d={duration:.4f}"
-                f":c0=0x{col}:c1=0x1e293b:c2=0x0f172a:c3=0x334155:speed=0.8"
-            ),
+            gradient,
             "-f",
             "lavfi",
             "-i",
             f"anullsrc=r=48000:cl=stereo:d={duration:.4f}",
             "-vf",
-            (
-                f"scale={width}:{height}:flags=lanczos,"
-                "scale=in_range=auto:out_range=limited,"
-                "noise=alls=6:allf=t+u,format=yuv420p"
-            ),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "14",
+            vf,
+            *encoder_flags,
             "-pix_fmt",
             "yuv420p",
             "-c:a",
@@ -439,9 +523,14 @@ def _render_solid_clip(
             "128k",
             "-shortest",
             str(output),
-        ],
+        ]
+
+    video.run_ffmpeg_encode_with_fallback(
+        build,
+        output=output,
         label=f"solid clip {output.name}",
-        expect_stdout=False,
+        fps=fps,
+        is_intermediate=True,
     )
     return output
 
@@ -460,40 +549,38 @@ def _normalize_clip(
         f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={width}:{height},fps={fps},scale=in_range=auto:out_range=limited,format=yuv420p"
     )
-    if source.suffix.lower() in image_exts:
-        cmd = [
-            media.FFMPEG,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-loop",
-            "1",
-            "-i",
-            str(source),
-            "-f",
-            "lavfi",
-            "-i",
-            f"anullsrc=r=48000:cl=stereo:d={duration:.4f}",
-            "-vf",
-            vf,
-            "-t",
-            f"{duration:.4f}",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "14",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-shortest",
-            str(output),
-        ]
-    else:
-        cmd = [
+    audio_input = f"anullsrc=r=48000:cl=stereo:d={duration:.4f}"
+    time_flag = f"{duration:.4f}"
+
+    def build(encoder_flags: list[str]) -> list[str]:
+        if source.suffix.lower() in image_exts:
+            return [
+                media.FFMPEG,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-loop",
+                "1",
+                "-i",
+                str(source),
+                "-f",
+                "lavfi",
+                "-i",
+                audio_input,
+                "-vf",
+                vf,
+                "-t",
+                time_flag,
+                *encoder_flags,
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-shortest",
+                str(output),
+            ]
+        return [
             media.FFMPEG,
             "-hide_banner",
             "-loglevel",
@@ -506,7 +593,7 @@ def _normalize_clip(
             "-f",
             "lavfi",
             "-i",
-            f"anullsrc=r=48000:cl=stereo:d={duration:.4f}",
+            audio_input,
             "-map",
             "0:v:0",
             "-map",
@@ -514,26 +601,29 @@ def _normalize_clip(
             "-vf",
             vf,
             "-t",
-            f"{duration:.4f}",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "14",
+            time_flag,
+            *encoder_flags,
             "-c:a",
             "aac",
             "-b:a",
             "128k",
             str(output),
         ]
-    media.run_command(cmd, label=f"normalize clip {output.name}", expect_stdout=False)
+
+    video.run_ffmpeg_encode_with_fallback(
+        build, output=output, label=f"normalize clip {output.name}", fps=fps, is_intermediate=True
+    )
     return output
 
 
 def _composite_overlay(base: Path, overlay: Path, output: Path, *, width: int, height: int) -> Path:
-    media.run_command(
-        [
+    filter_complex = (
+        f"[1:v]scale={width}:{height}:flags=lanczos,format=rgba[ov];"
+        f"[0:v][ov]overlay=0:0:shortest=1,scale=in_range=auto:out_range=limited,format=yuv420p[outv]"
+    )
+
+    def build(encoder_flags: list[str]) -> list[str]:
+        return [
             media.FFMPEG,
             "-hide_banner",
             "-loglevel",
@@ -544,23 +634,19 @@ def _composite_overlay(base: Path, overlay: Path, output: Path, *, width: int, h
             "-i",
             str(overlay),
             "-filter_complex",
-            f"[1:v]scale={width}:{height}:flags=lanczos,format=rgba[ov];[0:v][ov]overlay=0:0:shortest=1,scale=in_range=auto:out_range=limited,format=yuv420p[outv]",
+            filter_complex,
             "-map",
             "[outv]",
             "-map",
             "0:a?",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "14",
+            *encoder_flags,
             "-c:a",
             "copy",
             str(output),
-        ],
-        label=f"composite overlay {output.name}",
-        expect_stdout=False,
+        ]
+
+    video.run_ffmpeg_encode_with_fallback(
+        build, output=output, label=f"composite overlay {output.name}", is_intermediate=True
     )
     return output
 
@@ -820,6 +906,9 @@ def render_promo(
 
             for idx, beat in enumerate(plan.beats):
                 clip_dur = beat.duration + (quant_td if idx > 0 else 0.0)
+                collisions = check_layout_collisions(beat, aspect=aspect, width=out_w, height=out_h)
+                if collisions:
+                    notes.append(f"{deliv_id} beat {idx} ({beat.kind}): " + "; ".join(collisions))
                 base_clip = scratch / f"{deliv_id}-beat-{idx:02d}-base.mp4"
 
                 asset_rel = project.assets.get(beat.asset_id) if beat.asset_id else None
