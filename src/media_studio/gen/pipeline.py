@@ -462,6 +462,7 @@ def generate_asset(
     output: Path,
     max_gen_calls: int = 6,
     quota_store: QuotaStore | None = None,
+    allow_keyless: bool = True,
 ) -> GenResult:
     """Generate one asset, cascading through free-quota providers then deterministic fallback.
 
@@ -476,7 +477,7 @@ def generate_asset(
     if quota_store is None:
         quota_store = QuotaStore()
 
-    providers = default_providers()
+    providers = [p for p in default_providers() if allow_keyless or p.name != "keyless"]
     spent = 0
     kind = request.kind
     max_daily = max(max_gen_calls, DEFAULT_DAILY_CAP)

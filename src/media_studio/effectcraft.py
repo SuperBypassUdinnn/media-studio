@@ -889,7 +889,7 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                     "color": "{accent}",
                     "width": 0.005,
                     "height": 0.35,
-                    "position": [0.17, 0.42],
+                    "position": [0.12, 0.42],
                     "keyframes": {
                         "scale": [
                             {"t": 0.0, "v": 0.0, "ease": "expo-out"},
@@ -909,13 +909,13 @@ PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
                 "params": {
                     "text": "{text}",
                     "font": "{heading}",
-                    "font_size": 0.055,
+                    "font_size": 0.050,
                     "color": "{ink}",
-                    "position": [0.25, 0.40],
+                    "position": [0.15, 0.40],
                     "keyframes": {
                         "position": [
-                            {"t": 0.0, "v": [0.05, 0.40], "ease": "expo-out"},
-                            {"t": 0.30, "v": [0.25, 0.40], "ease": "expo-out"},
+                            {"t": 0.0, "v": [0.10, 0.40], "ease": "expo-out"},
+                            {"t": 0.30, "v": [0.15, 0.40], "ease": "expo-out"},
                         ],
                         "opacity": [
                             {"t": 0.0, "v": 0.0, "ease": "expo-out"},
@@ -1225,12 +1225,8 @@ def _scale_promo_params(params: dict[str, Any], width: int, height: int) -> None
 
 
 def _fit_promo_text(params: dict[str, Any], width: int) -> None:
-    """Shrink or wrap a text layer's ``text`` so it fits inside 84% of width.
-
-    Estimated glyph width is ``0.55 * font_size`` per character. When the text
-    is too wide, ``font_size`` is scaled down proportionally (floored at 24px);
-    if it still overflows at the floor, the text is wrapped onto two lines.
-    """
+    """Shrink and wrap a text layer's text so it fits inside safe horizontal margins."""
+    import textwrap
 
     text = params.get("text")
     if not isinstance(text, str) or not text:
@@ -1238,16 +1234,29 @@ def _fit_promo_text(params: dict[str, Any], width: int) -> None:
     font_size = params.get("font_size")
     if not isinstance(font_size, (int, float)) or font_size <= 0:
         return
-    max_width = width * 0.84
-    if len(text) * font_size * 0.55 <= max_width:
-        return
-    new_size = max(24, round(max_width / (len(text) * 0.55)))
-    params["font_size"] = new_size
-    if len(text) * new_size * 0.55 > max_width:
-        words = text.split()
-        if len(words) > 1:
-            mid = len(words) // 2
-            params["text"] = " ".join(words[:mid]) + "\n" + " ".join(words[mid:])
+
+    pos = params.get("position")
+    pos_x = 0.15
+    if isinstance(pos, list) and len(pos) >= 1 and isinstance(pos[0], (int, float)):
+        val = float(pos[0])
+        pos_x = val / width if val > 1.0 else val
+
+    avail_ratio = max(0.40, min(0.85, 0.90 - pos_x))
+    max_width = width * avail_ratio
+
+    words = text.split()
+    if len(text) > 36 and len(words) > 3:
+        chars_per_line = max(24, int(max_width / (font_size * 0.55)))
+        wrapped = textwrap.fill(text, width=chars_per_line)
+        params["text"] = wrapped
+        longest_line = max(len(line) for line in wrapped.splitlines())
+    else:
+        longest_line = len(text)
+
+    estimated_width = longest_line * font_size * 0.55
+    if estimated_width > max_width:
+        new_size = max(24, round(max_width / (longest_line * 0.55)))
+        params["font_size"] = new_size
 
 
 # ---------------------------------------------------------------------------

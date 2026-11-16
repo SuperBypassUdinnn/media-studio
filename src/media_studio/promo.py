@@ -15,9 +15,12 @@ import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from PIL import Image, ImageDraw
 
 from media_studio import audio, media, video
 from media_studio.captions import CaptionsError, extract_word_timestamps, render_captions
@@ -771,29 +774,106 @@ def plan_promo(
 
 
 def _write_storyboard(project: Project, plan: PromoPlan, destination: Path) -> Path:
-    """Render a deterministic storyboard contact-sheet PNG for human quota approval."""
+    """Render an informative visual storyboard contact-sheet PNG for human quota approval."""
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    primary = project.brand.palette.get("primary", "#0F172A").lstrip("#")
-    accent = project.brand.palette.get("accent", "#38BDF8").lstrip("#")
 
-    tile_inputs: list[str] = []
-    for idx, _beat in enumerate(plan.beats):
-        col = primary if idx % 2 == 0 else accent
-        tile_inputs.extend(["-f", "lavfi", "-i", f"color=c=0x{col}:s=320x180:d=0.1"])
+    n_beats = max(1, len(plan.beats))
+    tile_w, tile_h = 420, 260
+    header_h = 60
+    sheet_w = n_beats * tile_w + (n_beats + 1) * 16
+    sheet_h = header_h + tile_h + 24
 
-    n_tiles = max(1, len(plan.beats))
-    if not tile_inputs:
-        tile_inputs = ["-f", "lavfi", "-i", f"color=c=0x{primary}:s=320x180:d=0.1"]
+    canvas = Image.new("RGBA", (sheet_w, sheet_h), (8, 12, 22, 255))
+    draw = ImageDraw.Draw(canvas)
 
-    cmd = [media.FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *tile_inputs]
-    if n_tiles > 1:
-        stack_in = "".join(f"[{i}:v]" for i in range(n_tiles))
-        cmd.extend(
-            ["-filter_complex", f"{stack_in}hstack=inputs={n_tiles}[outv]", "-map", "[outv]"]
+    accent_hex = project.brand.palette.get("accent", "#38BDF8")
+
+    def hex_to_rgb(h: str, default: tuple[int, int, int]) -> tuple[int, int, int]:
+        c = h.lstrip("#")
+        try:
+            return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+        except Exception:
+            return default
+
+    accent_rgb = hex_to_rgb(accent_hex, (56, 189, 248))
+
+    title_text = (
+        f"STORYBOARD: {project.slug.upper()} | "
+        f"{len(plan.beats)} BEATS ({plan.total_duration:.1f}s) | PROMO QUOTA PREVIEW"
+    )
+    draw.text((20, 20), title_text, fill=accent_rgb)
+
+    for idx, beat in enumerate(plan.beats):
+        x0 = 16 + idx * (tile_w + 16)
+        y0 = header_h + 8
+        x1 = x0 + tile_w
+        y1 = y0 + tile_h
+
+        draw.rounded_rectangle(
+            [x0, y0, x1, y1],
+            radius=8,
+            fill=(18, 24, 38, 255),
+            outline=(38, 48, 70, 255),
+            width=2,
         )
-    cmd.extend(["-frames:v", "1", str(destination)])
-    media.run_command(cmd, label="render promo storyboard", expect_stdout=False)
+
+        beat_title = f"BEAT {idx}: {beat.kind.upper()} ({beat.duration:.1f}s)"
+        draw.text((x0 + 16, y0 + 14), beat_title, fill=accent_rgb)
+
+        sub_info = (
+            f"{beat.layout_zone} | {beat.preset or beat.template or 'custom'} | {beat.transition}"
+        )
+        draw.text((x0 + 16, y0 + 36), sub_info, fill=(148, 163, 184, 255))
+
+        box_x0 = x0 + 16
+        box_y0 = y0 + 60
+        box_x1 = x1 - 16
+        box_y1 = box_y0 + 110
+        draw.rounded_rectangle(
+            [box_x0, box_y0, box_x1, box_y1],
+            radius=6,
+            fill=(10, 14, 24, 255),
+            outline=(30, 41, 59, 255),
+            width=1,
+        )
+
+        thumbnail_drawn = False
+        if beat.asset_id and beat.asset_id in project.assets:
+            asset_path = project.root / project.assets[beat.asset_id]
+            if asset_path.is_file() and asset_path.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                try:
+                    with Image.open(asset_path) as aim:
+                        aim_thumb = aim.copy()
+                        aim_thumb.thumbnail((box_x1 - box_x0 - 8, box_y1 - box_y0 - 8))
+                        tx = box_x0 + ((box_x1 - box_x0) - aim_thumb.width) // 2
+                        ty = box_y0 + ((box_y1 - box_y0) - aim_thumb.height) // 2
+                        canvas.paste(
+                            aim_thumb, (tx, ty), aim_thumb if aim_thumb.mode == "RGBA" else None
+                        )
+                        thumbnail_drawn = True
+                except Exception:
+                    pass
+
+        if not thumbnail_drawn:
+            badge_text = ""
+            if beat.asset_id:
+                badge_text = f"ASSET: {beat.asset_id}"
+            elif beat.template:
+                badge_text = f"TEMPLATE: {beat.template}"
+            elif beat.gen_prompt:
+                badge_text = f"AI GEN: {beat.gen_prompt[:32]}..."
+            else:
+                badge_text = f"PRESET: {beat.preset}"
+            draw.text((box_x0 + 16, box_y0 + 44), badge_text, fill=(226, 232, 240, 255))
+
+        text_y = box_y1 + 10
+        lines = textwrap.wrap(beat.text or "", width=45)
+        for line in lines[:2]:
+            draw.text((x0 + 16, text_y), line, fill=(203, 213, 225, 255))
+            text_y += 16
+
+    canvas.save(destination, format="PNG")
     return destination
 
 
@@ -841,13 +921,11 @@ def _render_solid_clip(
         col = "1e293b"
     vf = (
         f"scale={width}:{height}:flags=lanczos,"
+        "vignette=angle=PI/5,"
         "scale=in_range=auto:out_range=limited,"
-        "noise=alls=6:allf=t+u,format=yuv420p"
+        "format=yuv420p"
     )
-    gradient = (
-        f"gradients=s={width}x{height}:r={fps}:d={duration:.4f}"
-        f":c0=0x{col}:c1=0x1e293b:c2=0x0f172a:c3=0x334155:speed=0.8"
-    )
+    bg_input = f"color=c=0x{col}:s={width}x{height}:r={fps}:d={duration:.4f}"
 
     def build(encoder_flags: list[str]) -> list[str]:
         return [
@@ -859,7 +937,7 @@ def _render_solid_clip(
             "-f",
             "lavfi",
             "-i",
-            gradient,
+            bg_input,
             "-f",
             "lavfi",
             "-i",
@@ -1315,6 +1393,7 @@ def render_promo(
                                 project=project,
                                 output=gen_out,
                                 max_gen_calls=max(1, max_gen_calls - gen_calls_used),
+                                allow_keyless=False,
                             )
                             gen_calls_used += 1
                             normalized = scratch / f"{deliv_id}-beat-{idx:02d}-norm.mp4"
@@ -1444,24 +1523,25 @@ def render_promo(
 
                 # Intra-beat motion SFX: sync sound effects to visual progress/clicks
                 if beat.template == "metric-counter":
-                    # Emit rhythmic tick pops across the counter progress timeline (every 0.5s)
-                    tick_step = 0.5
-                    t_curr = tick_step
-                    while t_curr < clip_dur - 0.2:
+                    # Ticks strictly during active visual counting (first 75% of duration)
+                    active_count_dur = clip_dur * 0.75
+                    tick_step = 0.4
+                    t_curr = 0.4
+                    while t_curr < active_count_dur - 0.1:
                         sfx_cues.append(
                             SfxCue(
                                 path_or_id="ui-pop",
                                 at=max(0.0, elapsed + t_curr),
-                                gain_db=-10.0,
+                                gain_db=-12.0,
                             )
                         )
                         t_curr += tick_step
-                    # Final impact pop at counter completion
+                    # Climax confirmation pop exactly when visual counter reaches target value
                     sfx_cues.append(
                         SfxCue(
                             path_or_id="ui-pop",
-                            at=max(0.0, elapsed + clip_dur - 0.1),
-                            gain_db=-3.0,
+                            at=max(0.0, elapsed + active_count_dur),
+                            gain_db=-4.0,
                         )
                     )
                 elif beat.template == "saas-feature-card":

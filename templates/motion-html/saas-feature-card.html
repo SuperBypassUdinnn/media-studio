@@ -24,16 +24,9 @@
   p { font-size: clamp(11px, 2.2vmin, 16px); line-height: 1.5; color: #334155; }
   .feature { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 2.8vmin; color: #1e293b; }
   .feature .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent, #38bdf8); flex: 0 0 auto; }
-  /* Highlight ring around a target element. */
-  .target { position: relative; display: inline-block; margin-top: 3.6vmin; padding: 2vmin 3.2vmin; border-radius: 2vmin; border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.25); background: rgba(var(--accent-rgb, 56, 189, 248), 0.08); cursor: pointer; }
-  .ring {
-    position: absolute; top: 50%; left: 50%; width: 0; height: 0;
-    border: 2px solid var(--accent, #38bdf8);
-    border-radius: 50%; box-sizing: border-box;
-    transform: translate(-50%, -50%); opacity: 0;
-    pointer-events: none; transition: width 0.4s ease, height 0.4s ease, opacity 0.4s ease;
-  }
-  .ring.active { opacity: 0.85; }
+  /* Action button target with authentic click feedback. */
+  .target { position: relative; display: inline-block; margin-top: 3.6vmin; padding: 2vmin 3.2vmin; border-radius: 2vmin; border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.25); background: rgba(var(--accent-rgb, 56, 189, 248), 0.08); cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; }
+  .target.clicked { transform: scale(0.96); background: rgba(var(--accent-rgb, 56, 189, 248), 0.22); border-color: var(--accent, #38bdf8); }
   /* Floating cursor click. */
   .cursor {
     position: absolute; width: 4.4vmin; height: 4.4vmin;
@@ -53,7 +46,6 @@
     <p id="subhead">Subheadline explains the capability in a friendly tone.</p>
     <div class="feature"><div class="dot"></div><span id="featureText">Real-time collaboration for distributed teams</span></div>
     <div class="target" id="target">Try it free &rarr;</div>
-    <div class="ring" id="ring"></div>
   </div>
   <div class="cursor" id="cursor"><div class="click" id="click"></div></div>
 </div>
@@ -120,21 +112,17 @@
       card.style.transform = `translate(-50%, -${cardAnchorY * 100}%) scale(${Math.max(0.05, spring * cardScale)})`;
     }
 
-    // Highlight ring: expands then fades around the target.
     const rect = target.getBoundingClientRect();
-    const ringScale = 1.05 + ease * 0.35;
-    ring.style.left = '50%'; ring.style.top = '50%';
-    ring.style.width = (rect.width * ringScale) + 'px';
-    ring.style.height = (rect.height * ringScale) + 'px';
-    ring.classList.toggle('active', progress > 0.25 && progress < 0.85);
+    const isClicked = progress > 0.78;
+    target.classList.toggle('clicked', isClicked);
 
-    // Floating cursor: travels across the card and clicks near the target at the end.
+    // Floating cursor: travels across the card and clicks the target button at the end.
     const clickSpring = window.__msSpring({frame: frameIndex, fps, damping: 10, stiffness: 90, mass: 1});
     const cx = 60 + ease * (rect.left + rect.width / 2 - 60);
     const cy = 120 + ease * (rect.top + rect.height / 2 - 120);
     cursor.style.left = cx + 'px';
     cursor.style.top = cy + 'px';
-    click.classList.toggle('active', progress > 0.78);
+    click.classList.toggle('active', isClicked);
     click.style.transform = `translate(-50%, -50%) scale(${Math.max(0.05, clickSpring)})`;
   };
 })();
