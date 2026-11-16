@@ -7,6 +7,7 @@ headless Vulkan render, because a skipped render proves nothing about the path.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,7 @@ def test_convert_can_simplify(cube: Path, tmp_path: Path) -> None:
     assert conversion.triangles < 12
 
 
+@pytest.mark.slow
 @blender_required
 def test_turntable_renders_distinct_frames_and_passes(tmp_path: Path, cube: Path) -> None:
     result = blender.turntable(cube, tmp_path / "spin", frames=3, resolution=(128, 72))
@@ -122,6 +124,7 @@ def test_turntable_renders_distinct_frames_and_passes(tmp_path: Path, cube: Path
     assert written["environment"]
 
 
+@pytest.mark.slow
 @blender_required
 def test_turntable_matches_its_own_baseline(tmp_path: Path, cube: Path) -> None:
     """A repeated render is expected to be the same picture, within a stated tolerance."""
@@ -138,6 +141,7 @@ def test_turntable_matches_its_own_baseline(tmp_path: Path, cube: Path) -> None:
     assert comparison["differing_frames"] == []
 
 
+@pytest.mark.slow
 @blender_required
 def test_turntable_reports_a_baseline_mismatch(tmp_path: Path, cube: Path) -> None:
     first = blender.turntable(cube, tmp_path / "one", frames=2, resolution=(96, 54))
@@ -171,6 +175,27 @@ def test_duplicate_frame_detection() -> None:
     assert blender._duplicate_frames({"frame_reports": []}) == []
 
 
+def test_is_game_or_heavy_gpu_process_active(monkeypatch) -> None:
+    # Test inactive case
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=args[0], returncode=1, stdout=""),
+    )
+    assert blender.is_game_or_heavy_gpu_process_active() is False
+
+    # Test active game case
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0], returncode=0, stdout="3423380\n"
+        ),
+    )
+    assert blender.is_game_or_heavy_gpu_process_active() is True
+
+
+@pytest.mark.slow
 @blender_required
 def test_cli_inspect_and_turntable(
     cube: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
