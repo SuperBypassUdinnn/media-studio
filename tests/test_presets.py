@@ -27,6 +27,13 @@ from media_studio.presets import (
 from media_studio.project import scaffold_project
 from media_studio.video import build_timeline
 
+_HAVE_MELT = shutil.which("melt") is not None
+_HAVE_MELT_AND_MAGICK = _HAVE_MELT and shutil.which("magick") is not None
+NEEDS_MELT = pytest.mark.skipif(not _HAVE_MELT, reason="melt not installed")
+NEEDS_MELT_AND_MAGICK = pytest.mark.skipif(
+    not _HAVE_MELT_AND_MAGICK, reason="melt and magick required for snapshot comparison"
+)
+
 
 @pytest.fixture(scope="module")
 def recipes() -> dict:
@@ -257,6 +264,7 @@ def render_pair(
     return rendered[0], rendered[1]
 
 
+@NEEDS_MELT
 @pytest.mark.parametrize(
     ("recipe_id", "overrides"),
     [
@@ -280,6 +288,7 @@ def test_a_look_recipe_reaches_the_frame(
     assert media.pixel_digest(filtered_frame) != media.pixel_digest(plain_frame)
 
 
+@NEEDS_MELT
 def test_a_video_effect_preset_changes_the_picture(
     tmp_path: Path, clip: Path, recipes: dict
 ) -> None:
@@ -528,6 +537,7 @@ def compare_with_snapshot(
     )
 
 
+@NEEDS_MELT_AND_MAGICK
 @pytest.mark.parametrize("recipe_id", SNAPSHOT_VIDEO_EFFECTS)
 def test_every_video_effect_matches_its_snapshot(
     tmp_path: Path, patterned_clip: Path, recipes: dict, recipe_id: str
@@ -549,6 +559,7 @@ def test_every_video_effect_matches_its_snapshot(
     compare_with_snapshot(filtered_frame, recipe_id)
 
 
+@NEEDS_MELT_AND_MAGICK
 @pytest.mark.parametrize("recipe_id", SNAPSHOT_TITLES)
 def test_every_title_recipe_matches_its_snapshot(
     tmp_path: Path, patterned_clip: Path, recipes: dict, recipe_id: str

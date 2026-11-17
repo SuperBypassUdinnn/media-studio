@@ -68,6 +68,12 @@ def main() -> int:
         ]
     else:
         pytest_cmd = [py_exec, "-m", "pytest", "-q", "-m", "not slow and not network"]
+        try:
+            import xdist  # noqa: F401
+
+            pytest_cmd.extend(["-n", "auto"])
+        except ImportError:
+            pass
     run_check(pytest_cmd, name="pytest")
 
     # TypeScript / Node checks

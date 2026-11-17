@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -712,6 +713,7 @@ def test_the_handoff_reports_a_reference_that_is_not_on_disk(
     assert any("not there" in problem for problem in result.problems)
 
 
+@pytest.mark.skipif(shutil.which("melt") is None, reason="melt not installed")
 def test_the_handoff_document_still_renders(project_root: Path) -> None:
     """The envelope must not change the edit, so `melt` has to render it like the render input."""
 

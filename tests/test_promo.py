@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -387,7 +388,7 @@ def test_render_promo_auto_assembles_dual_aspect_and_qc_passes(
     assert (root / "out" / "promo" / "master-16x9-sheet.png").is_file()
 
     # Temp dirs under /tmp/opencode/promo-* must be cleaned up.
-    leftovers = list(Path("/tmp/opencode").glob("promo-*"))
+    leftovers = list(Path("/tmp/opencode").glob(f"promo-{os.getpid()}-*"))
     assert leftovers == []
 
 
