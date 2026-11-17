@@ -106,7 +106,76 @@ def compute_scene_cache_key(project: Project, scene: SceneNode, *, aspect: str, 
     return hashlib.sha256(raw).hexdigest()
 
 
-def render_scene_clip(
+#: Formal JSON Schema contract for scene-graph documents, published alongside
+#: this module at ``schemas/scene-graph.schema.json``.
+SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "scene-graph.schema.json"
+
+#: Engines declared by the scene-graph schema, in canonical order.
+VALID_ENGINES = ("blender-3d", "effectcraft", "html-motion", "remotion", "flow-gen", "composite")
+
+
+def _load_valid_engines() -> tuple[str, ...]:
+    """Read the engine enum from the formal schema, falling back to VALID_ENGINES."""
+    try:
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        enum = (
+            schema.get("properties", {})
+            .get("scenes", {})
+            .get("items", {})
+            .get("properties", {})
+            .get("engine", {})
+            .get("enum")
+        )
+        if isinstance(enum, list) and enum:
+            return tuple(str(item) for item in enum)
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return VALID_ENGINES
+
+
+def validate_scene_graph_schema(data: Any) -> list[str]:
+    """Validate a scene-graph document against the formal JSON schema.
+
+    Returns a list of human-readable error messages; an empty list means the
+    document is valid. The engine field is constrained to the enum declared in
+    ``schemas/scene-graph.schema.json``.
+    """
+    errors: list[str] = []
+    if not isinstance(data, dict):
+        return ["scene graph must be a JSON object"]
+
+    project_slug = data.get("project_slug")
+    if not isinstance(project_slug, str) or not project_slug:
+        errors.append("scene graph: project_slug is required and must be a non-empty string")
+
+    scenes = data.get("scenes")
+    if not isinstance(scenes, list):
+        errors.append("scene graph: scenes must be a list")
+        return errors
+
+    valid_engines = _load_valid_engines()
+    for index, scene in enumerate(scenes):
+        prefix = f"scene graph: scenes[{index}]"
+        if not isinstance(scene, dict):
+            errors.append(f"{prefix}: must be an object")
+            continue
+
+        scene_id = scene.get("id")
+        if not isinstance(scene_id, str) or not scene_id:
+            errors.append(f"{prefix}: id is required and must be a non-empty string")
+
+        duration = scene.get("duration")
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
+            errors.append(f"{prefix}: duration must be a positive number, got {duration!r}")
+
+        engine = scene.get("engine")
+        if not isinstance(engine, str) or engine not in valid_engines:
+            errors.append(f"{prefix}: engine {engine!r} is not one of {', '.join(valid_engines)}")
+
+    return errors
+
+
+def render_blender_3d_clip(
     project: Project,
     scene: SceneNode,
     output_mp4: Path,
@@ -116,7 +185,7 @@ def render_scene_clip(
     height: int = 1080,
     fps: int = 60,
 ) -> Path:
-    """Render one scene node to an encoded MP4 clip using its configured engine."""
+    """Render one scene node with the blender-3d engine (3D stage + optical finish)."""
     output_mp4 = Path(output_mp4)
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
     palette = getattr(project.brand, "palette", {}) or {}
@@ -174,7 +243,116 @@ def render_scene_clip(
 
     return output_mp4
 
+
+def render_effectcraft_clip(
+    project: Project,
+    scene: SceneNode,
+    output_mp4: Path,
+    *,
+    aspect: str = "16:9",
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 60,
+) -> Path:
+    """Render one scene node with the effectcraft engine."""
+    output_mp4 = Path(output_mp4)
+    output_mp4.parent.mkdir(parents=True, exist_ok=True)
+    from media_studio.effectcraft import build_ecp
+    from media_studio.effectcraft import render as ec_render
+
+    spec = {
+        "width": width,
+        "height": height,
+        "fps": float(fps),
+        "duration": float(scene.duration),
+        "layers": list((scene.flow_gen or {}).get("layers", [])),
+    }
+    ec_proj = Path(tempfile.mkdtemp(prefix="ec-", dir="/tmp/opencode")) / "composition.json"
+    build_ecp(spec, ec_proj)
+    ec_render(ec_proj, output_mp4, fps=fps, transparent=False)
     return output_mp4
+
+
+def render_html_motion_clip(
+    project: Project,
+    scene: SceneNode,
+    output_mp4: Path,
+    *,
+    aspect: str = "16:9",
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 60,
+) -> Path:
+    """Render one scene node with the html-motion engine."""
+    output_mp4 = Path(output_mp4)
+    output_mp4.parent.mkdir(parents=True, exist_ok=True)
+    from media_studio.html_motion import render_html_motion
+
+    params = dict(scene.camera or {})
+    params.update({"duration": scene.duration, "transparent": False})
+    render_html_motion(
+        "cinematic-product-hero.html",
+        output=output_mp4,
+        params=params,
+        project=project,
+        width=width,
+        height=height,
+        fps=fps,
+        duration=scene.duration,
+    )
+    return output_mp4
+
+
+def render_composite_clip(
+    project: Project,
+    scene: SceneNode,
+    output_mp4: Path,
+    *,
+    aspect: str = "16:9",
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 60,
+) -> Path:
+    """Composite engine: the default render path (master 3D stage + optical finish)."""
+    return render_blender_3d_clip(
+        project, scene, output_mp4, aspect=aspect, width=width, height=height, fps=fps
+    )
+
+
+def render_scene_clip(
+    project: Project,
+    scene: SceneNode,
+    output_mp4: Path,
+    *,
+    aspect: str = "16:9",
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 60,
+) -> Path:
+    """Render one scene node to an encoded MP4 clip using its configured engine.
+
+    Dispatches by ``scene.engine`` to the appropriate engine renderer instead of
+    hardcoding the 3D perfume flacon path for every scene.
+    """
+    output_mp4 = Path(output_mp4)
+    output_mp4.parent.mkdir(parents=True, exist_ok=True)
+
+    if scene.engine == "blender-3d":
+        return render_blender_3d_clip(
+            project, scene, output_mp4, aspect=aspect, width=width, height=height, fps=fps
+        )
+    if scene.engine == "effectcraft":
+        return render_effectcraft_clip(
+            project, scene, output_mp4, aspect=aspect, width=width, height=height, fps=fps
+        )
+    if scene.engine == "html-motion":
+        return render_html_motion_clip(
+            project, scene, output_mp4, aspect=aspect, width=width, height=height, fps=fps
+        )
+    # composite (default) and any future engines fall through to the composite path.
+    return render_composite_clip(
+        project, scene, output_mp4, aspect=aspect, width=width, height=height, fps=fps
+    )
 
 
 def render_scene_graph(
