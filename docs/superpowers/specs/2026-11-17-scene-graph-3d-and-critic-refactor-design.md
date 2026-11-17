@@ -162,6 +162,37 @@ Instead of forcing 5 fixed beats, a project defines an arbitrary list of scenes 
 - Modifying a single scene (`ms scene render <project> --scene scene-03`) re-renders only that scene and re-assembles the master timeline in seconds.
 - Final assembly compiles into a native **FilmCraft `.fcproj`** project, exports **OpenTimelineIO (`out/timeline/edit.otio.json`)** and **MLT (`out/timeline/edit.mlt`)**, and encodes 1080p60 deliverables (`h264_nvenc` dGPU-first with transparent `libx264` fallback, VBV 12 Mbps, `bt709` `tv` range, `-14.0 LUFS`).
 
+### 4.5 World-Class Cinematography, Montage Grammar, & Optical Pipeline
+To match international commercial production standards (Apple, Chanel/Dior, ManvsMachine, Buck), `scene_graph.py` enforces eight cinematic pillars across every project:
+
+1. **Shot Scale Progression & Montage Grammar (`shot_scale` & `camera_angle`)**:
+   - Every scene declares `shot_scale` (`"ECU" | "CU" | "MS" | "WS"`) and `camera_angle` (`"low-hero" | "eye-level" | "high-zenith" | "dutch-tilt"`).
+   - Adjacent scenes must contrast in scale or angle (no two consecutive scenes may share both `shot_scale` and `camera_angle`, preventing amateur visual jump-cuts).
+2. **Non-Linear Speed Ramping & Match-on-Action (`velocity_curve` & `motion_vector`)**:
+   - Camera and object transforms use non-linear speed curves (`"slow-fast-slow"`, `"ease-in-whip-out"`, `"whip-in-settle-out"`) and preserve directional vector continuity (`"cw-orbit"`, `"push-in"`, `"pan-right"`) across match cuts.
+3. **Asymmetrical Composition, Rule-of-Thirds, & Eye-Trace Continuity**:
+   - Subjects and 3D typography are framed along Rule-of-Thirds or Golden Ratio intersections (`focal_point: [x, y]`) with intentional negative space rather than dead-center `[0.5, 0.5]` stacking.
+   - Across hard or match cuts, the outgoing scene's `focal_point` and incoming scene's `focal_point` stay within `0.25` normalized distance to preserve viewer eye-trace.
+4. **Tension & Release Pacing (Sensory vs Typography Alternation)**:
+   - Not every scene carries text. Scenes alternate between **Pure Sensory Shots** (`typography_3d: null`, 1.5s–2.5s macro light/liquid/droplet poetry) and **Hero Typography Reveal Shots** (3.5s–5.5s), creating rhythmic breathing room.
+5. **Chiaroscuro Lighting Ratio & Volumetric Haze**:
+   - 3D scenes enforce a dramatic key-to-fill ratio (e.g., `6:1` to `8:1` for luxury/noir) with a dedicated high-intensity **Rim/Backlight** to carve out glass and metallic silhouettes, paired with subtle volumetric fog (`ec.3d.fog3d` / Blender volume scatter).
+6. **True Z-Depth Sandwiched 3D Typography (`z_layer: "behind-subject" | "foreground"`)**:
+   - When `z_layer == "behind-subject"`, the 3D typography layer is sandwiched between the 3D environment background and the foreground 3D product matte (via Blender alpha pass or EffectCraft `sam2.1-hiera-base-plus` Roto matte), so the product partially occludes the 3D letters in true 3D space.
+7. **Physical Optical Pipeline (180-Degree Shutter Motion Blur, Bokeh, Halation, & Master LUT + 35mm Grain)**:
+   - Both Blender and EffectCraft renders enable 180-degree shutter motion blur (`motion_blur: true`), optical lens bokeh (`ec.blur.cameralens`), subtle highlight halation (`ec.stylize.glow`), and a unified **Master Finishing Adjustment Pass** (`.cube` LUT + fine 35mm film grain `ec.noise.addgrain`) so Blender, EffectCraft, and Google Flow shots share one cohesive optical signature.
+8. **J-Cuts & L-Cuts (`audio_lead_in_sec` & `audio_trail_out_sec`)**:
+   - Scene audio and diegetic SFX support negative lead-in offsets (`J-Cut`, `-0.35s` before the visual cut) and reverb trail-outs (`L-Cut`, `+0.50s` past the visual cut) so audio bridges every visual transition organically.
+
+### 4.6 World-Class Baseline Sound Design & Diegetic Foley Library
+- **Investigation Finding**: EffectCraft 0.24.1 provides 14 audio DSP filters (`ec.audio.reverb`, `ec.audio.parametriceq`, `ec.audio.compressor`, `ec.audio.delay`, etc.) and `keys.audioToKeyframes`, but ships **zero bundled WAV sound effect files**. Meanwhile, `src/media_studio/data/sfx/` previously contained only 6 synthetic NumPy sine/noise waveforms (`whoosh-soft`, `ui-pop`, etc.).
+- **Baseline Curated SFX & Foley Pack (24+ CC0 48kHz Assets)**:
+  Using the configured `FREESOUND_API_KEY` (`src/media_studio/sources/freesound.py`), Kenney CC0 audio packs (`assets-3d`), and multi-layer acoustic synthesis, `media-studio` stages a permanent 4-layer baseline SFX library under `src/media_studio/data/sfx/` (and `~/.local/share/media-studio/library/audio/`) with full `.license` sidecars:
+  1. **Layer 1 — Atmospheric Room Tone & Drones**: `velvet-night-drone`, `sub-room-ambience`, `warm-analog-air`, `ethereal-pad-swell`.
+  2. **Layer 2 — Diegetic Product & Luxury Foley**: `glass-crystal-resonance`, `perfume-atomizer-mist`, `liquid-amber-swirl`, `water-droplet-obsidian`, `magnetic-cap-click`, `metallic-gleam-shimmer`, `silk-cloth-sweep`.
+  3. **Layer 3 — Cinematic Transitions & Speed-Ramp Whooshes**: `deep-cinema-whoosh`, `whip-air-transient`, `reverse-vacuum-riser`, `orchestral-tension-riser`, `optical-flare-flash`.
+  4. **Layer 4 — Sub-Bass Drops & Trailer Impacts**: `sub-drop-40hz`, `braam-low-horn`, `cinematic-taiko-boom`, `crystalline-impact-hit`.
+
 ---
 
 ## 5. Visual Storyboard Engine & Pre-Production Iteration Loop (`ms storyboard`)
@@ -200,10 +231,11 @@ Before presenting `storyboard.png` to the user:
 | **2. Contextual & Anti-Boilerplate OCR** | `media_ocr` (per-scene midpoint) | Presence of any forbidden template leak (`"New feature"`, `"Try it free"`, `"Up from last period"`, `"Key Feature"`, `"Automated demo"`), OR expected `typography_3d.text` missing/truncated (`< 60%` token match). | Remove hardcoded template strings; adjust 3D text camera distance, font size, or line wrapping in `typography_3d`. |
 | **3. Frame Image Quality & Exposure** | `media_image_quality` & `media_frames` | Any scene keyframe rated `tier == "poor"`, mean luminance `< 18` (crushed black) or `> 240` (blown highlight), or RMS contrast `< 12`. | Adjust 3D key/rim light power, HDRI strength, or EffectCraft exposure/glow parameters. |
 | **4. Color Palette Selection, Contrast, & 60-30-10 Adherence** | `critique_palette` (WCAG + CIELAB $\Delta E$ K-means cluster analyzer on `media_frames`) | (a) Declared `brand.palette` fails WCAG luminance contrast (`ink`/`accent` vs `primary` `< 4.5:1`) or uses uncurated template defaults (`#38BDF8` sky-blue on non-tech genres); (b) Rendered scene keyframe dominant color clusters deviate from `brand.palette` (`min CIELAB Delta-E > 38.0`, e.g., unstyled `#FFFFFF` cards on a dark luxury palette); or (c) Accent color exceeds `25%` frame area (violating the 60-30-10 balance). | Recalibrate `brand.palette` to match product archetype; align 3D light colors, PBR materials, and `ec.color.lumetri` / `ec.color.curves` grading with the declared palette. |
-| **5. Audio-Visual Beat & Loudness** | `media_beats`, `media_avsync`, FFprobe EBU R128 | Integrated loudness outside `-14.0 LUFS +- 1.0`, true peak `> -1.0 dBTP`, black/frozen segments `> 0`, or `color_space != "bt709"` / `color_range != "tv"`. | Re-normalize audio mix, snap scene durations to beat grid onsets, and enforce BT.709 limited range. |
+| **5. Audio-Visual Beat, J/L-Cut, & Loudness** | `media_beats`, `media_avsync`, FFprobe EBU R128 | Integrated loudness outside `-14.0 LUFS +- 1.0`, true peak `> -1.0 dBTP`, black/frozen segments `> 0`, `color_space != "bt709"` / `color_range != "tv"`, or zero diegetic/ambient SFX layers. | Re-normalize audio mix, layer diegetic foley + J/L-cuts, snap scene cuts to beat onsets, and enforce BT.709 limited range. |
+| **6. Montage Grammar, Shot Scale Contrast, & Eye-Trace** | `critique_montage` (`scene-graph.json` + saliency centroid check) | (a) Two adjacent scenes share both `shot_scale` and `camera_angle` (visual jump-cut); (b) All scenes have identical duration (lack of tension/release pacing contrast) or every single scene contains heavy text (zero pure sensory shots); or (c) Eye-trace focal point jumps `> 0.45` normalized distance across a match cut. | Vary `shot_scale` (`ECU -> MS -> CU -> WS`), include at least one sensory shot without text, and align focal points across match cuts. |
 
-### 6.3 Gate 2: Mandatory Multimodal Vision Rubric (6 Axes)
-Quantitative metrics alone cannot judge whether a 3D perfume bottle looks luxurious, whether the color palette evokes the right mood, or whether 3D typography is artistically integrated. Therefore, `ms critique` requires a signed **Vision Critique Report (`<project>/out/reports/vision-critique.json`)** evaluated by a capable vision model (`google/antigravity-gemini-3.8-flash` or main session native vision) after inspecting the extracted scene keyframes via `read`:
+### 6.3 Gate 2: Mandatory Multimodal Vision Rubric (7 Axes)
+Quantitative metrics alone cannot judge whether a 3D perfume bottle looks luxurious, whether the color palette evokes the right mood, or whether 3D typography is artistically integrated in Z-depth. Therefore, `ms critique` requires a signed **Vision Critique Report (`<project>/out/reports/vision-critique.json`)** evaluated by a capable vision model (`google/antigravity-gemini-3.8-flash` or main session native vision) after inspecting the extracted scene keyframes via `read`:
 
 ```json
 {
@@ -212,17 +244,18 @@ Quantitative metrics alone cannot judge whether a 3D perfume bottle looks luxuri
   "keyframes_inspected": ["out/storyboard/scene-01.png", "..."],
   "scores": {
     "three_d_object_and_environment_depth": 5,
-    "three_d_and_kinetic_typography_craft": 5,
-    "camera_choreography_and_motion_energy": 4,
+    "three_d_and_kinetic_typography_z_depth": 5,
+    "camera_choreography_speed_ramp_and_motion": 5,
+    "shot_scale_montage_and_eye_trace": 5,
     "color_palette_selection_and_harmony": 5,
-    "lighting_and_atmospheric_continuity": 5,
+    "chiaroscuro_lighting_and_optical_finish": 5,
     "conceptual_fit_to_brief": 5
   },
   "defects": [],
   "passed": true
 }
 ```
-- **Blocking Rule**: Every rubric axis is scored `1..5`. If `vision-critique.json` is absent, stale (older than the rendered file), has any axis score `< 4` (including `color_palette_selection_and_harmony`), or lists any unresolved visual defect, `ms critique` returns `ok: false` (exit code `1`) with defect category `"vision-rubric"`.
+- **Blocking Rule**: Every rubric axis is scored `1..5`. If `vision-critique.json` is absent, stale (older than the rendered file), has any axis score `< 4`, or lists any unresolved visual defect, `ms critique` returns `ok: false` (exit code `1`) with defect category `"vision-rubric"`.
 
 ---
 
@@ -232,14 +265,15 @@ Quantitative metrics alone cannot judge whether a 3D perfume bottle looks luxuri
 1. **Phase 1 — Repository Skill & Rule Contracts (`.agents/`)**:
    - Author `.agents/rules/architecture.md` and the six skills under `.agents/skills/` (`effectcraft-discovery`, `3d-product-cinematography`, `kinetic-3d-typography`, `visual-storyboarding`, `multimodal-critic-gate`, `feature-dev-workflow`).
    - Symlink the new skills into `~/.agents/skills/` and `~/.config/opencode/skills/`.
-2. **Phase 2 — Workspace Hygiene (`~/Projects` Cleanup) & Root Codebase Audit**:
+2. **Phase 2 — Workspace Hygiene (`~/Projects` Cleanup), Root Codebase Audit, & World-Class SFX/Foley Library**:
    - Delete all legacy directories inside `~/Projects/*` (`amv-demonslayer-3d`, `aura-noir-perfume`, `lumina-motion-v2`, `scr2026-*`) so zero polluted artifacts remain.
-   - Audit `src/media_studio/` against the Phase 1 skill contracts; retire `src/media_studio/promo.py` and `src/media_studio/cli/promo.py` (retaining a thin deprecation shim or migrating callers to `ms scene` / `ms storyboard` / `ms critique`).
+   - Audit `src/media_studio/` against the Phase 1 skill contracts; retire `src/media_studio/promo.py` and `src/media_studio/cli/promo.py`.
+   - Build and stage the **24+ CC0 48kHz World-Class Sound Design & Diegetic Foley Pack** (4 layers: Ambience/Drones, Product Diegetic Foley, Speed-Ramp Whooshes/Risers, Sub-Bass Drops/Impacts) in `src/media_studio/data/sfx/` with full `.license` sidecars and `sfx.yaml` entries, plus J-Cut/L-Cut mixing support in `src/media_studio/sfx.py`.
 3. **Phase 3 — Git Submodule `media-mcp` & Dual-Gate Critic (`src/media_studio/critique.py`)**:
-   - Add `submodules/media-mcp` and wire the 5 quantitative gates (including Color Palette Selection, WCAG Contrast, & CIELAB 60-30-10 Cluster Adherence) + Gate 2 6-Axis Vision Rubric validation into `ms critique`.
-4. **Phase 4 — 3D Scene Engine, 3D Typography Presets, & Scene-Graph Orchestrator**:
-   - Expand `src/media_studio/blender.py` with procedural/asset 3D product stage builders (glass/liquid/metal PBR shaders, studio pedestal, water droplets, HDRI lighting, and `slow-dolly-in` / `macro-surface-pan` / `orbital-reveal` camera rigs).
-   - Expand `src/media_studio/effectcraft.py` with true 3D & kinetic typography builders (`text-orbit-3d`, per-character 3D animators, `camera.newCamera`, `light.newLight`, `ec.stylize.cclightsweep`, `ec.stylize.glow`, `ec.sim.particleworld`).
+   - Add `submodules/media-mcp` and wire the 6 quantitative gates (Motion Anti-Hold, Anti-Boilerplate OCR, Image Quality, Color Palette 60-30-10 & CIELAB Delta-E, Audio/Beat/J-L Cut, and Montage Grammar/Shot Scale/Eye-Trace) + Gate 2 7-Axis Vision Rubric validation into `ms critique`.
+4. **Phase 4 — 3D Scene Engine, Z-Depth 3D Typography, Optical Finishing Pass, & Scene-Graph Orchestrator**:
+   - Expand `src/media_studio/blender.py` with 3D product stage builders (PBR glass/liquid/metal, pedestal, droplets, Chiaroscuro 3-point + volumetric lighting, 180-degree shutter motion blur, and `ECU/CU/MS/WS` speed-ramped camera rigs).
+   - Expand `src/media_studio/effectcraft.py` with Z-depth sandwiched 3D & kinetic typography (`text-orbit-3d`, per-character 3D animators, `sam2.1-hiera-base-plus` foreground matte sandwiching, `ec.stylize.cclightsweep`, `ec.stylize.glow`, `ec.blur.cameralens`, and Master LUT + 35mm grain finishing pass).
    - Implement `src/media_studio/scene_graph.py` (`ms scene`) and `src/media_studio/storyboard.py` (`ms storyboard`).
 5. **Phase 5 — Benchmark Proof (3D Luxury Perfume Commercial)**:
    - Build a clean 3D luxury perfume commercial project from scratch using the new workflow, stop at the iterated Visual Storyboard Gate to present `storyboard.png` to the user, and upon approval render the full 60fps dual-aspect video and pass Dual-Gate `ms critique`.
