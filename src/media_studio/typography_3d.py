@@ -125,12 +125,22 @@ def composite_z_depth_sandwich(
         return output_path
 
     # Video composite via FFmpeg filter_complex
-    if z_layer == "behind-subject" and matte_p and matte_p.is_file():
-        filter_spec = "[0:v][1:v]overlay=0:0[bg_txt];[bg_txt][2:v]overlay=0:0[outv]"
-        inputs = ["-i", str(bg_p), "-i", str(txt_p), "-i", str(matte_p)]
+    inputs = ["-i", str(bg_p)]
+    if txt_p.suffix.lower() in (".png", ".jpg", ".jpeg"):
+        inputs.extend(["-loop", "1", "-i", str(txt_p)])
     else:
-        filter_spec = "[0:v][1:v]overlay=0:0[outv]"
-        inputs = ["-i", str(bg_p), "-i", str(txt_p)]
+        inputs.extend(["-i", str(txt_p)])
+
+    if z_layer == "behind-subject" and matte_p and matte_p.is_file():
+        if matte_p.suffix.lower() in (".png", ".jpg", ".jpeg"):
+            inputs.extend(["-loop", "1", "-i", str(matte_p)])
+        else:
+            inputs.extend(["-i", str(matte_p)])
+        filter_spec = (
+            "[0:v][1:v]overlay=0:0:shortest=1[bg_txt];[bg_txt][2:v]overlay=0:0:shortest=1[outv]"
+        )
+    else:
+        filter_spec = "[0:v][1:v]overlay=0:0:shortest=1[outv]"
 
     if apply_optical_grade:
         filter_spec += ";[outv]noise=alls=3:allf=t+u,eq=contrast=1.04:saturation=1.02[final]"

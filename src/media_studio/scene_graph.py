@@ -12,11 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from PIL import Image, ImageDraw, ImageFont
+
 from media_studio import video
 from media_studio.manifest import Project
 from media_studio.reframe import OUTPUT_SIZE
 from media_studio.sfx import SfxCue, mix_transition_sfx
-from media_studio.stage_3d import Stage3DSpec, render_3d_stage_clip
+from media_studio.stage_3d import Stage3DSpec, render_3d_stage_clip, render_3d_stage_still
 from media_studio.typography_3d import (
     Typography3DSpec,
     composite_z_depth_sandwich,
@@ -143,11 +145,9 @@ def render_scene_clip(
             primary_color=primary,
             accent_color=accent,
         )
-        matte_mov = scratch / "matte.mov" if scene.typography_3d else None
         render_3d_stage_clip(
             stage_spec,
             bg_clip,
-            matte_mov=matte_mov,
             duration=scene.duration,
             fps=fps,
             width=width,
@@ -164,13 +164,51 @@ def render_scene_clip(
                 z_layer=str(scene.typography_3d.get("z_layer", "behind-subject")),
                 focal_point=scene.focal_point,
             )
-            # Create transparent typo overlay then composite
-            typo_mov = scratch / "typo.mp4"
-            shutil.copyfile(bg_clip, typo_mov)
+            # Create transparent typography overlay
+            typo_png = scratch / "typo.png"
+            txt_img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(txt_img)
+            tx = int(scene.focal_point[0] * width)
+            ty = int(scene.focal_point[1] * height)
+            font_size = max(24, int(height * 0.055))
+            f_main = ImageFont.load_default(size=font_size)
+            f_sub = ImageFont.load_default(size=int(font_size * 0.45))
+            ac_rgb = (245, 158, 11, 255)
+            for ox, oy in ((-2, -2), (2, -2), (-2, 2), (2, 2), (0, 3)):
+                draw.text(
+                    (tx + ox, ty + oy),
+                    typo_spec.text,
+                    fill=(0, 0, 0, 200),
+                    font=f_main,
+                    anchor="mm",
+                )
+            draw.text((tx, ty), typo_spec.text, fill=ac_rgb, font=f_main, anchor="mm")
+            if typo_spec.subtext:
+                draw.text(
+                    (tx, ty + int(font_size * 0.8)),
+                    typo_spec.subtext,
+                    fill=(248, 250, 252, 230),
+                    font=f_sub,
+                    anchor="mm",
+                )
+            txt_img.save(typo_png)
+
+            # Subject matte for behind-subject occlusion
+            matte_png = None
+            if typo_spec.z_layer == "behind-subject":
+                matte_png = scratch / "matte.png"
+                render_3d_stage_still(
+                    stage_spec,
+                    scratch / "dummy.png",
+                    matte_png=matte_png,
+                    width=width,
+                    height=height,
+                )
+
             composite_z_depth_sandwich(
                 bg_clip,
-                typo_mov,
-                matte_mov,
+                typo_png,
+                matte_png,
                 output_mp4,
                 z_layer=typo_spec.z_layer,
                 apply_optical_grade=True,
@@ -205,9 +243,16 @@ def render_scene_graph(
         for sc in graph.scenes:
             ckey = compute_scene_cache_key(project, sc, aspect=aspect, fps=fps)
             cached_mp4 = cache_dir / f"{ckey}.mp4"
-            should_render = force or not cached_mp4.is_file() or (scenes and sc.id in set(scenes))
+            if scenes:
+                should_render = (sc.id in set(scenes)) and (force or not cached_mp4.is_file())
+            else:
+                should_render = force or not cached_mp4.is_file()
 
             if should_render:
+                print(
+                    f"rendering {deliv} scene: {sc.id} ({sc.duration:.1f}s)...",
+                    flush=True,
+                )
                 render_scene_clip(
                     project, sc, cached_mp4, aspect=aspect, width=w, height=h, fps=fps
                 )
@@ -228,6 +273,7 @@ def render_scene_graph(
             elapsed += sc.duration
 
         # Concat video scenes
+        print(f"concatenating and mixing audio for {deliv}...", flush=True)
         final_mp4 = project.root / "out" / "video" / f"{deliv}.mp4"
         final_mp4.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="concat-", dir="/tmp/opencode") as c_dir:

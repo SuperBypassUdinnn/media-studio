@@ -290,7 +290,15 @@ def critique_project(
 
     # 2. Keyframes / Storyboard Gate
     sb_dir = project.root / "out" / "storyboard"
-    keyframe_stills = list(sb_dir.glob("scene-*.png")) if sb_dir.is_dir() else []
+    keyframe_stills = (
+        [
+            p
+            for p in sb_dir.glob("scene-*.png")
+            if not p.name.endswith(".matte.png") and not p.name.endswith(".typo.png")
+        ]
+        if sb_dir.is_dir()
+        else []
+    )
     if keyframe_stills:
         defects.extend(critique_palette(project, keyframe_stills))
 

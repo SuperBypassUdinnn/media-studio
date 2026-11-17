@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from media_studio.manifest import Project
 from media_studio.scene_graph import SceneGraph, SceneNode
@@ -60,12 +60,28 @@ def render_scene_keyframe(
         draw = ImageDraw.Draw(txt_img)
         tx = int(scene.focal_point[0] * width)
         ty = int(scene.focal_point[1] * height)
-        draw.text(
-            (tx, ty),
-            typo_spec.text,
-            fill=(245, 158, 11, 255),
-            anchor="mm",
-        )
+
+        font_size = max(24, int(height * 0.055))
+        f_main = ImageFont.load_default(size=font_size)
+        f_sub = ImageFont.load_default(size=int(font_size * 0.45))
+
+        ac_rgb = (245, 158, 11, 255)
+        # Drop shadow / glow behind text
+        for ox, oy in ((-2, -2), (2, -2), (-2, 2), (2, 2), (0, 3)):
+            draw.text(
+                (tx + ox, ty + oy), typo_spec.text, fill=(0, 0, 0, 200), font=f_main, anchor="mm"
+            )
+        draw.text((tx, ty), typo_spec.text, fill=ac_rgb, font=f_main, anchor="mm")
+
+        if typo_spec.subtext:
+            draw.text(
+                (tx, ty + int(font_size * 0.8)),
+                typo_spec.subtext,
+                fill=(248, 250, 252, 230),
+                font=f_sub,
+                anchor="mm",
+            )
+
         txt_img.save(typo_png)
 
         composite_z_depth_sandwich(
