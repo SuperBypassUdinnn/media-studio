@@ -78,6 +78,8 @@ from .motion import (
 from .presets import cmd_presets_list, cmd_presets_search, cmd_presets_show, register_presets_parser
 from .project import cmd_project_init, cmd_project_validate, register_project_parser
 from .promo import register_promo_parser
+from .scene import register_scene_parser
+from .storyboard import register_storyboard_parser
 from .three_d import (
     annotate_output,
     cmd_3d_convert,
@@ -175,6 +177,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_gen_parser(subparsers)
     register_promo_parser(subparsers)
     register_critique_parser(subparsers)
+    register_scene_parser(subparsers)
+    register_storyboard_parser(subparsers)
 
     return parser
 
