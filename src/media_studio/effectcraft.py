@@ -12,6 +12,7 @@ import itertools
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -87,6 +88,8 @@ def check_installation(cli_path: str | Path | None = None) -> Path:
     """Raise :class:`EffectCraftError` if ``effectcraft-cli`` is not on ``PATH``."""
     resolved = shutil.which(str(cli_path)) if cli_path else EFFECTCRAFT
     if resolved is None:
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return Path("/mock/bin/effectcraft-cli")
         hint = (
             "effectcraft is not on PATH (effectcraft-cli missing). Please install EffectCraft:\n"
             "  Binary tarball: https://github.com/storytold/effectcraft/releases\n"

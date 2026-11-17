@@ -1125,6 +1125,7 @@ def test_encode_with_loudness_carries_youtube_bitrate_and_bt709(tmp_path, monkey
         return subprocess.CompletedProcess(args=command, returncode=0)
 
     monkeypatch.setattr(video.media, "run_command", fake_run_command)
+    monkeypatch.setattr(video.media, "detect_nvenc_available", lambda: True)
     monkeypatch.setattr(
         video.media,
         "measure_loudness",

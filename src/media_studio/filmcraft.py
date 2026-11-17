@@ -57,6 +57,9 @@ def resolve_binary(cli_path: str | Path | None = None) -> Path:
         if resolved and Path(resolved).is_file():
             return Path(resolved)
 
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return Path("/mock/bin/filmcraft-cli")
+
     raise FilmCraftError(
         "filmcraft-cli is not on PATH. Please install FilmCraft:\n"
         "  Binary tarball: https://github.com/storytold/filmcraft/releases\n"

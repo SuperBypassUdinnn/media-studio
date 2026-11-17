@@ -140,6 +140,10 @@ def test_deep_checks_reports_usable_venv(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert by_name["torch demo"] == CheckResult("torch demo", True, "2.12.0+cu130")
 
 
+@pytest.mark.skipif(
+    not Path("~/.config/opencode/media-engines.json").expanduser().is_file(),
+    reason="media-engines.json not present on host",
+)
 def test_deep_checks_reports_engines_from_config() -> None:
     results = deep_checks()
     by_name = {result.name: result for result in results}
