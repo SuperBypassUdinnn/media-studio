@@ -135,6 +135,43 @@ def register_motion_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     motion_new.set_defaults(func=cmd_motion_new)
 
+    motion_catalog = motion_sub.add_parser(
+        "catalog", help="list built-in EffectCraft effects and templates"
+    )
+    motion_catalog.add_argument(
+        "--category", default=None, help="filter effects by category (e.g. stylize, color, blur)"
+    )
+    motion_catalog.add_argument(
+        "--templates", action="store_true", help="list built-in templates instead of effects"
+    )
+    motion_catalog.add_argument(
+        "--json", action="store_true", help="emit output as machine-readable JSON"
+    )
+    motion_catalog.set_defaults(func=cmd_motion_catalog)
+
+
+def cmd_motion_catalog(args: argparse.Namespace) -> int:
+    """List built-in EffectCraft effects and templates."""
+    from media_studio.effectcraft_catalog import list_effects, list_templates
+
+    items = list_templates() if args.templates else list_effects(category=args.category)
+
+    if args.json:
+        json.dump(items, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return EXIT_OK
+
+    title = (
+        "EffectCraft Templates"
+        if args.templates
+        else f"EffectCraft Effects ({args.category or 'All'})"
+    )
+    print(f"=== {title} ===")
+    for item in items:
+        desc = item.get("description", "")
+        print(f"  {item['id']:<28} {item['name']:<22} {desc}")
+    return EXIT_OK
+
 
 def cmd_motion_new(args: argparse.Namespace) -> int:
     """Scaffold a brand-tokenised EffectCraft composition from a template."""
