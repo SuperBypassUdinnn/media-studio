@@ -17,10 +17,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install system dependencies (FFmpeg, Inkscape)
+      - name: Install system dependencies (FFmpeg, Inkscape, Melt, Potrace, DejaVu Fonts)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg inkscape
+          sudo apt-get install -y ffmpeg inkscape melt potrace fonts-dejavu-core
+          mkdir -p /tmp/opencode
       - name: Install Python Linters & Test tools
         run: |
           python -m pip install --upgrade pip

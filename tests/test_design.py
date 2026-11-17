@@ -19,7 +19,17 @@ from media_studio.ledger import stage_asset
 from media_studio.manifest import ManifestError, load_project
 from media_studio.project import scaffold_project
 
-DEJAVU = Path("/usr/share/fonts/TTF/DejaVuSans.ttf")
+DEJAVU = next(
+    (
+        p
+        for p in (
+            Path("/usr/share/fonts/TTF/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        )
+        if p.is_file()
+    ),
+    Path("/usr/share/fonts/TTF/DejaVuSans.ttf"),
+)
 MANIFEST = """slug: design-demo
 title: Design Demo
 deliverables:

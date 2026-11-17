@@ -326,6 +326,7 @@ def test_binding_refuses_an_empty_or_missing_map(cube: Path, tmp_path: Path) -> 
         materials.bind(tmp_path / "absent.obj", {"base_color": tmp_path / "absent.png"})
 
 
+@blender_required
 def test_cli_reports_the_binding(
     tmp_path: Path, cube: Path, maps: dict[str, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -375,6 +376,7 @@ def test_cli_reports_the_binding(
     assert (Path(root) / "out" / "reports" / "cube-material-qc.json").is_file()
 
 
+@blender_required
 def test_cli_writes_a_report_that_names_the_licence(
     tmp_path: Path, cube: Path, maps: dict[str, Path]
 ) -> None:

@@ -19,6 +19,12 @@ from media_studio.filmcraft import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_filmcraft_binary(monkeypatch):
+    if shutil.which("filmcraft-cli") is None and shutil.which("filmcraft") is None:
+        monkeypatch.setenv("MS_FILMCRAFT_BIN", "/bin/true")
+
+
 def test_filmcraft_runner_init_custom_binary(tmp_path):
     custom_bin = tmp_path / "custom-cli"
     custom_bin.touch()

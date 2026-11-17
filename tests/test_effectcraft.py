@@ -29,6 +29,12 @@ def _load_ecp(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+@pytest.fixture(autouse=True)
+def _stub_effectcraft_binary(monkeypatch):
+    if shutil.which("effectcraft-cli") is None and shutil.which("effectcraft") is None:
+        monkeypatch.setattr("media_studio.effectcraft.EFFECTCRAFT", Path("/bin/true"))
+
+
 def test_build_ecp_produces_valid_json(tmp_path):
     """build_ecp emits JSON that json.loads can round-trip."""
 

@@ -7,8 +7,11 @@ the report publishes, so a passing test means the geometry was actually inspecte
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from media_studio.cli import main
 from media_studio.ledger import stage_asset
@@ -101,6 +104,7 @@ def test_a_full_bleed_logo_fails_the_clear_space_check(tmp_path: Path) -> None:
     assert any("clear space" in problem for problem in report.problems)
 
 
+@pytest.mark.skipif(shutil.which("potrace") is None, reason="potrace not installed")
 def test_a_raster_logo_is_traced_before_derivation(tmp_path: Path) -> None:
     project = load_project(_logo_project(tmp_path, raster=True))
     report = logo_kit(project, sizes=(64,))
@@ -117,6 +121,7 @@ def test_design_logo_cli_prints_sheet_and_exits_ok(tmp_path: Path) -> None:
     json.loads(captured.read_text(encoding="utf-8"))
 
 
+@pytest.mark.skipif(shutil.which("potrace") is None, reason="potrace not installed")
 def test_design_logo_cli_raster_exits_ok_with_note(tmp_path: Path, capsys) -> None:
     project = load_project(_logo_project(tmp_path, raster=True))
     exit_code = main(["design", "logo", str(project.root)])
