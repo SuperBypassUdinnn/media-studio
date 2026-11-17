@@ -205,10 +205,6 @@ if bsdf_obs:
     bsdf_obs.inputs['Base Color'].default_value = (0.002, 0.002, 0.003, 1.0)
     bsdf_obs.inputs['Roughness'].default_value = 0.02
     bsdf_obs.inputs['Metallic'].default_value = 0.05
-    if 'Specular IOR Level' in bsdf_obs.inputs:
-        bsdf_obs.inputs['Specular IOR Level'].default_value = 0.5
-    elif 'Specular' in bsdf_obs.inputs:
-        bsdf_obs.inputs['Specular'].default_value = 0.5
     if 'IOR' in bsdf_obs.inputs:
         bsdf_obs.inputs['IOR'].default_value = 1.50
 
@@ -404,6 +400,7 @@ elif '{spec.camera_angle}' == 'high-zenith':
 
 cam_data = bpy.data.cameras.new("CinematicCamera")
 cam_data.lens = {spec.focal_length_mm}
+cam_data.sensor_fit = 'HORIZONTAL'
 cam_data.dof.use_dof = True
 cam_data.dof.aperture_fstop = {spec.dof_fstop}
 cam_data.dof.focus_distance = math.dist(cam_loc, target.location)
@@ -554,14 +551,16 @@ def render_3d_stage_clip(
     """Render a 60fps 3D stage clip with camera motion and speed ramping."""
     output_mp4 = Path(output_mp4)
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
-    frames = max(1, int(duration * fps))
+    sim_fps = min(fps, 12)
+    frames = max(2, round(duration * sim_fps))
 
-    # Render image sequence in temp scratch then encode via NVENC/libx264
     with tempfile.TemporaryDirectory(prefix="b3d-", dir="/tmp/opencode") as scratch_dir:
         scratch = Path(scratch_dir)
         render_script = (
             build_blender_stage_script(spec, frames=frames)
             + f"""
+if hasattr(scene, 'eevee') and hasattr(scene.eevee, 'taa_render_samples'):
+    scene.eevee.taa_render_samples = 12
 scene.render.resolution_x = {width}
 scene.render.resolution_y = {height}
 scene.frame_start = 1
@@ -572,16 +571,19 @@ bpy.ops.render.render(animation=True)
         )
         blender.run_script(render_script, use_gpu=True)
 
-        # Encode image sequence to MP4
         cmd = [
             "ffmpeg",
             "-y",
             "-v",
             "error",
             "-framerate",
-            str(fps),
+            str(sim_fps),
             "-i",
             str(scratch / "frame_%04d.png"),
+            "-r",
+            str(fps),
+            "-t",
+            f"{duration:.6f}",
             "-c:v",
             "libx264",
             "-pix_fmt",
