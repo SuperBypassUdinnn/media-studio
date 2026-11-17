@@ -77,9 +77,9 @@ bpy.ops.object.text_add(location=(0, {y_pos}, {z_pos}))
 title_3d = bpy.context.active_object
 title_3d.name = "Scene3DTitle"
 title_3d.data.body = "{typo_text}"
-title_3d.data.extrude = 0.04
-title_3d.data.bevel_depth = 0.008
-title_3d.data.bevel_resolution = 3
+title_3d.data.extrude = 0.16
+title_3d.data.bevel_depth = 0.015
+title_3d.data.bevel_resolution = 4
 title_3d.data.align_x = 'CENTER'
 title_3d.data.align_y = 'CENTER'
 title_3d.data.space_character = {tracking}
@@ -98,8 +98,8 @@ bpy.ops.object.text_add(location=(0, {y_pos}, {sub_z}))
 sub_3d = bpy.context.active_object
 sub_3d.name = "Scene3DSub"
 sub_3d.data.body = "{typo_sub}"
-sub_3d.data.extrude = 0.02
-sub_3d.data.bevel_depth = 0.004
+sub_3d.data.extrude = 0.08
+sub_3d.data.bevel_depth = 0.008
 sub_3d.data.align_x = 'CENTER'
 sub_3d.data.align_y = 'CENTER'
 sub_3d.data.space_character = 1.40
@@ -193,13 +193,13 @@ obs_mat = bpy.data.materials.new("ObsidianGlass")
 obs_mat.use_nodes = True
 bsdf_obs = obs_mat.node_tree.nodes.get("Principled BSDF")
 if bsdf_obs:
-    bsdf_obs.inputs['Base Color'].default_value = (0.008, 0.010, 0.014, 1.0)
-    bsdf_obs.inputs['Roughness'].default_value = 0.03
+    bsdf_obs.inputs['Base Color'].default_value = (0.002, 0.002, 0.003, 1.0)
+    bsdf_obs.inputs['Roughness'].default_value = 0.02
     bsdf_obs.inputs['Metallic'].default_value = 0.05
     if 'Specular IOR Level' in bsdf_obs.inputs:
-        bsdf_obs.inputs['Specular IOR Level'].default_value = 0.95
+        bsdf_obs.inputs['Specular IOR Level'].default_value = 0.5
     elif 'Specular' in bsdf_obs.inputs:
-        bsdf_obs.inputs['Specular'].default_value = 0.95
+        bsdf_obs.inputs['Specular'].default_value = 0.5
     if 'IOR' in bsdf_obs.inputs:
         bsdf_obs.inputs['IOR'].default_value = 1.50
 
@@ -337,17 +337,17 @@ scene.collection.objects.link(target)
 target.location = (0, 0, 0.58)
 
 if '{spec.shot_scale}' == 'ECU':
-    target.location = (0.0, -0.36, 0.55)
-    cam_loc = (0.0, -2.4, 0.65)
-elif '{spec.shot_scale}' == 'CU':
     target.location = (0.0, 0.0, 0.85)
-    cam_loc = (0.0, -2.8, 1.05)
+    cam_loc = (0.0, -2.0, 1.05)
+elif '{spec.shot_scale}' == 'CU':
+    target.location = (0.0, 0.0, 0.70)
+    cam_loc = (0.0, -3.0, 0.95)
 elif '{spec.shot_scale}' == 'WS':
     target.location = (0.0, 0.0, 0.55)
-    cam_loc = (0.0, -6.8, 1.2)
+    cam_loc = (0.0, -5.8, 1.1)
 else:  # MS
-    target.location = (0.0, 0.0, 0.58)
-    cam_loc = (0.0, -3.8, 0.80)
+    target.location = (0.0, 0.0, 0.65)
+    cam_loc = (0.0, -3.6, 0.85)
 
 if '{spec.camera_angle}' == 'low-hero':
     cam_loc = (cam_loc[0], cam_loc[1] * 0.95, cam_loc[2] * 0.70)
@@ -378,8 +378,8 @@ strip_l.size = 0.15
 strip_l.size_y = 2.4
 strip_l.color = (1.0, 0.95, 0.90)
 strip_l_obj = bpy.data.objects.new("StripL", strip_l)
-strip_l_obj.location = (-1.5, -1.8, 0.9)
-strip_l_obj.rotation_euler = (math.radians(70.0), 0.0, math.radians(-35.0))
+strip_l_obj.location = (-2.4, -0.2, 0.85)
+strip_l_obj.rotation_euler = (math.radians(80.0), 0.0, math.radians(-75.0))
 scene.collection.objects.link(strip_l_obj)
 
 # Right Strip Light (Warm Amber)
@@ -389,22 +389,35 @@ strip_r.size = 0.15
 strip_r.size_y = 2.4
 strip_r.color = (1.0, 0.82, 0.35)
 strip_r_obj = bpy.data.objects.new("StripR", strip_r)
-strip_r_obj.location = (1.6, -1.8, 0.9)
-strip_r_obj.rotation_euler = (math.radians(70.0), 0.0, math.radians(35.0))
+strip_r_obj.location = (2.4, -0.2, 0.85)
+strip_r_obj.rotation_euler = (math.radians(80.0), 0.0, math.radians(75.0))
 scene.collection.objects.link(strip_r_obj)
 
-# Plaque Soft Key Light
+# Plaque Soft Focused Key Spot
 plaque_spot = bpy.data.lights.new("PlaqueSpot", type='SPOT')
-plaque_spot.energy = 160.0
-plaque_spot.spot_size = math.radians(45.0)
-plaque_spot.color = (1.0, 0.92, 0.82)
+plaque_spot.energy = 320.0
+plaque_spot.spot_size = math.radians(22.0)
+plaque_spot.color = (1.0, 0.94, 0.86)
 plaque_spot_obj = bpy.data.objects.new("PlaqueSpot", plaque_spot)
-plaque_spot_obj.location = (0.6, -2.4, 1.2)
+plaque_spot_obj.location = (0.5, -2.4, 1.1)
 scene.collection.objects.link(plaque_spot_obj)
 plaque_spot_track = plaque_spot_obj.constraints.new(type='TRACK_TO')
 plaque_spot_track.target = target
 plaque_spot_track.track_axis = 'TRACK_NEGATIVE_Z'
 plaque_spot_track.up_axis = 'UP_Y'
+
+# 3D Text Extrusion Depth Accent Light
+text_light = bpy.data.lights.new("TextExtrudeLight", type='SPOT')
+text_light.energy = 450.0
+text_light.spot_size = math.radians(65.0)
+text_light.color = (1.0, 0.88, 0.50)
+text_light_obj = bpy.data.objects.new("TextExtrudeLight", text_light)
+text_light_obj.location = (2.2, 0.6, 1.8)
+scene.collection.objects.link(text_light_obj)
+text_light_track = text_light_obj.constraints.new(type='TRACK_TO')
+text_light_track.target = target
+text_light_track.track_axis = 'TRACK_NEGATIVE_Z'
+text_light_track.up_axis = 'UP_Y'
 
 # High Rim Spot
 rim = bpy.data.lights.new("RimSpot", type='SPOT')

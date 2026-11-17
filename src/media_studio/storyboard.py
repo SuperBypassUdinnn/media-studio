@@ -55,6 +55,10 @@ def build_visual_storyboard(
     """Build a visual bento contact sheet (>= 85% area is rendered visual image)."""
     sb_dir = project.root / "out" / "storyboard"
     sb_dir.mkdir(parents=True, exist_ok=True)
+    for legacy_f in sb_dir.glob("*.matte.png"):
+        legacy_f.unlink(missing_ok=True)
+    for legacy_f in sb_dir.glob("*.typo.png"):
+        legacy_f.unlink(missing_ok=True)
     out_sheet = output or (sb_dir / "storyboard.png")
 
     rendered_scenes: list[tuple[SceneNode, Path]] = []
