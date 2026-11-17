@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -31,12 +30,6 @@ from media_studio.manifest import (
     TitleText,
     VideoPlan,
 )
-
-
-@pytest.fixture(autouse=True)
-def _stub_filmcraft_binary(monkeypatch: pytest.MonkeyPatch) -> None:
-    if shutil.which("filmcraft-cli") is None and shutil.which("filmcraft") is None:
-        monkeypatch.setenv("MS_FILMCRAFT_BIN", "/bin/true")
 
 
 def test_db_from_gain() -> None:
