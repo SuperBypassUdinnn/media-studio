@@ -20,6 +20,8 @@ MAGICK = "magick"
 TIMEOUT_SECONDS = 3600
 OUTPUT_TAIL = 1200
 LOUDNESS_JSON = re.compile(r"\{\s*\"input_i\".*?\}", re.DOTALL)
+NVENC_CODEC = "h264_nvenc"
+_NVENC_CACHE: bool | None = None
 
 
 class MediaError(RuntimeError):
@@ -89,6 +91,30 @@ def run_command(
     if expect_stdout and not completed.stdout.strip():
         raise MediaError(f"{label} produced no output")
     return completed
+
+
+def detect_nvenc_available() -> bool:
+    """Return True when FFmpeg advertises the ``h264_nvenc`` encoder.
+
+    Probes ``ffmpeg -encoders`` once and caches the result in-memory so
+    repeated calls are cheap. A missing FFmpeg binary counts as unavailable.
+    """
+
+    global _NVENC_CACHE
+    if _NVENC_CACHE is not None:
+        return _NVENC_CACHE
+    try:
+        completed = subprocess.run(
+            [FFMPEG, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        _NVENC_CACHE = completed.returncode == 0 and NVENC_CODEC in completed.stdout
+    except (OSError, subprocess.SubprocessError):
+        _NVENC_CACHE = False
+    return _NVENC_CACHE
 
 
 def probe(path: Path) -> MediaInfo:

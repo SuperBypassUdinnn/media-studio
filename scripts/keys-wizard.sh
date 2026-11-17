@@ -28,6 +28,8 @@ PROVIDERS=(
   "SKETCHFAB_API_TOKEN|Sketchfab|3D models (download requires a token)|https://sketchfab.com/settings/password|required"
   "UNSPLASH_ACCESS_KEY|Unsplash|photography and textures|https://unsplash.com/oauth/applications|optional:the stocky skill uses it, the ms CLI does not"
   "BLENDERKIT_API_KEY|BlenderKit|Blender material and model library|https://www.blenderkit.com/account/|optional:only needed for BlenderKit downloads"
+  "GEMINI_API_KEY|Google AI Studio|Imagen / Veo generative images and video|https://aistudio.google.com/app/apikey|optional:free-quota generative layer, skipped without a key"
+  "HF_TOKEN|Hugging Face|inference API image generation|https://huggingface.co/settings/tokens|optional:free-quota generative layer, skipped without a key"
   "PEXELS_API_KEY|Pexels|video and photo clips|https://www.pexels.com/api/new/|deferred:account suspended by the provider, key creation unavailable"
 )
 

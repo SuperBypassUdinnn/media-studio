@@ -4,7 +4,9 @@ A headless, script-driven media production toolkit for the OpenCode agent on thi
 video and audio editing, 3D model editing and rendering, graphic design, and acquisition of
 free licensed assets.
 
-Status: phase 0 complete, phase 1 started. The authoritative specification is
+Status: phase 0 complete, phase 1 complete. All phase 1 paths (assets, video, design) have
+landed; the remaining work is a downloaded preset pack staged through the ledger, and the
+phase 3 `scr2026` baseline. The authoritative specification is
 [`docs/design.md`](docs/design.md).
 
 Phase 0 ships the project convention and the environment gate: `ms doctor`, `ms project init`,
@@ -19,8 +21,7 @@ Wikimedia Commons, Internet Archive) with keyed providers on top (Pixabay, Frees
 provider without a key is reported as skipped, not failed. Credentials are read from the
 environment and then `~/.config/opencode/secrets.env`, always masked. The video path is in as well: `ms video render` authors MLT XML, renders it with `melt`, encodes
 with a two-pass `loudnorm` onto the project's loudness target, derives music ducking from the
-voice track, and writes an `ffprobe`-measured QC report plus a contact sheet. The 3D and design
-paths, footage triage, and the preset library are still open.
+voice track, and writes an `ffprobe`-measured QC report plus a contact sheet. A downloaded preset pack staged through the ledger, and the phase 3 `scr2026` baseline, remain open.
 
 ## What it provides
 
@@ -29,7 +30,7 @@ paths, footage triage, and the preset library are still open.
 | Video and audio | MLT XML generation rendered by `melt`, FFmpeg encoding, loudness normalization, music ducking, ffprobe QC |
 | Footage triage | Local index and ranking first, batched contact sheets for the model, cached decisions |
 | 3D | Blender CLI plus a headless Blender MCP, `gltf-transform`, `trimesh`/`pymeshlab` conversion and repair, GPU render and QC |
-| Design | Brand tokens, SVG templates, Inkscape and ImageMagick export, legibility and overflow checks |
+| Design | Brand tokens, SVG templates, Inkscape and ImageMagick export, legibility and overflow checks; the declarative `design svg build` builder, the two-stage tracer (`design svg trace`, engine auto prefers vtracer and falls back to potrace), the compare loop with diff metrics (`design svg compare`), and the logo derivative kit (`design logo`) |
 | Assets | Self-hosted 3D aggregator plus in-house clients for video, audio, music, images, icons, and fonts, with per-asset license sidecars |
 | Presets | Engine-native transitions, video and audio effects, 3D node groups, and title styles in a searchable registry |
 | Audio neural | DeepFilterNet denoise and demucs stem separation behind one wrapper CLI |
@@ -63,6 +64,11 @@ uv venv && uv pip install -e . pytest        # once, inside the checkout
 .venv/bin/python -m media_studio.cli video ingest ~/Projects/my-project/assets/video \
   --out ~/Projects/my-project/media --profile proxy    # DNxHR for free Linux Resolve
 .venv/bin/python -m media_studio.cli video scenes clip.mp4             # find hard cuts
+.venv/bin/python -m media_studio.cli design render my-project         # variants, Inkscape export, checks, contact sheet, QC report
+.venv/bin/python -m media_studio.cli design svg build --spec spec.json --out out.svg --base logo.svg --export png --check   # declarative SVG spec -> SVG, with --export/--check/--sheet and --base patching
+.venv/bin/python -m media_studio.cli design svg trace logo.png --out logo.svg                                      # PNG -> layered SVG (engine auto: vtracer when installed, potrace fallback)
+.venv/bin/python -m media_studio.cli design svg compare logo.png logo.svg --out compare.png                          # source vs SVG: diff metrics + three-panel sheet
+.venv/bin/python -m media_studio.cli design logo my-project                                                          # logo derivative kit: variants, size ladder, clear-space check
 .venv/bin/python -m media_studio.cli video remove-bg clip.mp4 \
   --select 850,280 --feather 2                         # SAM 2 alpha ProRes 4444
 .venv/bin/python -m media_studio.cli video beats music.wav --out beats.json
@@ -83,6 +89,8 @@ bash scripts/selftest.sh
 Blender 5.2.2 LTS, FFmpeg 7.0.2, melt 7.42.0 with Kdenlive 26.08.2, Inkscape 1.4.4,
 ImageMagick 7.1.2, Node 26, Python 3.14, and the existing torch virtualenvs under
 `~/.clone/Github/DeepFilterNet` and `~/.clone/Github/ultimatevocalremovergui`.
+Colour tracing prefers vtracer when it is installed (`uv pip install -e '.[vector]'`);
+potrace is the zero-dependency fallback.
 
 ## Non-goals
 

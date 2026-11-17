@@ -1,0 +1,21 @@
+id: design-poster-a3
+title: Poster A3
+kind: design
+engine: inkscape
+intent: [poster, print, a3]
+applies_to: [design]
+summary: An A3 poster design built on the poster-a3 template.
+implementation:
+  template: poster-a3
+  size: 3508x4961
+parameters:
+  - name: headline
+    type: string
+    default: "Headline"
+    description: The main message on the poster.
+  - name: subhead
+    type: string
+    default: "Subhead"
+    description: The supporting line below the headline.
+license: CC0-1.0
+provenance: media-studio templates/design/poster-a3.svg; 3508x4961 verified by test

@@ -22,9 +22,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import audio
+from . import audio, media
 from .filmcraft import FilmCraftError, FilmCraftRunner
-from .manifest import Deliverable, Project, parse_resolution
+from .manifest import AudioCue, Deliverable, Project, audio_span, parse_resolution
 
 TICKS_PER_SECOND = 254_016_000_000
 DEFAULT_SEQUENCE_ID = 7  # FilmCraft assigns sequence id 7 to the first newSequence
@@ -44,6 +44,19 @@ def db_from_gain(gain: float) -> float:
 def ticks_from_seconds(seconds: float) -> int:
     """Convert seconds to integer FilmCraft ticks."""
     return round(seconds * TICKS_PER_SECOND)
+
+
+def _cue_span(project: Project, cue: AudioCue, video_seconds: float) -> float | None:
+    """Seconds to place for a cue, clamped to the edit and to what the source has left."""
+
+    relative = project.assets.get(cue.asset)
+    source_seconds: float | None = None
+    if relative:
+        try:
+            source_seconds = media.probe(project.root / relative).duration
+        except media.MediaError:
+            source_seconds = None
+    return audio_span(cue, video_seconds, source_seconds)
 
 
 def seconds_from_ticks(ticks: int | float) -> float:
@@ -387,6 +400,12 @@ class TimelineCompiler:
         cur_timeline_seconds = 0.0
 
         if project.video:
+            # Total picture length: the declared deliverable duration, or the shot chain.
+            video_seconds: float | None = deliverable.duration
+            if video_seconds is None:
+                video_seconds = sum(
+                    (shot.duration or DEFAULT_SHOT_SECONDS) for shot in project.video.shots
+                )
             # A-Roll Video Shots on V1
             for shot in project.video.shots:
                 item_id = imported_items.get(shot.asset)
@@ -496,19 +515,18 @@ class TimelineCompiler:
             if project.video.music:
                 music_item = imported_items.get(project.video.music.asset)
                 if music_item is not None:
-                    assembly_commands.append(
-                        {
-                            "id": "timeline.place",
-                            "params": {
-                                "item": music_item,
-                                "track": "A2",
-                                "seconds": 0.0,
-                                "sourceIn": {"seconds": float(project.video.music.in_point)},
-                                "video": False,
-                                "audio": True,
-                            },
-                        }
-                    )
+                    music_span = _cue_span(project, project.video.music, float(video_seconds))
+                    place_params: dict[str, Any] = {
+                        "item": music_item,
+                        "track": "A2",
+                        "seconds": 0.0,
+                        "sourceIn": {"seconds": float(project.video.music.in_point)},
+                        "video": False,
+                        "audio": True,
+                    }
+                    if music_span is not None:
+                        place_params["duration"] = {"seconds": music_span}
+                    assembly_commands.append({"id": "timeline.place", "params": place_params})
                     # Apply music gain via mixer strip
                     gain_db = db_from_gain(project.video.music.gain)
                     assembly_commands.append(

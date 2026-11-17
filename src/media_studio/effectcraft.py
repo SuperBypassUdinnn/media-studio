@@ -8,8 +8,10 @@ keyframed properties, frame previews, and headless alpha ProRes 4444 / WebM VP9 
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -17,6 +19,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from media_studio.manifest import Project
 
 logger = logging.getLogger(__name__)
 
@@ -492,6 +496,9 @@ def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
                 if params.get(optional) is not None:
                     text_params[optional] = params[optional]
             cmds.append({"id": "layer.newText", "params": text_params})
+            layer_name = text_params.get("name")
+            if layer_name and params.get("keyframes"):
+                cmds.extend(_keyframe_commands(layer_name, params["keyframes"]))
             # Apply outer glow when the layer requests it (AMV cyber titles,
             # etc.). glow_intensity is recorded in the spec; the engine's
             # outerGlow command carries no intensity parameter, so it is
@@ -518,14 +525,34 @@ def _compile_spec_to_ecproj(spec_path: Path, ecproj_path: Path) -> None:
                 if params.get(optional) is not None:
                     solid_params[optional] = params[optional]
             cmds.append({"id": "layer.newSolid", "params": solid_params})
-            if params.get("opacity") is not None:
+            layer_name = solid_params.get("name", "Solid")
+            if params.get("position") is not None and not params.get("keyframes", {}).get(
+                "position"
+            ):
+                cmds.append(
+                    {
+                        "id": "layer.setTransform",
+                        "params": {
+                            "layers": [layer_name],
+                            "prop": "position",
+                            "value": params["position"],
+                        },
+                    }
+                )
+            if params.get("keyframes"):
+                cmds.extend(_keyframe_commands(layer_name, params["keyframes"]))
+            if params.get("opacity") is not None and not params.get("keyframes", {}).get("opacity"):
                 layer_name = solid_params.get("name", "Solid")
                 raw_op = float(params["opacity"])
                 opacity_val = raw_op * 100.0 if raw_op <= 1.0 else raw_op
                 cmds.append(
                     {
                         "id": "layer.setTransform",
-                        "params": {"layers": [layer_name], "prop": "opacity", "value": opacity_val},
+                        "params": {
+                            "layers": [layer_name],
+                            "prop": "opacity",
+                            "value": opacity_val,
+                        },
                     }
                 )
 
@@ -796,6 +823,756 @@ AMV_MOTION_PRESETS: dict[str, dict[str, Any]] = {
 }
 
 
+#: Default colour tokens used when no project brand is supplied.
+PROMO_DEFAULT_PALETTE: dict[str, str] = {
+    "primary": "#3b82f6",
+    "accent": "#22d3ee",
+    "ink": "#f8fafc",
+}
+PROMO_DEFAULT_FONT = "Noto Sans"
+
+#: Promo-tailored motion graphics presets. Geometry is expressed as fractions of
+#: the canvas (positions, widths, heights and font sizes in ``[0, 1]``) so every
+#: preset scales cleanly from ``width`` and ``height`` for both 1080x1920 (9:16)
+#: and 1920x1080 (16:9). Colours and fonts reference brand tokens
+#: (``{primary}``, ``{accent}``, ``{ink}``, ``{heading}``, ``{body}``) which
+#: :func:`render_promo_preset` resolves from ``project.brand`` when a project is
+#: supplied, falling back to the defaults above otherwise.
+PROMO_MOTION_PRESETS: dict[str, dict[str, Any]] = {
+    "promo-hook-slam": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 3.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "hook-pill",
+                "params": {
+                    "color": "{accent}",
+                    "opacity": 0.10,
+                    "width": 0.92,
+                    "height": 0.06,
+                    "position": [0.5, 0.28],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.5, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "back-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.10, "v": 0.10, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "text",
+                "name": "title",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.075,
+                    "color": "{ink}",
+                    "position": [0.5, 0.42],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 1.5, "ease": "back-out"},
+                            {"t": 0.15, "v": 0.96, "ease": "back-out"},
+                            {"t": 0.35, "v": 1.0, "ease": "back-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "linear"},
+                            {"t": 0.10, "v": 1.0, "ease": "linear"},
+                            {"t": 2.80, "v": 1.0, "ease": "linear"},
+                            {"t": 3.00, "v": 0.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+        ],
+    },
+    "promo-kinetic-callout": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 3.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "accent-rule",
+                "params": {
+                    "color": "{accent}",
+                    "width": 0.006,
+                    "height": 0.28,
+                    "position": [0.15, 0.45],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "text",
+                "name": "title",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.045,
+                    "color": "{ink}",
+                    "justify": "left",
+                    "position": [0.18, 0.40],
+                    "keyframes": {
+                        "position": [
+                            {"t": 0.0, "v": [0.14, 0.40], "ease": "expo-out"},
+                            {"t": 0.30, "v": [0.18, 0.40], "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "text",
+                "name": "subhead",
+                "text_role": "subtext",
+                "params": {
+                    "text": "{subtext}",
+                    "font": "{body}",
+                    "font_size": 0.026,
+                    "color": "{accent}",
+                    "justify": "left",
+                    "position": [0.18, 0.54],
+                    "keyframes": {
+                        "position": [
+                            {"t": 0.0, "v": [0.14, 0.54], "ease": "expo-out"},
+                            {"t": 0.30, "v": [0.18, 0.54], "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+        ],
+    },
+    "promo-metric-badge": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 3.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "badge-pill",
+                "params": {
+                    "color": "{primary}",
+                    "opacity": 0.92,
+                    "width": 0.70,
+                    "height": 0.17,
+                    "position": [0.5, 0.40],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "back-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.30, "v": 0.92, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "text",
+                "name": "counter",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.130,
+                    "color": "{ink}",
+                    "position": [0.5, 0.40],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "back-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.35, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "text",
+                "name": "unit",
+                "text_role": "subtext",
+                "params": {
+                    "text": "{subtext}",
+                    "font": "{body}",
+                    "font_size": 0.040,
+                    "color": "{ink}",
+                    "position": [0.5, 0.57],
+                    "keyframes": {
+                        "opacity": [
+                            {"t": 0.05, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.45, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+        ],
+    },
+    "promo-lower-third-clean": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 4.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "accent-bar",
+                "params": {
+                    "color": "{accent}",
+                    "width": 0.014,
+                    "height": 0.15,
+                    "position": [0.12, 0.78],
+                    "keyframes": {
+                        "position": [
+                            {"t": 0.0, "v": [0.0, 0.78], "ease": "expo-out"},
+                            {"t": 0.30, "v": [0.12, 0.78], "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "text",
+                "name": "name",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.050,
+                    "color": "{ink}",
+                    "position": [0.18, 0.74],
+                    "keyframes": {
+                        "opacity": [
+                            {"t": 0.30, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.60, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "text",
+                "name": "role",
+                "text_role": "subtext",
+                "params": {
+                    "text": "{subtext}",
+                    "font": "{body}",
+                    "font_size": 0.030,
+                    "color": "{primary}",
+                    "position": [0.18, 0.81],
+                    "keyframes": {
+                        "opacity": [
+                            {"t": 0.45, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.75, "v": 1.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+        ],
+    },
+    "promo-cta-endcard": {
+        "fps": 30.0,
+        "width": 1080,
+        "height": 1920,
+        "duration": 4.0,
+        "layers": [
+            {
+                "type": "solid",
+                "name": "cta-pill",
+                "params": {
+                    "color": "{primary}",
+                    "opacity": 0.95,
+                    "width": 0.60,
+                    "height": 0.10,
+                    "position": [0.5, 0.62],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "back-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "linear"},
+                            {"t": 0.80, "v": 1.02, "ease": "expo-out"},
+                            {"t": 1.80, "v": 1.0, "ease": "expo-out"},
+                            {"t": 2.80, "v": 1.02, "ease": "expo-out"},
+                            {"t": 3.80, "v": 1.0, "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.25, "v": 0.95, "ease": "expo-out"},
+                            {"t": 3.80, "v": 0.95, "ease": "linear"},
+                            {"t": 4.00, "v": 0.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "text",
+                "name": "cta",
+                "text_role": "title",
+                "params": {
+                    "text": "{text}",
+                    "font": "{heading}",
+                    "font_size": 0.060,
+                    "color": "{ink}",
+                    "position": [0.5, 0.62],
+                    "keyframes": {
+                        "scale": [
+                            {"t": 0.0, "v": 0.0, "ease": "back-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "back-out"},
+                            {"t": 0.30, "v": 1.0, "ease": "linear"},
+                            {"t": 0.80, "v": 1.02, "ease": "expo-out"},
+                            {"t": 1.30, "v": 1.0, "ease": "expo-out"},
+                        ],
+                        "opacity": [
+                            {"t": 0.0, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.25, "v": 1.0, "ease": "expo-out"},
+                            {"t": 3.80, "v": 1.0, "ease": "linear"},
+                            {"t": 4.00, "v": 0.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "text",
+                "name": "url",
+                "text_role": "subtext",
+                "params": {
+                    "text": "{subtext}",
+                    "font": "{body}",
+                    "font_size": 0.035,
+                    "color": "{ink}",
+                    "position": [0.5, 0.72],
+                    "keyframes": {
+                        "opacity": [
+                            {"t": 0.30, "v": 0.0, "ease": "expo-out"},
+                            {"t": 0.60, "v": 1.0, "ease": "expo-out"},
+                            {"t": 3.80, "v": 1.0, "ease": "linear"},
+                            {"t": 4.00, "v": 0.0, "ease": "expo-out"},
+                        ],
+                    },
+                },
+            },
+        ],
+    },
+}
+
+
+def _promo_palette(project: Project | None) -> dict[str, str]:
+    """Return the project brand palette, or an empty dict when unset."""
+
+    if project is not None and project.brand.palette:
+        return dict(project.brand.palette)
+    return {}
+
+
+def _promo_fonts(project: Project | None) -> dict[str, str]:
+    """Return the project brand fonts, or an empty dict when unset."""
+
+    if project is not None and project.brand.fonts:
+        return dict(project.brand.fonts)
+    return {}
+
+
+def _resolve_token(value: str, palette: dict[str, str]) -> str:
+    """Resolve a ``{token}`` colour reference against the brand palette."""
+
+    if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+        token = value[1:-1]
+        return palette.get(token, PROMO_DEFAULT_PALETTE.get(token, value))
+    return value
+
+
+def _resolve_font_role(value: str, fonts: dict[str, str]) -> str:
+    """Resolve a ``{role}`` font reference against the brand fonts."""
+
+    if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+        role = value[1:-1]
+        return fonts.get(role, PROMO_DEFAULT_FONT)
+    return value
+
+
+def _scale_promo_params(params: dict[str, Any], width: int, height: int) -> None:
+    """Scale fraction-based geometry to absolute pixels for the canvas.
+
+    Any ``position`` component, ``width``/``height`` or ``font_size`` in
+    ``[0, 1]`` is treated as a fraction of the matching canvas dimension.
+    ``font_size`` scales against ``min(width, height)`` so portrait canvases
+    do not oversize text, and long title text is shrunk (floored at 24px) or
+    wrapped onto two lines so it always fits inside 84% of the canvas width.
+    """
+
+    position = params.get("position")
+    if (
+        isinstance(position, list)
+        and len(position) == 2
+        and all(isinstance(item, (int, float)) and 0 <= item <= 1 for item in position)
+    ):
+        params["position"] = [round(position[0] * width), round(position[1] * height)]
+    for key in ("width", "height"):
+        value = params.get(key)
+        if isinstance(value, (int, float)) and 0 < value <= 1:
+            params[key] = round(value * (width if key == "width" else height))
+    size = params.get("font_size")
+    if isinstance(size, (int, float)) and 0 < size <= 1:
+        params["font_size"] = round(size * min(width, height))
+    _fit_promo_text(params, width)
+
+
+def _fit_promo_text(params: dict[str, Any], width: int) -> None:
+    """Shrink and wrap a text layer's text so it fits inside safe horizontal margins."""
+    import textwrap
+
+    text = params.get("text")
+    if not isinstance(text, str) or not text:
+        return
+    font_size = params.get("font_size")
+    if not isinstance(font_size, (int, float)) or font_size <= 0:
+        return
+
+    pos = params.get("position")
+    pos_x = 0.15
+    if isinstance(pos, list) and len(pos) >= 1 and isinstance(pos[0], (int, float)):
+        val = float(pos[0])
+        pos_x = val / width if val > 1.0 else val
+
+    avail_ratio = max(0.40, min(0.85, 0.90 - pos_x))
+    max_width = width * avail_ratio
+
+    words = text.split()
+    if len(text) > 36 and len(words) > 3:
+        chars_per_line = max(24, int(max_width / (font_size * 0.55)))
+        wrapped = textwrap.fill(text, width=chars_per_line)
+        params["text"] = wrapped
+        longest_line = max(len(line) for line in wrapped.splitlines())
+    else:
+        longest_line = len(text)
+
+    estimated_width = longest_line * font_size * 0.55
+    if estimated_width > max_width:
+        new_size = max(24, round(max_width / (longest_line * 0.55)))
+        params["font_size"] = new_size
+
+
+# ---------------------------------------------------------------------------
+# Easing helpers (reused by the promo motion presets)
+# ---------------------------------------------------------------------------
+
+
+def _ease_expo_out(t: float) -> float:
+    """Expo-out ease: fast start, gentle settle. ``t`` normalised to 0..1."""
+
+    t = max(0.0, min(1.0, float(t)))
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    return 1.0 - 2.0 ** (-10.0 * t)
+
+
+def _ease_back_out(t: float, overshoot: float = 1.70158) -> float:
+    """Back-out ease: settles with an overshoot past the target. ``t`` in 0..1.
+
+    ``overshoot`` controls how far past 1.0 the curve swings before settling.
+    """
+
+    t = max(0.0, min(1.0, float(t)))
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    return (t - 1.0) ** 2 * ((overshoot + 1.0) * (t - 1.0) + overshoot) + 1.0
+
+
+def _ease_linear(t: float) -> float:
+    """Linear ease (identity). ``t`` normalised to 0..1."""
+
+    return max(0.0, min(1.0, float(t)))
+
+
+def calc_spring(
+    t: float,
+    *,
+    duration: float = 1.0,
+    damping: float = 12.0,
+    stiffness: float = 100.0,
+    mass: float = 1.0,
+) -> float:
+    """Damped harmonic oscillator spring value at time ``t``.
+
+    Returns the normalised spring position: starts at 0, naturally overshoots
+    past 1.0, then settles back to 1.0. Based on the analytical damped harmonic
+    oscillator::
+
+        omega_n = sqrt(k / m)
+        zeta    = c / (2 * sqrt(k * m))
+        omega_d = omega_n * sqrt(1 - zeta^2)
+        val(t)  = 1 - e^(-zeta * omega_n * t)
+                  * (cos(omega_d * t) + (zeta * omega_n / omega_d) * sin(omega_d * t))
+
+    Parameters
+    ----------
+    t:
+        Time in seconds from the start of the spring motion.
+    duration:
+        Total animation duration; values at or beyond this are treated as settled (1.0).
+    damping:
+        Damping coefficient ``c``. Higher values reduce oscillation.
+    stiffness:
+        Spring stiffness ``k``. Higher values oscillate faster.
+    mass:
+        Oscillating mass ``m``.
+    """
+
+    t = max(0.0, float(t))
+    duration = max(float(duration), 1e-6)
+    if t >= duration or stiffness <= 0.0 or mass <= 0.0:
+        return 1.0
+
+    omega_n = math.sqrt(stiffness / mass)
+    zeta = damping / (2.0 * math.sqrt(stiffness * mass))
+
+    if zeta >= 1.0:
+        # Critically or over-damped: monotonic settle, no overshoot.
+        return 1.0 - math.exp(-omega_n * t) * (1.0 + omega_n * t)
+
+    omega_d = omega_n * math.sqrt(1.0 - zeta * zeta)
+    envelope = math.exp(-zeta * omega_n * t)
+    return 1.0 - envelope * (
+        math.cos(omega_d * t) + (zeta * omega_n / omega_d) * math.sin(omega_d * t)
+    )
+
+
+def _promo_keyframe(t: float, v: Any, ease: str = "linear") -> dict[str, Any]:
+    """Build one keyframe record: time (s), value, and easing curve name."""
+
+    return {"t": float(t), "v": v, "ease": ease}
+
+
+def _scale_keyframe_positions(
+    keyframes: dict[str, list[dict[str, Any]]], width: int, height: int
+) -> None:
+    """Scale fraction-based ``position`` keyframes to absolute canvas pixels.
+
+    Position keyframes carry ``v`` as ``[x, y]`` in ``[0, 1]`` canvas fractions,
+    mirroring the layer-level ``position`` scaling in :func:`_scale_promo_params`.
+    Scale/opacity keyframes are dimensionless and are left untouched.
+    """
+
+    for prop, frames in keyframes.items():
+        if prop != "position":
+            continue
+        for frame in frames:
+            value = frame.get("v")
+            if (
+                isinstance(value, list)
+                and len(value) == 2
+                and all(isinstance(item, (int, float)) and 0 <= item <= 1 for item in value)
+            ):
+                frame["v"] = [round(value[0] * width), round(value[1] * height)]
+
+
+def _ease_value(v0: Any, v1: Any, e: float) -> Any:
+    """Interpolate between ``v0`` and ``v1`` by eased factor ``e`` (0..1, may overshoot).
+
+    Handles scalars and equal-length lists (e.g. position vec2) component-wise.
+    """
+
+    if isinstance(v0, list) and isinstance(v1, list) and len(v0) == len(v1):
+        return [v0[i] + (v1[i] - v0[i]) * e for i in range(len(v0))]
+    return v0 + (v1 - v0) * e
+
+
+def _expand_eased_keyframes(frames: list[dict[str, Any]], samples: int = 8) -> list[dict[str, Any]]:
+    """Insert intermediate keys per segment so linear playback approximates the ease curve.
+
+    The engine interpolates linearly between keys, so each segment is resampled
+    onto its easing curve (expo-out / back-out / linear) with ``samples``
+    intermediate keys. Original endpoints are kept so start/end values are exact.
+    """
+
+    if len(frames) < 2:
+        return [dict(f) for f in frames]
+    ordered = sorted(frames, key=lambda f: f["t"])
+    expanded: list[dict[str, Any]] = [dict(ordered[0])]
+    for a, b in itertools.pairwise(ordered):
+        t0, v0 = a["t"], a["v"]
+        t1, v1 = b["t"], b["v"]
+        ease_name = a.get("ease", "linear")
+        span = t1 - t0
+        if ease_name == "spring":
+
+            def ease_fn(frac: float, _t0: float = t0, _span: float = span) -> float:
+                return calc_spring(_span * frac, duration=_span)
+
+        else:
+            ease_fn = {
+                "expo-out": _ease_expo_out,
+                "back-out": _ease_back_out,
+                "linear": _ease_linear,
+            }.get(ease_name, _ease_linear)
+        for k in range(1, samples + 1):
+            frac = k / (samples + 1.0)
+            expanded.append(
+                {
+                    "t": round(t0 + span * frac, 4),
+                    "v": _ease_value(v0, v1, ease_fn(frac)),
+                    "ease": ease_name,
+                }
+            )
+        expanded.append(dict(b))
+    return expanded
+
+
+def _keyframe_path(prop: str) -> str:
+    """Map a spec property name to the engine transform property path."""
+
+    return {
+        "scale": "transform/scale",
+        "opacity": "transform/opacity",
+        "position": "transform/position",
+    }.get(prop, prop)
+
+
+def _keyframe_value(prop: str, v: Any) -> Any:
+    """Convert a spec keyframe value (factor for scale/opacity) to engine units.
+
+    Scale and opacity are stored as 0..1 factors in the spec; the engine expects
+    percent (0..100). Position is already in canvas pixels.
+    """
+
+    if prop in ("scale", "opacity") and isinstance(v, (int, float)):
+        return round(float(v) * 100.0, 4)
+    if prop == "position" and isinstance(v, list):
+        return [round(float(x), 2) for x in v]
+    return v
+
+
+def _keyframe_commands(
+    layer_name: str, keyframes: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Build engine ``prop.addKey`` commands for one layer's keyframes.
+
+    Times are in composition seconds; values are engine units (percent for
+    scale/opacity, pixels for position).
+    """
+
+    cmds: list[dict[str, Any]] = []
+    for prop, frames in keyframes.items():
+        path = _keyframe_path(prop)
+        for frame in _expand_eased_keyframes(frames):
+            cmds.append(
+                {
+                    "id": "prop.addKey",
+                    "params": {
+                        "layer": layer_name,
+                        "path": path,
+                        "time": round(float(frame["t"]), 4),
+                        "value": _keyframe_value(prop, frame["v"]),
+                    },
+                }
+            )
+    return cmds
+
+
+def render_promo_preset(
+    preset_name: str,
+    output: Path,
+    *,
+    text: str,
+    subtext: str = "",
+    project: Project | None = None,
+    width: int = 1080,
+    height: int = 1920,
+    fps: int = 30,
+    duration: float = 3.0,
+) -> MotionResult:
+    """Render one EffectCraft promo motion preset as transparent ProRes 4444 RGBA.
+
+    Looks up ``preset_name`` in :data:`PROMO_MOTION_PRESETS`, deep-copies the
+    preset spec, scales every layer position, dimension and font size from
+    ``width`` and ``height``, injects ``text`` into ``text_role == "title"``
+    layers and ``subtext`` into ``text_role == "subtext"`` layers, and resolves
+    brand token colours (``{primary}``, ``{accent}``, ``{ink}``) and fonts
+    (``{heading}``, ``{body}``) from ``project.brand`` when a project is
+    supplied. The spec is written as an ``.ecp`` next to ``output`` and rendered
+    through :func:`render`, producing ProRes 4444 with an alpha channel.
+
+    Raises:
+        EffectCraftError: ``preset_name`` is not a registered promo preset.
+    """
+
+    if preset_name not in PROMO_MOTION_PRESETS:
+        known = ", ".join(sorted(PROMO_MOTION_PRESETS))
+        raise EffectCraftError(
+            f"unknown promo motion preset {preset_name!r}; choose one of: {known}"
+        )
+
+    preset = PROMO_MOTION_PRESETS[preset_name]
+    spec = copy.deepcopy(dict(preset))
+    spec["width"] = int(width)
+    spec["height"] = int(height)
+    spec["fps"] = float(fps)
+    spec["duration"] = float(duration)
+
+    palette = _promo_palette(project)
+    fonts = _promo_fonts(project)
+
+    for layer in spec.get("layers", []):
+        params = layer.get("params", {})
+        text_role = layer.get("text_role")
+        if layer.get("type") == "text" and text_role == "title":
+            params["text"] = text
+        elif layer.get("type") == "text" and text_role == "subtext":
+            params["text"] = subtext
+        params.pop("text_role", None)
+        _scale_promo_params(params, int(width), int(height))
+        keyframes = params.get("keyframes")
+        if isinstance(keyframes, dict):
+            _scale_keyframe_positions(keyframes, int(width), int(height))
+        for key in ("color", "fill", "stroke"):
+            if isinstance(params.get(key), str):
+                params[key] = _resolve_token(params[key], palette)
+        if isinstance(params.get("font"), str):
+            params["font"] = _resolve_font_role(params["font"], fonts)
+
+    _validate_spec(spec)
+    check_installation()
+
+    output = Path(output)
+    ecp_path = output.with_suffix(".ecp")
+    build_ecp(spec, ecp_path)
+    return render(ecp_path, output, fps=float(fps), transparent=True)
+
+
 def render_amv_preset(
     preset_name: str,
     output: Path,
@@ -859,8 +1636,12 @@ def title_sequence(
     animation: str = "fade_in_up",
     glow: bool = False,
     glow_intensity: float = 0.5,
+    transparent: bool = True,
 ) -> MotionResult:
     """Generate an animated title sequence with alpha channel."""
+    output = Path(output).resolve()
+    if transparent:
+        output = output.with_suffix(".mov")
     spec = {
         "width": width,
         "height": height,

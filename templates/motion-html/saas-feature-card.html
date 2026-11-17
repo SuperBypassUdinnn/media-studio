@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SaaS Feature Card</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; background: transparent !important; overflow: hidden; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  #root { width: 100%; height: 100%; position: relative; background: transparent !important; }
+  .card {
+    position: absolute; left: 50%; top: 46%;
+    transform: translate(-50%, -50%);
+    width: 64vmin; height: 52vmin;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.35);
+    border-radius: 2vmin;
+    box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.25);
+    padding: 4vmin;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .eyebrow { font-size: 2.6vmin; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent, #38bdf8); }
+  h1 { font-size: clamp(14px, 4vmin, 26px); line-height: 1.15; color: #0f172a; font-weight: 800; }
+  p { font-size: clamp(11px, 2.2vmin, 16px); line-height: 1.5; color: #334155; }
+  .feature { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 2.8vmin; color: #1e293b; }
+  .feature .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent, #38bdf8); flex: 0 0 auto; }
+  /* Action button target with authentic click feedback. */
+  .target { position: relative; display: inline-block; margin-top: 3.6vmin; padding: 2vmin 3.2vmin; border-radius: 2vmin; border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.25); background: rgba(var(--accent-rgb, 56, 189, 248), 0.08); cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; }
+  .target.clicked { transform: scale(0.96); background: rgba(var(--accent-rgb, 56, 189, 248), 0.22); border-color: var(--accent, #38bdf8); }
+  /* Floating cursor click. */
+  .cursor {
+    position: absolute; width: 4.4vmin; height: 4.4vmin;
+    border: 2.5px solid var(--ink, #0f172a); border-radius: 50%;
+    background: rgba(255,255,255,0.9); box-shadow: 0 0 0 0.8vmin rgba(var(--ink-rgb,15,23,42),0.12);
+    pointer-events: none; z-index: 50; transform: translate(-50%, -50%);
+  }
+  .cursor .click { position: absolute; top: 50%; left: 50%; width: 0; height: 0; background: var(--accent, #38bdf8); border-radius: 50%; transform: translate(-50%, -50%); opacity: 0; transition: width 0.12s ease, height 0.12s ease, opacity 0.12s ease; }
+  .cursor .click.active { width: 2.8vmin; height: 2.8vmin; opacity: 0.85; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="card">
+    <div class="eyebrow" id="eyebrow">New feature</div>
+    <h1 id="headline">Headline goes here</h1>
+    <p id="subhead">Subheadline explains the capability in a friendly tone.</p>
+    <div class="feature"><div class="dot"></div><span id="featureText">Real-time collaboration for distributed teams</span></div>
+    <div class="target" id="target">Try it free &rarr;</div>
+  </div>
+  <div class="cursor" id="cursor"><div class="click" id="click"></div></div>
+</div>
+<script>
+(function () {
+  const root = document.getElementById('root');
+  const target = document.getElementById('target');
+  const cursor = document.getElementById('cursor');
+  const click = document.getElementById('click');
+  const headline = document.getElementById('headline');
+  const subhead = document.getElementById('subhead');
+  const eyebrow = document.getElementById('eyebrow');
+  const featureText = document.getElementById('featureText');
+
+  function applyParams(params) {
+    if (!params) return;
+    const p = (name, def) => (params[name] !== undefined && params[name] !== null) ? params[name] : def;
+    if (p('headline')) headline.textContent = p('headline');
+    if (p('subhead')) subhead.textContent = p('subhead');
+    if (p('eyebrow')) eyebrow.textContent = p('eyebrow');
+    if (p('feature')) featureText.textContent = p('feature');
+    if (p('target')) target.innerHTML = p('target');
+    const accent = p('accent', '#38bdf8');
+    const ink = p('ink', '#0f172a');
+    root.style.setProperty('--accent', accent);
+    root.style.setProperty('--ink', ink);
+    try {
+      const c = accent.slice(1);
+      root.style.setProperty('--accent-rgb', [parseInt(c.substr(0,2),16), parseInt(c.substr(2,2),16), parseInt(c.substr(4,2),16)].join(','));
+    } catch (e) {}
+    try {
+      const c = ink.slice(1);
+      root.style.setProperty('--ink-rgb', [parseInt(c.substr(0,2),16), parseInt(c.substr(2,2),16), parseInt(c.substr(4,2),16)].join(','));
+    } catch (e) {}
+  }
+
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  // Damped harmonic oscillator spring: 0 -> overshoot past 1 -> settle at 1.
+  window.__msSpring = function ({frame, fps = 30, damping = 12, stiffness = 100, mass = 1} = {}) {
+    const t = Math.max(0, frame / fps);
+    const omegaN = Math.sqrt(stiffness / mass);
+    const zeta = damping / (2 * Math.sqrt(stiffness * mass));
+    if (zeta >= 1) {
+      return 1 - Math.exp(-omegaN * t) * (1 + omegaN * t);
+    }
+    const omegaD = omegaN * Math.sqrt(1 - zeta * zeta);
+    const envelope = Math.exp(-zeta * omegaN * t);
+    return 1 - envelope * (Math.cos(omegaD * t) + (zeta * omegaN / omegaD) * Math.sin(omegaD * t));
+  };
+
+  window.__msSeek = function (timeSec, frameIndex, totalFrames, params) {
+    applyParams(params);
+    const progress = totalFrames > 1 ? frameIndex / (totalFrames - 1) : 0;
+    const cycle = Math.sin(progress * Math.PI * 2);
+    const ease = easeOutCubic(progress);
+    const fps = (params && params.fps) || 30;
+    // Organic card pop-in: scale springs from 0, overshoots, settles at 1.
+    const spring = window.__msSpring({frame: frameIndex, fps, damping: 14, stiffness: 110, mass: 1});
+    const card = document.querySelector('.card');
+    if (card) {
+      const cardScale = params && params.card_scale !== undefined ? Math.max(0.05, params.card_scale) : 1;
+      const cardAnchorY = params && params.card_anchor_y !== undefined ? params.card_anchor_y : 0.46;
+      // Gentle cinematic breathing float (smooth 6px vertical oscillation)
+      const floatY = Math.sin(progress * Math.PI * 4) * 6;
+      card.style.transform = `translate(-50%, calc(-${cardAnchorY * 100}% + ${floatY}px)) scale(${Math.max(0.05, spring * cardScale)})`;
+    }
+
+    const rect = target.getBoundingClientRect();
+    const isClicked = progress > 0.78;
+    target.classList.toggle('clicked', isClicked);
+
+    // Floating cursor: travels across the card and clicks the target button at the end.
+    const clickSpring = window.__msSpring({frame: frameIndex, fps, damping: 10, stiffness: 90, mass: 1});
+    const cx = 60 + ease * (rect.left + rect.width / 2 - 60);
+    const cy = 120 + ease * (rect.top + rect.height / 2 - 120);
+    cursor.style.left = cx + 'px';
+    cursor.style.top = cy + 'px';
+    click.classList.toggle('active', isClicked);
+    click.style.transform = `translate(-50%, -50%) scale(${Math.max(0.05, clickSpring)})`;
+  };
+})();
+</script>
+</body>
+</html>

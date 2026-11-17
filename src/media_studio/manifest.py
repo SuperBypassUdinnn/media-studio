@@ -39,18 +39,39 @@ MANIFEST_KEYS = frozenset(
     }
 )
 DESIGN_KEYS = frozenset({"logo", "fonts", "variants"})
-VARIANT_KEYS = frozenset({"id", "template", "size", "headline", "subhead"})
+VARIANT_KEYS = frozenset(
+    {
+        "id",
+        "template",
+        "size",
+        "headline",
+        "subhead",
+        "trim",
+        "pad",
+        "profile",
+        "image",
+        "image_fit",
+        "image_position",
+        "headline_size",
+        "subhead_size",
+    }
+)
 VIDEO_KEYS = frozenset({"shots", "voice", "music", "titles", "fade_in", "fade_out", "crossfade"})
 SHOT_KEYS = frozenset({"asset", "in", "duration", "transition", "shot_type"})
 TITLE_KEYS = frozenset({"text", "start", "duration", "size", "colour", "position"})
-CUE_KEYS = frozenset({"asset", "in", "gain", "fade_in", "fade_out", "duck"})
+CUE_KEYS = frozenset(
+    {"asset", "in", "gain", "fade_in", "fade_out", "duck", "duration", "clamp_to_video"}
+)
 DELIVERABLE_KEYS = frozenset(
     {"id", "kind", "container", "resolution", "fps", "duration", "loudness_lufs", "preview"}
 )
-BRAND_KEYS = frozenset({"palette", "fonts"})
+BRAND_KEYS = frozenset({"palette", "fonts", "references", "voice", "safe_zones"})
 BUDGET_KEYS = frozenset({"max_asset_bytes", "max_project_bytes", "require_cc0_music"})
 # Integrated loudness outside this window is almost always a manifest mistake.
 LOUDNESS_RANGE = (-40.0, -5.0)
+# How a variant's foreground image fills its box, and where that box sits on the canvas.
+IMAGE_FITS = ("contain", "cover")
+IMAGE_POSITIONS = ("left", "center", "right", "full")
 
 
 class ManifestError(RuntimeError):
@@ -92,6 +113,30 @@ class AudioCue:
     fade_in: float = 0.0
     fade_out: float = 0.0
     duck: bool = True
+    duration: float | None = None
+    clamp_to_video: bool = True
+
+
+def audio_span(
+    cue: AudioCue, video_seconds: float, source_seconds: float | None = None
+) -> float | None:
+    """How many seconds of a cue should play, or ``None`` when the source sets the length.
+
+    A cue entered 30 s into a 45 s bed and asked for 20 s must stop at the end of the edit
+    rather than run past the picture, and a source with only 15 s left cannot fill a 20 s
+    span. Both limits are applied here so MLT and FilmCraft clamp identically.
+    """
+
+    span = cue.duration
+    if cue.clamp_to_video:
+        span = video_seconds if span is None else min(span, video_seconds)
+    if span is None:
+        return None
+    span = max(span, 0.0)
+    if source_seconds is not None:
+        remaining = source_seconds - cue.in_point
+        span = min(span, max(remaining, 0.0))
+    return span
 
 
 @dataclass(frozen=True)
@@ -129,6 +174,14 @@ class VariantSpec:
     height: int
     headline: str = ""
     subhead: str = ""
+    trim: bool = False
+    pad: int = 0
+    profile: str | None = None
+    image: str | None = None
+    image_fit: str = "contain"
+    image_position: str = "right"
+    headline_size: int | None = None
+    subhead_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -141,11 +194,32 @@ class DesignSpec:
 
 
 @dataclass(frozen=True)
+class ReferencePack:
+    """Product, spokesperson and style-board asset references for a brand kit."""
+
+    product: tuple[str, ...] = field(default_factory=tuple)
+    spokesperson: tuple[str, ...] = field(default_factory=tuple)
+    style_board: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class BrandVoice:
+    """Voice-over engine, voice id and rate for a project brand."""
+
+    engine: str
+    voice_id: str
+    rate: str
+
+
+@dataclass(frozen=True)
 class Brand:
     """Colour and type tokens every design path reads."""
 
     palette: dict[str, str] = field(default_factory=dict)
     fonts: dict[str, str] = field(default_factory=dict)
+    references: ReferencePack = field(default_factory=ReferencePack)
+    voice: BrandVoice | None = None
+    safe_zones: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -292,7 +366,62 @@ def _brand(value: Any) -> Brand:
     return Brand(
         palette={str(key): str(colour) for key, colour in palette.items()},
         fonts={str(key): str(name) for key, name in fonts.items()},
+        references=_reference_pack(value.get("references")),
+        voice=_brand_voice(value.get("voice")),
+        safe_zones=_safe_zones(value.get("safe_zones")),
     )
+
+
+def _reference_pack(value: Any) -> ReferencePack:
+    if value in (None, {}):
+        return ReferencePack()
+    if not isinstance(value, dict):
+        raise ManifestError("brand.references must be a mapping of role to asset ids")
+
+    def _ids(key: str) -> tuple[str, ...]:
+        if key not in value:
+            return ()
+        raw = value[key]
+        if raw is None:
+            return ()
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raise ManifestError(f"brand.references.{key} must be a list of asset ids")
+        return tuple(raw)
+
+    return ReferencePack(
+        product=_ids("product"),
+        spokesperson=_ids("spokesperson"),
+        style_board=_ids("style_board"),
+    )
+
+
+def _brand_voice(value: Any) -> BrandVoice | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ManifestError("brand.voice must be a mapping of engine, voice_id and rate")
+    engine = str(value.get("engine") or "")
+    voice_id = str(value.get("voice_id") or "")
+    rate = str(value.get("rate") or "")
+    if not engine or not voice_id:
+        raise ManifestError("brand.voice.engine and brand.voice.voice_id are required")
+    return BrandVoice(engine=engine, voice_id=voice_id, rate=rate)
+
+
+def _safe_zones(value: Any) -> dict[str, dict[str, int]]:
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict):
+        raise ManifestError("brand.safe_zones must be a mapping of zone to margins")
+    zones: dict[str, dict[str, int]] = {}
+    for name, margins in value.items():
+        if not isinstance(margins, dict):
+            raise ManifestError(f"brand.safe_zones.{name} must be a mapping of margins")
+        zones[str(name)] = {
+            str(key): _optional_int(val, f"brand.safe_zones.{name}.{key}")
+            for key, val in margins.items()
+        }
+    return zones
 
 
 def _budget(value: Any) -> Budget:
@@ -339,6 +468,28 @@ def _design(value: Any) -> DesignSpec | None:
                 height=height,
                 headline=str(entry.get("headline") or ""),
                 subhead=str(entry.get("subhead") or ""),
+                trim=_variant_bool(entry.get("trim", False), "trim", str(entry["id"])),
+                pad=_variant_int(entry.get("pad", 0), "pad", str(entry["id"])),
+                profile=_variant_profile(entry.get("profile"), "profile", str(entry["id"])),
+                image=str(entry["image"]) if entry.get("image") else None,
+                image_fit=_variant_choice(
+                    entry.get("image_fit", "contain"),
+                    "image_fit",
+                    IMAGE_FITS,
+                    str(entry["id"]),
+                ),
+                image_position=_variant_choice(
+                    entry.get("image_position", "right"),
+                    "image_position",
+                    IMAGE_POSITIONS,
+                    str(entry["id"]),
+                ),
+                headline_size=_variant_optional_size(
+                    entry.get("headline_size"), "headline_size", str(entry["id"])
+                ),
+                subhead_size=_variant_optional_size(
+                    entry.get("subhead_size"), "subhead_size", str(entry["id"])
+                ),
             )
         )
     if not variants:
@@ -368,6 +519,51 @@ def _size(value: str, variant_id: str) -> tuple[int, int]:
         return parse_resolution(value)
     except ManifestError as error:
         raise ManifestError(f"design variant {variant_id!r}: {error}") from error
+
+
+def _variant_bool(value: Any, field_name: str, variant_id: str) -> bool:
+    if not isinstance(value, bool):
+        raise ManifestError(
+            f"design variant {variant_id!r}: {field_name} must be a boolean, got {value!r}"
+        )
+    return value
+
+
+def _variant_int(value: Any, field_name: str, variant_id: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ManifestError(
+            f"design variant {variant_id!r}: {field_name} must be a whole number, got {value!r}"
+        )
+    return value
+
+
+def _variant_profile(value: Any, field_name: str, variant_id: str) -> str | None:
+    if value is not None and value != "srgb":
+        raise ManifestError(
+            f"design variant {variant_id!r}: {field_name} must be 'srgb' or unset, got {value!r}"
+        )
+    return value
+
+
+def _variant_choice(value: Any, field_name: str, allowed: tuple[str, ...], variant_id: str) -> str:
+    text = str(value or "").strip().lower()
+    if text not in allowed:
+        raise ManifestError(
+            f"design variant {variant_id!r}: {field_name} must be one of "
+            f"{', '.join(allowed)}, got {value!r}"
+        )
+    return text
+
+
+def _variant_optional_size(value: Any, field_name: str, variant_id: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ManifestError(
+            f"design variant {variant_id!r}: {field_name} must be a positive whole number, "
+            f"got {value!r}"
+        )
+    return value
 
 
 def _effects(value: Any) -> tuple[dict[str, Any], ...]:
@@ -428,6 +624,8 @@ def _video(value: Any) -> VideoPlan | None:
             fade_in=_optional_float(raw_cue.get("fade_in"), "fade_in") or 0.0,
             fade_out=_optional_float(raw_cue.get("fade_out"), "fade_out") or 0.0,
             duck=bool(raw_cue.get("duck", True)),
+            duration=_optional_float(raw_cue.get("duration"), "duration"),
+            clamp_to_video=bool(raw_cue.get("clamp_to_video", True)),
         )
     fade_in = _optional_float(value.get("fade_in"), "fade_in") or 0.0
     fade_out = _optional_float(value.get("fade_out"), "fade_out") or 0.0
@@ -548,7 +746,7 @@ def validate_project(project: Project) -> ValidationReport:
             and not getattr(deliverable, "preview", False)
         ):
             width, height = parse_resolution(deliverable.resolution)
-            if width < 1920 or height < 1080:
+            if min(width, height) < 1080:
                 errors.append(
                     f"deliverable {deliverable.id}: resolution {deliverable.resolution} is below "
                     "the 1920x1080 minimum floor (mark preview: true to permit)"
@@ -604,6 +802,8 @@ def validate_project(project: Project) -> ValidationReport:
                 referenced.append(cue.asset)
             if cue is not None and cue.gain <= 0:
                 errors.append(f"video.{name}.gain must be positive")
+            if cue is not None and cue.duration is not None and cue.duration <= 0:
+                errors.append(f"video.{name}.duration must be positive")
         for asset_id in referenced:
             if asset_id not in project.assets:
                 errors.append(
@@ -612,6 +812,26 @@ def validate_project(project: Project) -> ValidationReport:
         for shot in project.video.shots:
             if shot.duration is not None and shot.duration <= 0:
                 errors.append(f"video.shots[{shot.asset}].duration must be positive")
+
+    if project.design is not None:
+        for variant in project.design.variants:
+            if variant.image is not None and variant.image not in project.assets:
+                errors.append(
+                    f"design.variants[{variant.id}]: image asset {variant.image!r} is not "
+                    "declared under assets:"
+                )
+
+    for role in ("product", "spokesperson", "style_board"):
+        for asset_id in getattr(project.brand.references, role):
+            if asset_id not in project.assets:
+                errors.append(
+                    f"brand.references.{role}: asset {asset_id!r} is not declared under assets:"
+                )
+
+    for name, margins in project.brand.safe_zones.items():
+        for key, value in margins.items():
+            if value < 0:
+                errors.append(f"brand.safe_zones.{name}.{key}: margin {value} must be non-negative")
 
     if not project.deliverables:
         warnings.append("no deliverables declared; renders have nothing to produce")

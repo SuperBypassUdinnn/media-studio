@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from media_studio.effectcraft import (
     EffectCraftError,
+    MotionResult,
     build_ecp,
     check_installation,
     logo_reveal,
@@ -322,6 +325,35 @@ def test_integration_lyric_overlay(tmp_path):
     assert out.exists()
 
 
+def test_relative_out_path_resolves_cleanly_and_coerces_mov_for_alpha(tmp_path, monkeypatch):
+    """A relative .mp4 destination becomes an absolute .mov path for alpha output."""
+
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_render(project_path, output, *, fps=30.0, transparent=True):
+        seen["output"] = Path(output)
+        seen["transparent"] = transparent
+        return MotionResult(
+            output=Path(output),
+            ecp_path=Path(project_path),
+            report_path=Path(output).with_suffix(".json"),
+            report={"ok": True},
+        )
+
+    monkeypatch.setattr("media_studio.effectcraft.check_installation", lambda: None)
+    monkeypatch.setattr("media_studio.effectcraft.render", fake_render)
+
+    result = title_sequence("Hi", Path("out") / "title.mp4", Path("out") / "title.ecp")
+
+    expected = (tmp_path / "out" / "title.mov").resolve()
+    assert result.output == expected
+    assert expected.is_absolute()
+    assert seen["output"] == expected
+    assert seen["transparent"] is True
+    assert (tmp_path / "out" / "title.ecp").is_file()
+
+
 def test_motion_templates_match_design():
     """All five design-5.7 templates are registered."""
     from media_studio.effectcraft import MOTION_TEMPLATES
@@ -576,3 +608,406 @@ def test_alpha_coverage_returns_none_on_ffmpeg_failure(tmp_path, monkeypatch):
     )
     runner = EffectCraftRunner()
     assert runner._alpha_coverage(media) is None
+
+
+def _fake_promo_render(monkeypatch, tmp_path):
+    seen: dict[str, object] = {}
+
+    def fake_render(project_path, output, *, fps=30.0, transparent=True):
+        seen["spec"] = json.loads(Path(project_path).read_text(encoding="utf-8"))
+        return MotionResult(
+            output=Path(output),
+            ecp_path=Path(project_path),
+            report_path=Path(output).with_suffix(".json"),
+            report={"ok": True},
+        )
+
+    monkeypatch.setattr("media_studio.effectcraft.check_installation", lambda: None)
+    monkeypatch.setattr("media_studio.effectcraft.render", fake_render)
+    return seen
+
+
+def _promo_project(tmp_path) -> object:
+    from media_studio.manifest import Brand, Budget, Project
+
+    return Project(
+        root=tmp_path,
+        slug="demo",
+        title="Demo",
+        status="draft",
+        deliverables=(),
+        brand=Brand(
+            palette={"primary": "#ff0000", "accent": "#00ff00", "ink": "#0000ff"},
+            fonts={"heading": "Inter", "body": "Inter"},
+        ),
+        budget=Budget(),
+        assets={},
+        timeline=(),
+        video=None,
+        design=None,
+        effects=(),
+        raw={},
+    )
+
+
+def test_promo_motion_presets_contains_all_five():
+    """PROMO_MOTION_PRESETS registers exactly the five promo preset ids."""
+
+    from media_studio.effectcraft import PROMO_MOTION_PRESETS
+
+    expected = {
+        "promo-hook-slam",
+        "promo-kinetic-callout",
+        "promo-metric-badge",
+        "promo-lower-third-clean",
+        "promo-cta-endcard",
+    }
+    assert set(PROMO_MOTION_PRESETS) == expected
+
+
+def test_promo_preset_scales_positions_and_font_sizes(tmp_path, monkeypatch):
+    """Layer positions and font sizes scale from width/height for both aspects."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+
+    for width, height in ((1080, 1920), (1920, 1080)):
+        seen.clear()
+        render_promo_preset(
+            "promo-hook-slam",
+            tmp_path / f"out-{width}x{height}.mov",
+            text="Hook",
+            width=width,
+            height=height,
+        )
+        spec = seen["spec"]
+        comp = spec["composition"]
+        assert comp["width"] == width
+        assert comp["height"] == height
+        title = next(layer for layer in spec["layers"] if layer["name"] == "title")
+        assert abs(title["params"]["font_size"] - 0.075 * min(width, height)) <= 1
+        assert abs(title["params"]["position"][0] - 0.5 * width) <= 1
+        assert abs(title["params"]["position"][1] - 0.42 * height) <= 1
+        pill = next(layer for layer in spec["layers"] if layer["name"] == "hook-pill")
+        assert abs(pill["params"]["width"] - 0.92 * width) <= 1
+        assert abs(pill["params"]["height"] - 0.06 * height) <= 1
+
+
+def test_promo_preset_fits_long_cta_text_inside_width(tmp_path, monkeypatch):
+    """Long title text on portrait is shrunk (floor 24px) to fit 84% of width."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    long_text = "Launch your next campaign with Media Studio today."
+    render_promo_preset(
+        "promo-cta-endcard",
+        tmp_path / "out.mov",
+        text=long_text,
+        width=1080,
+        height=1920,
+    )
+    spec = seen["spec"]
+    cta = next(layer for layer in spec["layers"] if layer["name"] == "cta")
+    font_size = cta["params"]["font_size"]
+    # font_size is an absolute px value, floored at 24, and the text fits 84% width.
+    assert 24 <= font_size <= 0.060 * min(1080, 1920)
+    assert cta["params"]["text"]  # text preserved (possibly wrapped)
+    rendered_width = len(cta["params"]["text"].split("\n")[0]) * font_size * 0.55
+    assert rendered_width <= 1080 * 0.84 + 1
+
+
+def test_promo_preset_injects_brand_palette_tokens(tmp_path, monkeypatch):
+    """project.brand.palette tokens (primary, accent, ink) resolve into layer colours."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    render_promo_preset(
+        "promo-hook-slam",
+        tmp_path / "out.mov",
+        text="Hook",
+        project=_promo_project(tmp_path),
+    )
+    spec = seen["spec"]
+    pill = next(layer for layer in spec["layers"] if layer["name"] == "hook-pill")
+    assert pill["params"]["color"] == "#00ff00"  # accent
+    title = next(layer for layer in spec["layers"] if layer["name"] == "title")
+    assert title["params"]["color"] == "#0000ff"  # ink
+    assert title["params"]["font"] == "Inter"  # heading font role
+
+
+def test_promo_preset_falls_back_to_defaults_without_project(tmp_path, monkeypatch):
+    """No project keeps default colours and fonts instead of crashing."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    render_promo_preset("promo-hook-slam", tmp_path / "out.mov", text="Hook")
+    spec = seen["spec"]
+    title = next(layer for layer in spec["layers"] if layer["name"] == "title")
+    assert title["params"]["color"] != "{ink}"
+    assert title["params"]["font"] != "{heading}"
+
+
+def test_render_promo_preset_builds_valid_ecp(tmp_path, monkeypatch):
+    """The rendered spec passes build_ecp validation and carries composition geometry."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    render_promo_preset(
+        "promo-metric-badge",
+        tmp_path / "out.mov",
+        text="98%",
+        subtext="conversion rate",
+        width=1080,
+        height=1920,
+        fps=30,
+        duration=3.0,
+    )
+    spec = seen["spec"]
+    comp = spec["composition"]
+    assert comp["width"] == 1080
+    assert comp["height"] == 1920
+    assert comp["fps"] == 30.0
+    assert comp["duration"] == 3.0
+    counter = next(layer for layer in spec["layers"] if layer["name"] == "counter")
+    assert counter["params"]["text"] == "98%"
+    unit = next(layer for layer in spec["layers"] if layer["name"] == "unit")
+    assert unit["params"]["text"] == "conversion rate"
+
+
+def _preset_spec(monkeypatch, tmp_path, preset_name, *, width=1080, height=1920):
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    render_promo_preset(
+        preset_name,
+        tmp_path / "out.mov",
+        text="Hi",
+        subtext="sub",
+        width=width,
+        height=height,
+    )
+    return seen["spec"]
+
+
+def _layer(spec, name):
+    return next(layer for layer in spec["layers"] if layer["name"] == name)
+
+
+def _key_times(frames):
+    return [round(frame["t"], 3) for frame in frames]
+
+
+def test_promo_presets_every_layer_keyframed(monkeypatch, tmp_path):
+    """Every layer in every preset carries real keyframes (no static layers)."""
+
+    from media_studio.effectcraft import PROMO_MOTION_PRESETS
+
+    for preset_name in PROMO_MOTION_PRESETS:
+        spec = _preset_spec(monkeypatch, tmp_path, preset_name)
+        for layer in spec["layers"]:
+            assert "keyframes" in layer["params"], f"{preset_name}/{layer['name']} has no keyframes"
+            for prop, frames in layer["params"]["keyframes"].items():
+                assert frames, f"{preset_name}/{layer['name']}/{prop} empty keyframes"
+                for frame in frames:
+                    assert "t" in frame and "v" in frame and "ease" in frame
+
+
+def test_promo_preset_entrance_within_035s(monkeypatch, tmp_path):
+    """Entrances start at t=0 and reach their plateau within 0.35 s."""
+
+    cases = [
+        ("promo-hook-slam", "title", "scale", 0.35),
+        ("promo-hook-slam", "title", "opacity", 0.10),
+        ("promo-kinetic-callout", "accent-rule", "scale", 0.25),
+        ("promo-kinetic-callout", "title", "opacity", 0.30),
+        ("promo-metric-badge", "badge-pill", "scale", 0.30),
+        ("promo-metric-badge", "counter", "scale", 0.35),
+        ("promo-lower-third-clean", "accent-bar", "opacity", 0.30),
+        ("promo-cta-endcard", "cta-pill", "scale", 0.25),
+        ("promo-cta-endcard", "cta", "scale", 0.25),
+    ]
+    for preset_name, layer_name, prop, limit in cases:
+        spec = _preset_spec(monkeypatch, tmp_path, preset_name)
+        frames = _layer(spec, layer_name)["params"]["keyframes"][prop]
+        assert _key_times(frames)[0] == 0.0, (
+            f"{preset_name}/{layer_name} entrance does not start at t=0"
+        )
+        # Resting value the entrance converges to: scale rests at 1.0, opacity at full.
+        if prop == "scale":
+            resting = 1.0
+        elif prop == "opacity":
+            resting = max(frame["v"] for frame in frames)
+        else:
+            resting = frames[-1]["v"]
+        settle = min(frame["t"] for frame in frames if frame["v"] == resting)
+        assert settle <= limit, (
+            f"{preset_name}/{layer_name} entrance settles at {settle}s > {limit}s"
+        )
+
+
+def test_promo_preset_backout_overshoot(monkeypatch, tmp_path):
+    """Back-out entrances overshoot past the target then recover to ~1.0."""
+
+    # hook-slam title slams from 1.5 (overshoot) down through ~0.96 to 1.0.
+    spec = _preset_spec(monkeypatch, tmp_path, "promo-hook-slam")
+    frames = _layer(spec, "title")["params"]["keyframes"]["scale"]
+    values = [frame["v"] for frame in frames]
+    assert max(values) > 1.0, f"no overshoot past target in hook-slam title scale: {values}"
+    assert min(values) <= 1.05, f"hook-slam title scale does not recover to ~1.0: {values}"
+    assert any(frame["ease"] == "back-out" for frame in frames)
+    # cta-endcard snaps in with overshoot too.
+    spec = _preset_spec(monkeypatch, tmp_path, "promo-cta-endcard")
+    frames = _layer(spec, "cta-pill")["params"]["keyframes"]["scale"]
+    values = [frame["v"] for frame in frames]
+    assert max(values) > 1.0, f"no overshoot past target in cta-pill scale: {values}"
+    assert min(values) <= 1.05, f"cta-pill scale does not recover to ~1.0: {values}"
+
+
+def test_promo_preset_exit_within_025s(monkeypatch, tmp_path):
+    """Configured exits (hook-slam, cta) snap out within 0.25 s."""
+
+    for preset_name, layer_name, prop in [
+        ("promo-hook-slam", "title", "opacity"),
+        ("promo-cta-endcard", "cta-pill", "opacity"),
+        ("promo-cta-endcard", "cta", "opacity"),
+    ]:
+        spec = _preset_spec(monkeypatch, tmp_path, preset_name)
+        frames = _layer(spec, layer_name)["params"]["keyframes"][prop]
+        times = _key_times(frames)
+        # The exit is the final descent to 0; its span must be <= 0.25 s.
+        zero_times = [t for t, f in zip(times, frames, strict=False) if f["v"] == 0.0]
+        assert zero_times, f"{preset_name}/{layer_name} has no exit to zero"
+        exit_end = max(zero_times)
+        exit_start = max(t for t in times if t < exit_end)
+        assert exit_end - exit_start <= 0.25, (
+            f"{preset_name}/{layer_name} exit {exit_end - exit_start:.2f}s > 0.25s"
+        )
+
+
+def test_promo_preset_position_keyframes_scale_to_canvas(monkeypatch, tmp_path):
+    """Fraction-based position keyframes scale to absolute pixels at both aspects."""
+
+    from media_studio.effectcraft import render_promo_preset
+
+    seen = _fake_promo_render(monkeypatch, tmp_path)
+    for width, height in ((1080, 1920), (1920, 1080)):
+        seen.clear()
+        render_promo_preset(
+            "promo-lower-third-clean",
+            tmp_path / f"out-{width}x{height}.mov",
+            text="Name",
+            subtext="Role",
+            width=width,
+            height=height,
+        )
+        spec = seen["spec"]
+        bar = _layer(spec, "accent-bar")
+        frames = bar["params"]["keyframes"]["position"]
+        # Position keyframes scaled to pixels (not left as 0..1 fractions).
+        for frame in frames:
+            x, y = frame["v"]
+            assert x > 1 or y > 1, f"position keyframe not scaled to canvas: {frame['v']}"
+
+
+def test_ease_back_out_overshoots():
+    """_ease_back_out swings past 1.0 before settling."""
+
+    from media_studio.effectcraft import _ease_back_out, _ease_expo_out
+
+    assert _ease_back_out(0.0) == 0.0
+    assert _ease_back_out(1.0) == 1.0
+    assert max(_ease_back_out(t / 100.0) for t in range(101)) > 1.0
+    assert _ease_expo_out(0.0) == 0.0
+    assert _ease_expo_out(1.0) == 1.0
+    # Expo-out is fast early: at t=0.1 already at 0.5.
+    assert _ease_expo_out(0.1) == 0.5
+    assert _ease_expo_out(0.2) > 0.5
+
+
+def test_unknown_promo_preset_raises():
+    """An unknown promo preset id raises EffectCraftError with a helpful message."""
+
+    from media_studio.effectcraft import EffectCraftError, render_promo_preset
+
+    with pytest.raises(EffectCraftError, match="unknown promo motion preset"):
+        render_promo_preset("promo-does-not-exist", Path("/tmp/x.mov"), text="Hi")
+
+
+@pytest.mark.skipif(
+    subprocess.run(["which", "effectcraft"], capture_output=True).returncode != 0,
+    reason="effectcraft not installed",
+)
+@pytest.mark.slow
+def test_promo_preset_keyframes_actually_animate(tmp_path, monkeypatch):
+    """Keyframe commands reach the engine and rendered hook-slam frames differ (real animation)."""
+
+    import numpy as np
+    from PIL import Image
+
+    from media_studio.effectcraft import (
+        PROMO_MOTION_PRESETS,
+        EffectCraftRunner,
+        _compile_spec_to_ecproj,
+        build_ecp,
+        render_promo_preset,
+    )
+
+    # 1. The compiler emits prop.addKey commands for keyframed layers.
+    captured: dict[str, list] = {"cmds": []}
+    real_run_commands = EffectCraftRunner.run_commands
+
+    def fake_run_commands(self, commands, **kwargs):
+        captured["cmds"] = list(commands)
+        return real_run_commands(self, commands, **kwargs)
+
+    monkeypatch.setattr(EffectCraftRunner, "run_commands", fake_run_commands)
+
+    spec_path = tmp_path / "hook.ecp"
+    spec = dict(PROMO_MOTION_PRESETS["promo-hook-slam"])
+    spec["width"] = 540
+    spec["height"] = 960
+    spec["fps"] = 30
+    spec["duration"] = 1.5
+    build_ecp(spec, spec_path)
+    ecproj = tmp_path / "hook_compiled.ecproj"
+    _compile_spec_to_ecproj(spec_path, ecproj)
+    assert any(c.get("id") == "prop.addKey" for c in captured["cmds"]), (
+        "no prop.addKey commands emitted"
+    )
+
+    # 2. Rendered frames actually differ (keyframes produce visible motion).
+    out = tmp_path / "hook.mov"
+    res = render_promo_preset(
+        "promo-hook-slam", out, text="Hi", width=540, height=960, fps=30, duration=1.5
+    )
+    assert res.ok and out.exists()
+
+    def frame(t: float) -> np.ndarray:
+        p = tmp_path / f"f{int(t * 100)}.png"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{t}",
+                "-i",
+                str(out),
+                "-frames:v",
+                "1",
+                "-y",
+                str(p),
+            ],
+            check=True,
+        )
+        return np.asarray(Image.open(p).convert("RGBA")).astype(float)
+
+    f0 = frame(0.0)
+    f1 = frame(0.5)
+    assert np.abs(f0 - f1).mean() > 3.0, "hook-slam frames are identical (no animation)"

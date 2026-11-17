@@ -2,12 +2,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
      width="{{width}}" height="{{height}}" viewBox="0 0 {{width}} {{height}}">
   <rect id="bg" data-bg="true" x="0" y="0" width="{{width}}" height="{{height}}" fill="{{primary}}"/>
-  <rect id="safe" data-safe="true" x="60" y="60" width="1160" height="600" fill="none" stroke="none"/>
-  <rect id="band" x="0" y="470" width="{{width}}" height="250" fill="{{accent}}" opacity="0.92"/>
-  <text id="headline" data-role="text" x="60" y="300" font-family="{{font_heading}}" font-size="120"
-        font-weight="700" fill="{{ink}}">{{headline}}</text>
-  <text id="subhead" data-role="text" x="60" y="580" font-family="{{font_body}}" font-size="52"
+  <image id="foreground" x="{{foreground_x}}" y="{{foreground_y}}" width="{{foreground_w}}"
+         height="{{foreground_h}}" preserveAspectRatio="{{foreground_preserve}}"
+         xlink:href="{{foreground_href}}"/>
+  <rect id="safe" data-safe="true" x="{{safe_x}}" y="{{safe_y}}" width="{{safe_w}}"
+        height="{{safe_h}}" fill="none" stroke="none"/>
+  <rect id="band" x="0" y="{{band_y}}" width="{{width}}" height="{{band_h}}" fill="{{accent}}"
+        opacity="0.92"/>
+  <text id="headline" data-role="text" x="{{safe_x}}" y="{{headline_y}}"
+        font-family="{{font_heading}}" font-size="{{headline_size}}" font-weight="700"
+        fill="{{ink}}">{{headline}}</text>
+  <text id="subhead" data-role="text" x="{{safe_x}}" y="{{subhead_y}}"
+        font-family="{{font_body}}" font-size="{{subhead_size}}"
         fill="{{ink}}">{{subhead}}</text>
-  <image id="logo" x="980" y="90" width="180" height="180" preserveAspectRatio="xMaxYMin meet"
-         xlink:href="{{logo_href}}"/>
+  <image id="logo" x="{{logo_x}}" y="{{logo_y}}" width="{{logo_w}}" height="{{logo_h}}"
+         preserveAspectRatio="xMaxYMin meet" xlink:href="{{logo_href}}"/>
 </svg>

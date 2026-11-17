@@ -9,14 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from media_studio import media
+from media_studio import design, media
 from media_studio.cli import main
 from media_studio.ledger import stage_asset
-from media_studio.manifest import load_project
+from media_studio.manifest import Project, load_project
 from media_studio.mlt import Clip, Timeline, Title
 from media_studio.presets import (
     KINDS,
     PresetError,
+    Recipe,
     load_recipes,
     resolve_effects,
     search,
@@ -350,6 +351,47 @@ video:
     return root
 
 
+def _project_from_recipe(root: Path, recipe: Recipe) -> Project:
+    """Write a minimal project.yaml for one design recipe and load it.
+
+    The test project needs no staged assets: design templates render without a logo or fonts
+    (compose falls back to sans-serif and drops the logo image).
+    """
+
+    root.mkdir(parents=True, exist_ok=True)
+    template = recipe.implementation["template"]
+    size = recipe.implementation["size"]
+    values = {parameter.name: parameter.default for parameter in recipe.parameters}
+    headline = str(values.get("headline", ""))
+    subhead = str(values.get("subhead", ""))
+    manifest = (
+        f"slug: {root.name}\n"
+        f"title: {root.name}\n"
+        f"design:\n"
+        f"  variants:\n"
+        f"    - {{id: post, template: {template}, size: {size}, "
+        f'headline: "{headline}", subhead: "{subhead}"}}\n'
+    )
+    (root / "project.yaml").write_text(manifest, encoding="utf-8")
+    return load_project(root)
+
+
+def test_every_design_recipe_renders_through_the_design_path(tmp_path: Path) -> None:
+    recipes = [r for r in load_recipes().values() if r.kind == "design"]
+    assert {r.id for r in recipes} >= {
+        "design-social-post",
+        "design-story",
+        "design-poster-a3",
+        "design-video-thumbnail",
+    }
+    for recipe in recipes:
+        assert validate_recipe(recipe) == [], validate_recipe(recipe)
+        project = _project_from_recipe(tmp_path / recipe.id, recipe)
+        report = design.render(project)
+        assert report.ok, report.problems
+        assert (project.root / "out/images/post.png").is_file()
+
+
 def test_a_video_effect_reaches_the_planned_clip(tmp_path: Path) -> None:
     root = _project_with_effects(
         tmp_path,
@@ -397,19 +439,23 @@ SNAPSHOT_VIDEO_EFFECTS = sorted(
 )
 SNAPSHOT_TITLES = sorted(recipe.id for recipe in load_recipes().values() if recipe.kind == "title")
 # Mean absolute difference per channel on the 0-255 scale, measured on this machine. A video effect
-# renders identically between runs (0.00), so 1.5 is pure headroom. A title goes through qtext and
-# qtblend, whose rasterisation drifts by about 0.8 between adjacent runs and up to 2.2 across
-# contexts, so its tolerance is looser while the guard below still fails a title that vanished.
+# renders identically between runs (0.00), so 1.5 is pure headroom. A title goes through
+# kdenlivetitle and qtblend, whose rasterisation drifts slightly across runs/contexts, so its
+# tolerance is looser while the guard below still fails a title that vanished.
 SNAPSHOT_TOLERANCE = 1.5
 SNAPSHOT_TITLE_TOLERANCE = 4.0
 # A snapshot has to differ from the unfiltered frame, or the recipe proves nothing. Measured against
-# the fixture below: at least 1.0 for every video effect once the defaults fit the frame, and about
-# 17 for a title, which is why the title guard is the higher of the two.
+# the fixture below: at least 1.0 for every video effect once the defaults fit the frame, and well
+# above 5.0 for a title whose geometry fits inside the fixture canvas.
 SNAPSHOT_MINIMUM_CHANGE = 1.0
 SNAPSHOT_TITLE_MINIMUM_CHANGE = 5.0
-# Some defaults describe a 1920x1080 frame, which the small fixture cannot honour, so the crop is
-# snapshotted with an override that actually removes pixels.
-SNAPSHOT_OVERRIDES: dict[str, dict] = {"video-crop-vertical": {"left": 40, "right": 40}}
+# Some defaults describe a 1920x1080 frame, which the small 160x90 fixture cannot honour, so those
+# recipes are snapshotted with overrides that actually land visibly on the fixture frame.
+SNAPSHOT_OVERRIDES: dict[str, dict] = {
+    "video-crop-vertical": {"left": 40, "right": 40},
+    "title-caption-top": {"position": "+8+8", "size": 24},
+    "title-lower-third": {"position": "+8+52", "size": 24},
+}
 
 
 def frame_png(video: Path, destination: Path, at: float = 0.5) -> Path:
@@ -508,7 +554,7 @@ def test_every_title_recipe_matches_its_snapshot(
     tmp_path: Path, patterned_clip: Path, recipes: dict, recipe_id: str
 ) -> None:
     recipe = recipes[recipe_id]
-    settings = recipe.title_settings(recipe.resolve())
+    settings = recipe.title_settings(recipe.resolve(SNAPSHOT_OVERRIDES.get(recipe_id)))
     title = Title(
         text="Snapshot",
         start=0.2,

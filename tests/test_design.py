@@ -9,13 +9,14 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
 from media_studio import design, fonts
 from media_studio.cli import main
 from media_studio.ledger import stage_asset
-from media_studio.manifest import load_project
+from media_studio.manifest import ManifestError, load_project
 from media_studio.project import scaffold_project
 
 DEJAVU = Path("/usr/share/fonts/TTF/DejaVuSans.ttf")
@@ -37,12 +38,14 @@ design:
     heading: font-heading
     body: font-heading
   variants:
-    - {{id: post, template: social-post, size: 1080x1080,
-       headline: "{headline}", subhead: "{subhead}"}}
+    - {{id: post, template: social-post, size: {size},
+       headline: "{headline}", subhead: "{subhead}"{variant_extra}}}
 """
 
 
-def build_project(tmp_path: Path, **overrides: str) -> Path:
+def build_project(
+    tmp_path: Path, variant_extra: str = "", size: str = "1080x1080", **overrides: str
+) -> Path:
     root = scaffold_project("design-demo", root=tmp_path).path
     project = load_project(root)
 
@@ -79,6 +82,10 @@ def build_project(tmp_path: Path, **overrides: str) -> Path:
         "ink": "#FFFFFF",
         "headline": "Kerja Rapi",
         "subhead": "Subhead",
+        "size": size,
+        # The extra keys are appended inside the variant flow mapping, so a
+        # leading comma separates them from subhead when present.
+        "variant_extra": f", {variant_extra}" if variant_extra else "",
     }
     values.update(overrides)
     manifest = MANIFEST.format(**values)
@@ -189,6 +196,41 @@ def test_cli_renders_and_reports(tmp_path: Path, capsys: pytest.CaptureFixture[s
     assert "verdict: pass" in capsys.readouterr().out
 
 
+def test_trim_and_pad_shrink_then_reframe_the_png(tmp_path: Path) -> None:
+    project = load_project(build_project(tmp_path, variant_extra="trim: true, pad: 12"))
+    report = design.render(project)
+    finish = report.variants[0]["finish"]
+    assert finish["trim"] is True and finish["pad"] == 12
+    w, h = finish["final_size"]
+    assert w <= 1080 and h <= 1080  # trimmed content plus 2x12 border never exceeds canvas
+
+
+def test_finish_key_value_validation_rejects_bad_input(tmp_path: Path) -> None:
+    # pad: -4 produces a manifest problem via validate_design
+    problems = design.validate_design(
+        load_project(build_project(tmp_path, variant_extra="pad: -4"))
+    )
+    assert any("pad" in problem for problem in problems)
+
+
+def test_finish_profile_is_recorded(tmp_path: Path) -> None:
+    project = load_project(build_project(tmp_path, variant_extra="profile: srgb"))
+    report = design.render(project)
+    assert report.variants[0]["finish"]["profile"] == "srgb"
+
+
+def test_finish_profile_adobe_rgb_raises_at_load(tmp_path: Path) -> None:
+    root = build_project(tmp_path, variant_extra="profile: adobe-rgb")
+    with pytest.raises(ManifestError, match="adobe-rgb"):
+        load_project(root)
+
+
+def test_finish_trim_yes_raises_at_load(tmp_path: Path) -> None:
+    root = build_project(tmp_path, variant_extra='trim: "yes"')
+    with pytest.raises(ManifestError, match="yes"):
+        load_project(root)
+
+
 def test_contrast_ratio_matches_known_values() -> None:
     assert design.contrast_ratio("#FFFFFF", "#000000") == pytest.approx(21.0, abs=0.1)
     assert design.contrast_ratio("#777777", "#777777") == pytest.approx(1.0, abs=0.01)
@@ -255,6 +297,81 @@ def test_specimen_sheet_renders_candidates_with_the_projects_words(tmp_path: Pat
 
     assert sheet.is_file()
     assert sheet.stat().st_size > 1000
+
+
+def test_variant_image_cutout_composites_into_svg_and_png(tmp_path: Path) -> None:
+    project = load_project(
+        build_project(
+            tmp_path,
+            variant_extra='image: "logo", image_fit: "cover", image_position: "right"',
+        )
+    )
+
+    report = design.render(project)
+
+    assert report.ok, report.problems
+    svg = (project.root / "out" / "images" / "post.svg").read_text(encoding="utf-8")
+    root = ElementTree.fromstring(svg)
+    foreground = next(
+        (element for element in root.iter() if element.get("id") == "foreground"), None
+    )
+    assert foreground is not None
+    assert str(foreground.get("href", "")).startswith("file://") or foreground.get(
+        "{http://www.w3.org/1999/xlink}href", ""
+    ).startswith("file://")
+    assert foreground.get("preserveAspectRatio") == "xMidYMid slice"
+    assert int(foreground.get("width", "0")) > 0
+    # The composite actually rasterises: the export exists and measured its size.
+    export = report.variants[0]["export"]
+    assert isinstance(export, dict)
+    assert design._png_size(project.root / str(export["png"])) == (1080, 1080)
+
+    project_no_img = load_project(build_project(tmp_path / "no_img"))
+    report_no_img = design.render(project_no_img)
+    assert report_no_img.ok, report_no_img.problems
+    svg_no_img = (project_no_img.root / "out" / "images" / "post.svg").read_text(encoding="utf-8")
+    assert 'id="foreground"' not in svg_no_img
+
+
+def test_safe_area_scales_with_1080p_canvas_no_overflow(tmp_path: Path) -> None:
+    project = load_project(build_project(tmp_path, size="1080x1920"))
+
+    report = design.render(project)
+
+    assert report.ok, report.problems
+    svg = (project.root / "out" / "images" / "post.svg").read_text(encoding="utf-8")
+    root = ElementTree.fromstring(svg)
+    safe = next(element for element in root.iter() if element.get("id") == "safe")
+    # A 9:16 canvas keeps a proportional 5% margin instead of the square template's
+    # fixed pixel box, and the text scales with it.
+    assert (
+        safe.get("x"),
+        safe.get("y"),
+        safe.get("width"),
+        safe.get("height"),
+    ) == ("54", "96", "972", "1728")
+    headline = next(element for element in root.iter() if element.get("id") == "headline")
+    assert float(headline.get("font-size", "0")) > 96  # scaled up for the taller canvas
+
+
+def test_variant_size_overrides_reach_the_template(tmp_path: Path) -> None:
+    project = load_project(
+        build_project(tmp_path, variant_extra="headline_size: 64, subhead_size: 32")
+    )
+
+    svg = design.compose(project, project.design.variants[0], environment={})
+
+    assert 'font-size="64"' in svg
+    assert 'font-size="32"' in svg
+
+
+def test_design_render_accepts_deliverable_alias(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = build_project(tmp_path)
+
+    assert main(["design", "render", str(root), "--deliverable", "post"]) == 0
+    assert "post" in capsys.readouterr().out
 
 
 def test_specimen_sheet_needs_a_candidate(tmp_path: Path) -> None:

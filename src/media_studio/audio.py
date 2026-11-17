@@ -8,6 +8,7 @@ via FFmpeg / ffprobe and optional librosa.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -304,3 +305,161 @@ def remove_silence(
         ]
     )
     return output_path
+
+
+def _deepfilter_available() -> bool:
+    """True when DeepFilterNet is importable or its CLI is on PATH."""
+
+    try:  # pragma: no cover - environment probe
+        import deepfilternet  # noqa: F401
+
+        return True
+    except ImportError:
+        pass
+    return shutil.which("deepFilter") is not None
+
+
+def _ffmpeg_voice_chain(source: Path, output: Path) -> None:
+    """Deterministic broadcast vocal-cleanup chain via FFmpeg (keeps afftdn denoise)."""
+
+    filter_str = (
+        "highpass=f=85,"
+        "afftdn=nf=-25,"
+        "acompressor=threshold=0.05:ratio=4:attack=200:release=500:makeup=1,"
+        "equalizer=f=3000:t=h:w=200:g=3"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            "-i",
+            str(source),
+            "-af",
+            filter_str,
+            "-c:a",
+            "pcm_s16le",
+            str(output),
+        ]
+    )
+
+
+def _ffmpeg_tts_chain(source: Path, output: Path) -> None:
+    """Neural-TTS-safe cleanup chain via FFmpeg: no denoise, no aggressive compression.
+
+    Gentle highpass, gentle presence EQ, and light peak control only -- afftdn is
+    deliberately omitted so synthetic/neural speech stays free of denoise artifacts.
+    """
+
+    filter_str = (
+        "highpass=f=60,"
+        "equalizer=f=3000:t=h:w=200:g=2,"
+        "acompressor=threshold=0.08:ratio=2:attack=15:release=100:makeup=1"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            "-i",
+            str(source),
+            "-af",
+            filter_str,
+            "-c:a",
+            "pcm_s16le",
+            str(output),
+        ]
+    )
+
+
+def clean_voiceover(
+    source: Path,
+    *,
+    output: Path,
+    engine: str = "auto",
+    target_lufs: float = -16.0,
+    profile: str = "broadcast",
+) -> Path:
+    """Clean up a voiceover with an engine-aware profile.
+
+    ``profile="broadcast"`` (default, unchanged behavior for human recordings):
+    DeepFilterNet when available, otherwise the deterministic FFmpeg broadcast
+    chain (highpass, afftdn denoise, acompressor, equalizer presence boost)
+    followed by two-pass loudness normalization to ``target_lufs``.
+
+    ``profile="tts"``: neural-TTS-safe cleanup. No denoise (afftdn omitted) and no
+    aggressive compression -- gentle highpass, gentle presence EQ, light peak
+    control -- then two-pass loudness normalization to ``target_lufs``. The ffmpeg
+    light chain is always used for this profile so a denoising engine (e.g.
+    DeepFilterNet) cannot be silently applied to synthetic speech.
+
+    Raises :class:`AudioError` for an unknown profile or engine.
+    """
+
+    source = Path(source)
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    if profile == "broadcast":
+        chosen = engine
+        if engine == "auto":
+            chosen = "deepfilter" if _deepfilter_available() else "ffmpeg"
+        if chosen == "deepfilter":
+            return _clean_deepfilter(source, output, target_lufs)
+        if chosen == "ffmpeg":
+            return _clean_ffmpeg(source, output, target_lufs)
+        raise AudioError(f"unknown clean engine {engine!r}")
+    if profile == "tts":
+        return _clean_tts(source, output, target_lufs)
+    raise AudioError(f"unknown voiceover profile {profile!r}")
+
+
+def _clean_tts(source: Path, output: Path, target_lufs: float) -> Path:
+    """Neural-TTS-safe ffmpeg chain then two-pass loudness normalization."""
+
+    staged = output.with_suffix(".stage.wav")
+    try:
+        _ffmpeg_tts_chain(source, staged)
+        normalize_loudness(staged, output, target_lufs=target_lufs)
+    finally:
+        staged.unlink(missing_ok=True)
+    return output
+
+
+def _clean_deepfilter(source: Path, output: Path, target_lufs: float) -> Path:
+    """Run DeepFilterNet via its venv python, then normalize loudness."""
+
+    import subprocess as _sp
+
+    venv = Path.home() / ".clone" / "Github" / "DeepFilterNet" / ".venv"
+    python = venv / "bin" / "python"
+    tmp = output.with_suffix(".df.wav")
+    try:
+        completed = _sp.run(
+            [str(python), "-m", "deepfilternet", "filter", str(source), "-o", str(tmp)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise AudioError(
+                f"DeepFilterNet failed (exit {completed.returncode}):\n{completed.stderr[-1000:]}"
+            )
+        normalize_loudness(tmp, output, target_lufs=target_lufs)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return output
+
+
+def _clean_ffmpeg(source: Path, output: Path, target_lufs: float) -> Path:
+    """FFmpeg broadcast voice chain then two-pass loudness normalization."""
+
+    staged = output.with_suffix(".stage.wav")
+    try:
+        _ffmpeg_voice_chain(source, staged)
+        normalize_loudness(staged, output, target_lufs=target_lufs)
+    finally:
+        staged.unlink(missing_ok=True)
+    return output

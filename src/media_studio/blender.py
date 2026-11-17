@@ -33,8 +33,30 @@ BLENDER = "blender"
 SCRATCH = Path("/tmp/opencode/blender")
 SHIM_DIRECTORY = Path("~/.local/state/opencode-media-studio/draco-shim")
 VULKAN_ICD = "/usr/share/vulkan/icd.d/nvidia_icd.json"
-TIMEOUT_SECONDS = 3600
+TIMEOUT_SECONDS = 120
 MISSING_LIBRARY = re.compile(r"error while loading shared libraries: (lib[\w.]+)")
+
+
+def is_game_or_heavy_gpu_process_active() -> bool:
+    """Return True if an exclusive 3D game or DXVK/Wine process is active on the GPU.
+
+    Prevents simultaneous Vulkan allocation from Blender and Proton games
+    (which can trigger NVIDIA kernel rw-semaphore deadlocks on 4GB VRAM mobile GPUs).
+    """
+
+    game_patterns = ("GenshinImpact", "wine64", "dxvk", "steam_app_", "gamescope")
+    try:
+        completed = subprocess.run(
+            ["pgrep", "-f", "|".join(game_patterns)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return bool(completed.stdout.strip())
+    except Exception:
+        return False
+
+
 DEFAULT_RESOLUTION = (640, 360)
 DEFAULT_FRAMES = 24
 SUPPORTED_INPUTS = (
@@ -166,7 +188,10 @@ def run_script(
         handle.write(script)
         script_path = Path(handle.name)
     command = [BLENDER, "--background"]
-    if use_gpu:
+    effective_use_gpu = use_gpu
+    if effective_use_gpu and is_game_or_heavy_gpu_process_active():
+        effective_use_gpu = False
+    if effective_use_gpu:
         command.extend(["--gpu-backend", "vulkan"])
     # Without this, Blender exits 0 even when the embedded script raised, which hides real
     # failures behind a missing output file.

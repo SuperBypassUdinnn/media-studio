@@ -147,3 +147,99 @@ def test_deep_checks_reports_engines_from_config() -> None:
     assert by_name["engine filmcraft"].ok is True
     assert "engine effectcraft" in by_name
     assert by_name["engine effectcraft"].ok is True
+
+
+def test_deep_checks_reports_edge_tts_httpx_google_genai_optional() -> None:
+    """Generator/render optional deps appear as checks in deep_checks output."""
+
+    results = deep_checks()
+    by_name = {result.name: result for result in results}
+    for expected in ("edge-tts", "httpx", "google-genai", "playwright"):
+        matches = [name for name in by_name if expected.lower() in name.lower()]
+        assert matches, f"missing optional check containing {expected!r}"
+        check = by_name[matches[0]]
+        if not check.ok:
+            assert "not installed" in check.detail.lower()
+
+
+def test_deep_checks_reports_torch_venvs_as_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing DeepFilterNet/UVR venvs report as optional, not fatal FAIL."""
+
+    import media_studio.tools as tools_module
+
+    monkeypatch.setattr(
+        tools_module,
+        "TORCH_VENVS",
+        (
+            ("DeepFilterNet", tools_module.Path.home() / ".clone" / "DeepFilterNet" / ".venv"),
+            (
+                "demucs (UVR)",
+                tools_module.Path.home() / ".clone" / "ultimatevocalremovergui" / ".venv",
+            ),
+        ),
+    )
+    monkeypatch.setattr(tools_module, "NVIDIA_VULKAN_ICD", tools_module.Path("/missing/icd.json"))
+
+    results = deep_checks()
+    by_name = {result.name: result for result in results}
+    for expected in ("torch DeepFilterNet", "torch demucs (UVR)"):
+        assert expected in by_name, f"missing optional check {expected!r}"
+        check = by_name[expected]
+        assert check.ok is False
+        assert "optional" in check.detail.lower() or "missing venv" in check.detail.lower()
+
+
+def test_check_effectcraft_update_detects_newer_version(tmp_path: Path) -> None:
+    from media_studio.tools import check_effectcraft_update
+
+    cache = tmp_path / "ec-update.json"
+    result = check_effectcraft_update(
+        installed_version="0.19.0",
+        cache_path=cache,
+        force=True,
+        opener=lambda: "0.24.1",
+    )
+    assert result["update_available"] is True
+    assert result["installed"] == "0.19.0"
+    assert result["latest"] == "0.24.1"
+    assert result["error"] is None
+
+    # Cached read should return the same
+    cached_result = check_effectcraft_update(
+        installed_version="0.19.0",
+        cache_path=cache,
+        force=False,
+    )
+    assert cached_result["update_available"] is True
+    assert cached_result["latest"] == "0.24.1"
+
+
+def test_check_effectcraft_update_up_to_date(tmp_path: Path) -> None:
+    from media_studio.tools import check_effectcraft_update
+
+    cache = tmp_path / "ec-update.json"
+    result = check_effectcraft_update(
+        installed_version="0.24.1",
+        cache_path=cache,
+        force=True,
+        opener=lambda: "0.24.1",
+    )
+    assert result["update_available"] is False
+    assert result["installed"] == "0.24.1"
+
+
+def test_check_effectcraft_update_handles_opener_error(tmp_path: Path) -> None:
+    from media_studio.tools import check_effectcraft_update
+
+    def broken_opener() -> str:
+        raise OSError("network down")
+
+    cache = tmp_path / "ec-update.json"
+    result = check_effectcraft_update(
+        installed_version="0.24.1",
+        cache_path=cache,
+        force=True,
+        opener=broken_opener,
+    )
+    assert result["update_available"] is False
+    assert result["error"] == "network down"

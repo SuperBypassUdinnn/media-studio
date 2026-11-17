@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Metric Counter</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; background: transparent !important; overflow: hidden; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  #root { width: 100%; height: 100%; position: relative; background: transparent !important; }
+  .card {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 66vmin;
+    padding: 4vmin;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(var(--accent-rgb, 56, 189, 248), 0.3);
+    border-radius: 4vmin;
+    box-shadow: 0 20px 40px -10px rgba(0,0,0,0.16);
+  }
+  .label { font-size: 2.6vmin; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent, #38bdf8); margin-bottom: 2vmin; }
+  .counter { font-size: clamp(20px, 12vmin, 64px); font-weight: 900; line-height: 1.05; color: #0f172a; }
+  .unit { font-size: 0.55em; font-weight: 600; color: #64748b; }
+  .sub { font-size: 3vmin; color: #475569; margin-top: 2vmin; }
+  .track { width: 100%; height: 2vmin; background: #e2e8f0; border-radius: 1.2vmin; margin-top: 4vmin; overflow: hidden; }
+  .fill { height: 100%; background: var(--accent, #38bdf8); width: 0%; border-radius: 6px; transition: width 0.6s ease; }
+  .spark { width: 100%; height: 70px; margin-top: 14px; }
+  .spark polyline { fill: none; stroke: var(--accent, #38bdf8); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="card">
+    <div class="label" id="label">Proof</div>
+    <div class="counter" id="counter">0<span class="unit" id="unit"></span></div>
+    <div class="sub" id="sub"></div>
+    <div class="track"><div class="fill" id="fill"></div></div>
+    <svg class="spark" id="spark" viewBox="0 0 200 70" preserveAspectRatio="none"><polyline id="sparkLine" points="" /></svg>
+  </div>
+</div>
+<script>
+(function () {
+  const root = document.getElementById('root');
+  const counter = document.getElementById('counter');
+  const unit = document.getElementById('unit');
+  const label = document.getElementById('label');
+  const sub = document.getElementById('sub');
+  const fill = document.getElementById('fill');
+  const sparkLine = document.getElementById('sparkLine');
+
+  function applyParams(params) {
+    if (!params) return;
+    const p = (name, def) => (params[name] !== undefined && params[name] !== null) ? params[name] : def;
+    if (p('label')) label.textContent = p('label');
+    if (p('sub')) sub.textContent = p('sub');
+    const prefix = p('prefix', '');
+    const suffix = p('suffix', '');
+    root.style.setProperty('--prefix', prefix);
+    root.style.setProperty('--suffix', suffix);
+    const accent = p('accent', '#38bdf8');
+    const ink = p('ink', '#0f172a');
+    root.style.setProperty('--accent', accent);
+    root.style.setProperty('--ink', ink);
+    try {
+      const c = accent.slice(1);
+      root.style.setProperty('--accent-rgb', [parseInt(c.substr(0,2),16), parseInt(c.substr(2,2),16), parseInt(c.substr(4,2),16)].join(','));
+    } catch (e) {}
+    try {
+      const c = ink.slice(1);
+      root.style.setProperty('--ink-rgb', [parseInt(c.substr(0,2),16), parseInt(c.substr(2,2),16), parseInt(c.substr(4,2),16)].join(','));
+    } catch (e) {}
+    root.__targetValue = p('value', 0);
+    root.__prefix = prefix;
+    root.__suffix = suffix;
+  }
+
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  // Damped harmonic oscillator spring: 0 -> overshoot past 1 -> settle at 1.
+  window.__msSpring = function ({frame, fps = 30, damping = 12, stiffness = 100, mass = 1} = {}) {
+    const t = Math.max(0, frame / fps);
+    const omegaN = Math.sqrt(stiffness / mass);
+    const zeta = damping / (2 * Math.sqrt(stiffness * mass));
+    if (zeta >= 1) {
+      return 1 - Math.exp(-omegaN * t) * (1 + omegaN * t);
+    }
+    const omegaD = omegaN * Math.sqrt(1 - zeta * zeta);
+    const envelope = Math.exp(-zeta * omegaN * t);
+    return 1 - envelope * (Math.cos(omegaD * t) + (zeta * omegaN / omegaD) * Math.sin(omegaD * t));
+  };
+
+  // Deterministic sparkline from a seeded pseudo-random sequence.
+  function sparkPoints(width, height, count) {
+    let x = 0, y = height / 2, v = 0.5;
+    const step = width / (count - 1);
+    const pts = [x + ',' + y];
+    for (let i = 1; i < count; i++) {
+      v += (Math.sin(i * 0.9) * 0.25 + Math.cos(i * 1.3) * 0.15);
+      v = Math.min(1, Math.max(0, v));
+      x = i * step;
+      y = height * (1 - v);
+      pts.push(x + ',' + y);
+    }
+    return pts.join(' ');
+  }
+
+  window.__msSeek = function (timeSec, frameIndex, totalFrames, params) {
+    applyParams(params);
+    const progress = totalFrames > 1 ? frameIndex / (totalFrames - 1) : 0;
+    const ease = easeOutCubic(progress);
+    const fps = (params && params.fps) || 30;
+    // Card entrance pop: springs into view over the first 0.4s and settles cleanly at 1.0.
+    const entranceSpring = window.__msSpring({frame: frameIndex, fps, damping: 12, stiffness: 100, mass: 1});
+    const entrance = Math.min(1.0, Math.max(0.05, entranceSpring));
+    const cardScale = params && params.card_scale !== undefined ? Math.max(0.05, params.card_scale) : 1;
+    const cardAnchorY = params && params.card_anchor_y !== undefined ? params.card_anchor_y : 0.5;
+    const floatY = Math.sin(progress * Math.PI * 4) * 6;
+    const slowZoom = 1.0 + progress * 0.05;
+    const card = document.querySelector('.card');
+    if (card) {
+      card.style.transform = `translate(-50%, calc(-${cardAnchorY * 100}% + ${floatY}px)) scale(${entrance * cardScale * slowZoom})`;
+    }
+
+    // Paced counting progression: smoothly counts from 0 to target across the first 75% of scene duration.
+    const countRatio = 0.75;
+    const countProgress = Math.min(1.0, Math.max(0.0, progress / countRatio));
+    const easeCount = easeOutCubic(countProgress);
+
+    const targetVal = root.__targetValue || 0;
+    const value = Math.round(targetVal * easeCount);
+    counter.textContent = root.__prefix + value.toLocaleString() + root.__suffix;
+    fill.style.width = (Math.min(100, Math.max(0, easeCount * 100))).toFixed(1) + '%';
+
+    const w = 200, h = 70;
+    sparkLine.setAttribute('points', sparkPoints(w, h, 14));
+    // Animate sparkline dash offset so the line draws on over the active counting duration.
+    const len = sparkLine.getTotalLength ? sparkLine.getTotalLength() : 260;
+    sparkLine.style.strokeDasharray = len + ' ' + len;
+    sparkLine.style.strokeDashoffset = len * (1 - easeCount);
+  };
+})();
+</script>
+</body>
+</html>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -347,3 +348,86 @@ def test_compile_force_snapshots_before_overwrite(
 
     assert snapshotted == [target.resolve()]
     assert result.output_path == target
+
+
+def _recording_runner() -> tuple[MagicMock, list[dict[str, Any]]]:
+    """A FilmCraft runner double that records every `timeline.place` payload."""
+
+    placed: list[dict[str, Any]] = []
+    runner = MagicMock(spec=FilmCraftRunner)
+
+    def mock_exec(cmd_id: str, params: dict | None = None, **kwargs: object) -> CommandResult:
+        if cmd_id == "file.import":
+            return CommandResult(
+                command=cmd_id,
+                returncode=0,
+                stdout="",
+                stderr="",
+                result={"items": [101]},
+                ok=True,
+            )
+        return CommandResult(command=cmd_id, returncode=0, stdout="", stderr="", result={}, ok=True)
+
+    def mock_run_batch(cmds: list[dict[str, Any]], **kwargs: object) -> list[CommandResult]:
+        for command in cmds:
+            if command.get("id") == "timeline.place":
+                placed.append(command.get("params") or {})
+        return [
+            CommandResult(
+                command=command.get("id", ""),
+                returncode=0,
+                stdout="",
+                stderr="",
+                result={"sequence": 7} if command.get("id") == "file.newSequence" else {},
+                ok=True,
+            )
+            for command in cmds
+        ]
+
+    runner.exec.side_effect = mock_exec
+    runner.run_batch.side_effect = mock_run_batch
+    return runner, placed
+
+
+def test_audio_cue_clamps_long_music_to_video_duration_with_offset(tmp_path: Path) -> None:
+    """A cue entered 30 s into its source must stop at the end of a 3 s edit."""
+
+    project = _make_project(tmp_path, duck=False)
+    assert project.video is not None
+    clamped = replace(
+        project,
+        video=replace(
+            project.video,
+            music=AudioCue(asset="m1", in_point=30.0, duration=45.0, gain=0.35, duck=False),
+        ),
+    )
+    runner, placed = _recording_runner()
+
+    compile_manifest_to_fcproj(clamped, runner=runner)
+
+    music = next(params for params in placed if params.get("track") == "A2")
+    assert music["sourceIn"] == {"seconds": 30.0}
+    assert music["duration"] == {"seconds": 3.0}
+
+    # clamp_to_video=False keeps the declared length (the source probe is unavailable
+    # for the fake fixture, so no source-length clamp can shorten it either).
+    unclamped = replace(
+        clamped,
+        video=replace(
+            clamped.video,
+            music=AudioCue(
+                asset="m1",
+                in_point=30.0,
+                duration=45.0,
+                gain=0.35,
+                duck=False,
+                clamp_to_video=False,
+            ),
+        ),
+    )
+    runner2, placed2 = _recording_runner()
+
+    compile_manifest_to_fcproj(unclamped, runner=runner2)
+
+    music2 = next(params for params in placed2 if params.get("track") == "A2")
+    assert music2["duration"] == {"seconds": 45.0}

@@ -151,6 +151,7 @@ class AudioPlan:
     ducking: tuple[tuple[float, float], ...] = ()
     duck_level: float = DEFAULT_DUCK_LEVEL
     duck_fade: float = 0.25
+    duration: float | None = None
 
 
 @dataclass(frozen=True)
@@ -777,10 +778,14 @@ class Timeline:
         fps = self.fps
         offset = frames(plan.in_point, fps)
         playlist = ElementTree.SubElement(header, "playlist", {"id": f"{name}_playlist"})
+        # A cue that is shorter than the edit stops playing, and a blank keeps the track the
+        # length of the picture instead of ending early and shifting later tracks.
+        span = total if plan.duration is None else frames(plan.duration, fps)
+        span = max(min(span, total), 0)
 
         # One entry per constant-level span: an XML filter cannot animate, but it can hold a
         # level, and a chain of entries is what turns that into a duck with ramps.
-        for index, segment in enumerate(level_segments(plan, total / fps, fps)):
+        for index, segment in enumerate(level_segments(plan, span / fps, fps)):
             entry = ElementTree.SubElement(
                 playlist,
                 "entry",
@@ -796,6 +801,8 @@ class Timeline:
                 )
                 _property(audio_filter, "mlt_service", "volume")
                 _property(audio_filter, "level", f"{segment.level_db:.2f}")
+        if total > span:
+            ElementTree.SubElement(playlist, "blank", {"length": str(total - span)})
         return playlist
 
 

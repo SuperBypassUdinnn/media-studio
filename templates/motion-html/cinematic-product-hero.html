@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cinematic Product Hero</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: transparent !important;
+    overflow: hidden;
+    font-family: var(--font-body, "Noto Sans"), ui-sans-serif, system-ui, sans-serif;
+  }
+  #root {
+    width: 100%; height: 100%;
+    position: relative;
+    background: transparent !important;
+    perspective: 1400px;
+  }
+  .stage {
+    position: absolute; left: 50%; top: 50%;
+    width: 86vmin; height: 86vmin;
+    transform: translate(-50%, -50%);
+    display: flex; align-items: center; justify-content: center;
+    gap: 4vmin;
+  }
+  /* 3D Product Float Container */
+  .product-viewport {
+    flex: 0 0 auto;
+    position: relative;
+    width: 36vmin; height: 56vmin;
+    transform-style: preserve-3d;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .product-img {
+    max-width: 100%; max-height: 100%;
+    object-fit: contain;
+    display: block;
+    filter: drop-shadow(0 28px 36px rgba(0,0,0,0.65)) drop-shadow(0 0 45px rgba(var(--accent-rgb, 245, 158, 11), 0.28));
+  }
+  /* Specular Light Sweep Gleam */
+  .gleam-mask {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    mix-blend-mode: overlay;
+    overflow: hidden;
+    opacity: 0;
+  }
+  .gleam-line {
+    position: absolute; top: -50%; width: 45%; height: 200%;
+    background: linear-gradient(115deg, transparent 20%, rgba(255,255,255,0.6) 50%, transparent 80%);
+    transform: rotate(25deg);
+    filter: blur(8px);
+  }
+  /* Editorial Luxury Typography */
+  .copy-wrap {
+    flex: 1 1 auto;
+    max-width: 48vmin;
+    display: flex; flex-direction: column; gap: 18px;
+    color: var(--ink, #F8FAFC);
+  }
+  .eyebrow {
+    font-size: clamp(12px, 2.2vmin, 16px);
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent, #F59E0B);
+  }
+  .gold-rule {
+    width: 48px; height: 2px;
+    background: var(--accent, #F59E0B);
+    margin: 4px 0 10px;
+  }
+  h1 {
+    font-size: clamp(24px, 4.4vmin, 44px);
+    font-weight: 800;
+    line-height: 1.18;
+    letter-spacing: -0.01em;
+    color: var(--ink, #F8FAFC);
+  }
+  p {
+    font-size: clamp(13px, 2.4vmin, 18px);
+    line-height: 1.55;
+    color: #CBD5E1;
+  }
+  .badge-pill {
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: 10px 22px;
+    margin-top: 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(var(--accent-rgb, 245, 158, 11), 0.35);
+    background: rgba(var(--accent-rgb, 245, 158, 11), 0.10);
+    font-size: clamp(12px, 2.0vmin, 15px);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent, #F59E0B);
+    width: fit-content;
+  }
+  .badge-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent, #F59E0B);
+    box-shadow: 0 0 10px var(--accent, #F59E0B);
+  }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="stage" id="stage">
+    <div class="product-viewport" id="viewport">
+      <img class="product-img" id="productImg" src="" alt="Product">
+      <div class="gleam-mask" id="gleamMask">
+        <div class="gleam-line" id="gleamLine"></div>
+      </div>
+    </div>
+    <div class="copy-wrap" id="copyWrap">
+      <div class="eyebrow" id="eyebrow">Aura Noir</div>
+      <div class="gold-rule"></div>
+      <h1 id="headline">Pure Nocturnal Alchemy</h1>
+      <p id="subhead">Meticulously forged from rare nocturnal blooms and liquid golden amber.</p>
+      <div class="badge-pill" id="badgePill">
+        <div class="badge-dot"></div>
+        <span id="badgeText">Mastercraft Edition</span>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  const root = document.getElementById('root');
+  const stage = document.getElementById('stage');
+  const viewport = document.getElementById('viewport');
+  const productImg = document.getElementById('productImg');
+  const gleamMask = document.getElementById('gleamMask');
+  const gleamLine = document.getElementById('gleamLine');
+  const eyebrow = document.getElementById('eyebrow');
+  const headline = document.getElementById('headline');
+  const subhead = document.getElementById('subhead');
+  const badgeText = document.getElementById('badgeText');
+
+  function applyParams(params) {
+    if (!params) return;
+    const p = (name, def) => (params[name] !== undefined && params[name] !== null) ? params[name] : def;
+    if (p('product_image')) productImg.src = p('product_image');
+    if (p('headline')) headline.textContent = p('headline');
+    if (p('subhead')) subhead.textContent = p('subhead');
+    if (p('eyebrow')) eyebrow.textContent = p('eyebrow');
+    if (p('badge')) badgeText.textContent = p('badge');
+
+    const accent = p('accent', '#F59E0B');
+    const ink = p('ink', '#F8FAFC');
+    root.style.setProperty('--accent', accent);
+    root.style.setProperty('--ink', ink);
+    try {
+      const c = accent.replace('#', '');
+      root.style.setProperty('--accent-rgb', [parseInt(c.substr(0,2),16), parseInt(c.substr(2,2),16), parseInt(c.substr(4,2),16)].join(','));
+    } catch (e) {}
+  }
+
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  window.__msSeek = function (timeSec, frameIndex, totalFrames, params) {
+    applyParams(params);
+    const progress = totalFrames > 1 ? frameIndex / (totalFrames - 1) : 0;
+    const ease = easeOutCubic(progress);
+    const fps = (params && params.fps) || 30;
+
+    // Continuous Cinematic Camera Motion (slow push-in + subtle 3D breathing float)
+    const baseScale = params && params.card_scale !== undefined ? params.card_scale : 1.0;
+    const cameraPush = 1.0 + progress * 0.08; // 8% continuous push-in
+    const floatY = Math.sin(progress * Math.PI * 3) * 8;
+    const rotY = -6 + progress * 12; // slow 3D orbit from -6deg to +6deg
+    const rotX = Math.cos(progress * Math.PI * 3) * 3;
+
+    viewport.style.transform = `scale(${baseScale * cameraPush}) translateY(${floatY}px) rotateY(${rotY}deg) rotateX(${rotX}deg)`;
+
+    // Specular light sweep across the bottle between 20% and 80% duration
+    if (progress > 0.15 && progress < 0.85) {
+      gleamMask.style.opacity = '1';
+      const gleamPos = -40 + (progress - 0.15) / 0.70 * 160;
+      gleamLine.style.left = gleamPos + '%';
+    } else {
+      gleamMask.style.opacity = '0';
+    }
+
+    // Typography fade and subtle slide-in
+    const textSlide = (1 - ease) * 20;
+    const textOpacity = Math.min(1.0, progress * 4.0);
+    const copyWrap = document.getElementById('copyWrap');
+    if (copyWrap) {
+      copyWrap.style.transform = `translateX(${textSlide}px)`;
+      copyWrap.style.opacity = textOpacity;
+    }
+  };
+})();
+</script>
+</body>
+</html>

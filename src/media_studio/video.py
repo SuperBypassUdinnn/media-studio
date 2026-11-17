@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -25,11 +26,13 @@ from .fcproj import compile_manifest_to_fcproj
 from .filmcraft import ExportResult, FilmCraftError, FilmCraftRunner
 from .ingest import IngestError, probe_media
 from .ledger import read_sidecar
-from .manifest import AudioCue, Deliverable, Project, VideoPlan
+from .manifest import AudioCue, Deliverable, Project, VideoPlan, audio_span
 from .mlt import AudioPlan, Clip, Timeline, Title, ducking_from_speech, timeline_seconds
 from .parallax import ParallaxError, compose_parallax
 from .presets import PresetError, resolve_effects
 from .sidecar import UNKNOWN_SPDX
+
+logger = logging.getLogger(__name__)
 
 SCRATCH_ROOT = Path("/tmp/opencode")
 DEFAULT_SHOT_SECONDS = 3.0
@@ -123,8 +126,20 @@ def _shot_duration(project: Project, asset_id: str, declared: float | None) -> f
     return round(media.probe(_resolve_asset(project, asset_id)).duration, 3) or DEFAULT_SHOT_SECONDS
 
 
+def _source_seconds(path: Path) -> float | None:
+    """Best-effort source length; an unprobeable file leaves the cue unclamped by the source."""
+
+    try:
+        return media.probe(path).duration
+    except media.MediaError:
+        return None
+
+
 def _audio_plan(
-    project: Project, cue: AudioCue | None, ducking: tuple[tuple[float, float], ...] = ()
+    project: Project,
+    cue: AudioCue | None,
+    video_seconds: float,
+    ducking: tuple[tuple[float, float], ...] = (),
 ) -> AudioPlan | None:
     if cue is None:
         return None
@@ -136,6 +151,7 @@ def _audio_plan(
         fade_in=cue.fade_in,
         fade_out=cue.fade_out,
         ducking=ducking if cue.duck else (),
+        duration=audio_span(cue, video_seconds, _source_seconds(path)),
     )
 
 
@@ -200,9 +216,9 @@ def build_timeline(
             "speech_segments": [list(segment) for segment in speech],
             "source": "silencedetect on the voice track",
         }
-    voice_plan = _audio_plan(project, plan.voice)
+    voice_plan = _audio_plan(project, plan.voice, duration)
 
-    music = _audio_plan(project, plan.music, ducking)
+    music = _audio_plan(project, plan.music, duration, ducking)
     if music is not None and music_overrides:
         music = replace(music, **music_overrides)
 
@@ -395,17 +411,117 @@ def _geometry(deliverable: Deliverable) -> tuple[int, int, float]:
     return width, height, float(deliverable.fps or 30.0)
 
 
-def encode_with_loudness(
+def resolve_video_encoder_flags(
+    *,
+    is_intermediate: bool = False,
+    fps: int = 30,
+    use_gpu: bool = True,
+) -> tuple[str, list[str]]:
+    """Resolve the video encoder name and FFmpeg flags.
+
+    Prefers the dGPU NVENC encoder (``h264_nvenc``) when available and ``use_gpu``
+    is True, otherwise falls back to the CPU ``libx264`` encoder.
+
+    Final deliverables use constrained VBV/ABR (``-b:v``/``-maxrate``/``-bufsize``)
+    targeting YouTube's recommended 1080p upload bitrate (12M/14M/24M at 60 fps,
+    8M/10M/16M at 30 fps). Intermediates use constant quality (``-cq 14`` on NVENC,
+    ``-crf 18`` on libx264).
+    """
+
+    if use_gpu and media.detect_nvenc_available():
+        name = "h264_nvenc"
+        if is_intermediate:
+            flags = ["-c:v", name, "-preset", "p2", "-cq", "14"]
+        else:
+            preset = "p4"
+            if fps == 60:
+                bitrate, maxrate, bufsize = "12M", "14M", "24M"
+            else:
+                bitrate, maxrate, bufsize = "8M", "10M", "16M"
+            flags = [
+                "-c:v",
+                name,
+                "-preset",
+                preset,
+                "-b:v",
+                bitrate,
+                "-maxrate",
+                maxrate,
+                "-bufsize",
+                bufsize,
+            ]
+        return name, flags
+
+    name = "libx264"
+    if is_intermediate:
+        flags = ["-c:v", name, "-preset", "veryfast", "-crf", "18"]
+    else:
+        flags = ["-c:v", name, "-preset", "medium", "-crf", "23"]
+    return name, flags
+
+
+def run_ffmpeg_encode_with_fallback(
+    command_builder,
+    *,
+    output,
+    label,
+    fps: int = 30,
+    is_intermediate: bool = False,
+    use_gpu: bool = True,
+) -> None:
+    """Encode ``output`` with dGPU NVENC first, falling back to CPU libx264.
+
+    ``command_builder`` is a callable that receives the encoder-specific flag list
+    (as returned by :func:`resolve_video_encoder_flags`) and returns the complete
+    FFmpeg command. On NVENC/driver/device failure a warning is logged and the
+    command is rebuilt with the CPU encoder and retried once. ``fps`` and
+    ``is_intermediate`` are threaded to the encoder-flag resolver so bitrate/quality
+    settings match the deliverable.
+    """
+
+    output = Path(output)
+    _, gpu_flags = resolve_video_encoder_flags(
+        is_intermediate=is_intermediate, fps=fps, use_gpu=use_gpu
+    )
+    try:
+        media.run_command(command_builder(gpu_flags), label=label, expect_stdout=False)
+    except media.MediaError as error:
+        if not _is_nvenc_error(error):
+            raise
+        logger.warning("dGPU NVENC failed (%s); falling back to CPU libx264", error)
+        _, cpu_flags = resolve_video_encoder_flags(
+            is_intermediate=is_intermediate, fps=fps, use_gpu=False
+        )
+        media.run_command(command_builder(cpu_flags), label=label, expect_stdout=False)
+
+
+def _is_nvenc_error(error: media.MediaError) -> bool:
+    """True when ``error`` looks like an NVENC/CUDA/device failure worth a CPU fallback."""
+
+    text = str(error).lower()
+    nvenc_terms = (
+        "nvenc",
+        "cuda",
+        "nvidia",
+        "device",
+        "invalid device",
+        "no such device",
+        "driver",
+    )
+    return any(term in text for term in nvenc_terms)
+
+
+def _encode_loudness_command(
     intermediate: Path,
     destination: Path,
     target_lufs: float,
-    *,
-    preview: bool = False,
-) -> media.Loudness:
-    """Encode to H.264/AAC, normalising loudness with the measurement loudnorm asks for."""
+    measured: media.Loudness,
+    fps: int,
+    preview: bool,
+    encoder_flags: list[str],
+) -> list[str]:
+    """Build the loudnorm two-pass encode command for the given encoder flags."""
 
-    measured = media.measure_loudness(intermediate, target_lufs)
-    destination.parent.mkdir(parents=True, exist_ok=True)
     command = [
         media.FFMPEG,
         "-hide_banner",
@@ -415,29 +531,67 @@ def encode_with_loudness(
         str(intermediate),
         "-af",
         f"loudnorm=I={target_lufs}:TP={TRUE_PEAK_CEILING}:LRA=11:{measured.as_loudnorm_arguments()}",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast" if preview else "medium",
-        "-crf",
-        "28" if preview else "20",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k" if preview else "192k",
-        "-ar",
-        "48000",
-        "-movflags",
-        "+faststart",
     ]
+    command.extend(encoder_flags)
+    command.extend(
+        [
+            "-profile:v",
+            "high" if not preview else "main",
+            "-pix_fmt",
+            "yuv420p",
+            "-color_range",
+            "tv",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k" if preview else "192k",
+            "-ar",
+            "48000",
+            "-movflags",
+            "+faststart",
+        ]
+    )
     if preview:
         command.extend(["-vf", "scale=640:-2"])
     command.append(str(destination))
-    media.run_command(command, label=f"encode {destination.name}", expect_stdout=False)
-    if not destination.is_file():
-        raise VideoError(f"ffmpeg did not write {destination}")
+    return command
+
+
+def encode_with_loudness(
+    intermediate: Path,
+    destination: Path,
+    target_lufs: float,
+    *,
+    preview: bool = False,
+    fps: int = 30,
+) -> media.Loudness:
+    """Encode to H.264/AAC, normalising loudness with the measurement loudnorm asks for.
+
+    Final deliverables target YouTube's recommended upload bitrate: 12 Mbps at
+    60 fps (1080p60) and 8 Mbps at 30 fps, via constrained VBV/ABR
+    (``-b:v`` / ``-maxrate`` / ``-bufsize``). Explicit BT.709 color metadata is
+    tagged so players report ``color_range=tv``, ``color_space=bt709``,
+    ``color_primaries=bt709`` and ``color_transfer=bt709`` instead of guessing.
+    """
+
+    measured = media.measure_loudness(intermediate, target_lufs)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    def build(encoder_flags: list[str]) -> list[str]:
+        return _encode_loudness_command(
+            intermediate, destination, target_lufs, measured, fps, preview, encoder_flags
+        )
+
+    run_ffmpeg_encode_with_fallback(
+        build, output=destination, label=f"encode {destination.name}", fps=fps
+    )
     return measured
 
 
@@ -665,6 +819,7 @@ def render_filmcraft(
     generate_review: bool = True,
     preview: bool = False,
     burn_captions: bool = False,
+    force: bool = False,
 ) -> FilmCraftRenderResult:
     if isinstance(deliverable_id, Deliverable):
         deliverable = deliverable_id
@@ -693,6 +848,7 @@ def render_filmcraft(
                 output_fcproj=fcproj_path,
                 deliverable_id=deliverable.id,
                 runner=runner,
+                force=force,
             )
 
     extension = deliverable.container or "mp4"
