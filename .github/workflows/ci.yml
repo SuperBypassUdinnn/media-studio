@@ -26,7 +26,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
       - name: Run Quality Verification Pipeline
         run: python3 scripts/verify_pipeline.py
       - name: Verify Planning & Backlog Parity
