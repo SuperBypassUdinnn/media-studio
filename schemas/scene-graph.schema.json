@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://media-studio.local/schemas/scene-graph.schema.json",
+  "title": "Scene Graph",
+  "description": "Formal contract for a composable multi-engine scene graph rendered by media-studio.",
+  "type": "object",
+  "required": ["project_slug", "scenes"],
+  "properties": {
+    "project_slug": {
+      "type": "string",
+      "description": "Slug of the owning media-studio project."
+    },
+    "aspects": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": ["9:16", "16:9"],
+      "description": "Output aspect ratios to render."
+    },
+    "fps": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60,
+      "description": "Timeline frame rate."
+    },
+    "subtitles": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether burned-in subtitles are enabled."
+    },
+    "audio": {
+      "type": "object",
+      "description": "Audio bed and sidecar settings."
+    },
+    "scenes": {
+      "type": "array",
+      "description": "Ordered list of composable scene nodes.",
+      "items": {
+        "type": "object",
+        "required": ["id", "duration", "engine"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique scene identifier used for cache keys and outputs."
+          },
+          "duration": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Scene duration in seconds."
+          },
+          "engine": {
+            "type": "string",
+            "enum": ["blender-3d", "effectcraft", "html-motion", "remotion", "flow-gen", "composite"],
+            "description": "Render engine that produces this scene's clip."
+          },
+          "shot_scale": {
+            "type": "string",
+            "enum": ["ECU", "CU", "MS", "WS"],
+            "default": "MS",
+            "description": "Framing scale for 3D stages."
+          },
+          "camera_angle": {
+            "type": "string",
+            "enum": ["low-hero", "eye-level", "high-zenith"],
+            "default": "low-hero",
+            "description": "Camera angle preset."
+          },
+          "focal_point": {
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 2,
+            "maxItems": 2,
+            "default": [0.5, 0.5],
+            "description": "Normalised [x, y] focal point."
+          },
+          "camera": {
+            "type": "object",
+            "description": "Engine-specific camera overrides."
+          },
+          "blender_3d": {
+            "type": "object",
+            "description": "blender-3d engine-specific parameters."
+          },
+          "typography_3d": {
+            "type": "object",
+            "description": "3D text overlay parameters."
+          },
+          "flow_gen": {
+            "type": "object",
+            "description": "flow-gen engine-specific parameters."
+          },
+          "transition_out": {
+            "type": "object",
+            "description": "Outgoing transition parameters."
+          },
+          "sound_events": {
+            "type": "array",
+            "description": "Scene-adaptive sound-effect cues."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

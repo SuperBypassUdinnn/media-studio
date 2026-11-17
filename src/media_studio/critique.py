@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import math
 from collections.abc import Sequence
@@ -31,6 +33,9 @@ VISION_RUBRIC_AXES = (
     "chiaroscuro_lighting_and_optical_finish",
     "conceptual_fit_to_brief",
 )
+
+#: Mean gray floor (0-255) below which a keyframe is flagged as underexposed.
+EXPOSURE_FLOOR_MEAN_GRAY = 38.0
 
 
 def _relative_luminance(rgb: tuple[int, int, int]) -> float:
@@ -178,6 +183,19 @@ def critique_palette(project: Project, frame_paths: Sequence[Path]) -> list[dict
                 thumb = im.convert("RGB").resize((64, 36))
                 arr = np.array(thumb, dtype=np.float32).reshape(-1, 3)
                 mean_rgb = tuple(int(x) for x in arr.mean(axis=0))
+                mean_gray = float(arr.mean())
+                if mean_gray < EXPOSURE_FLOOR_MEAN_GRAY:
+                    defects.append(
+                        {
+                            "category": "exposure",
+                            "severity": "error",
+                            "defect": (
+                                f"Frame {fpath.name} underexposed "
+                                f"(mean gray {mean_gray:.1f} < {EXPOSURE_FLOOR_MEAN_GRAY:.1f})"
+                            ),
+                            "corrective_action": "Add key/rim light or raise HDRI strength",
+                        }
+                    )
                 frame_lab = _rgb_to_lab(mean_rgb)
                 min_de = min(_delta_e(frame_lab, t_lab) for t_lab in target_labs)
                 if min_de > 38.0:
@@ -272,10 +290,13 @@ def critique_project(
     defects: list[dict[str, Any]] = []
     sg_file = scene_graph_path or (project.root / "scene-graph.json")
 
-    # 1. Montage Grammar Gate
+    # 1. Montage Grammar Gate (the parsed graph also supplies the total-duration fallback)
+    sg_data: dict[str, Any] | None = None
     if sg_file.is_file():
         try:
             sg_data = json.loads(sg_file.read_text(encoding="utf-8"))
+            if not isinstance(sg_data, dict):
+                sg_data = {}
             scenes = sg_data.get("scenes") or []
             defects.extend(critique_montage(scenes))
         except Exception as e:
@@ -287,6 +308,16 @@ def critique_project(
                     "corrective_action": "Fix JSON syntax in scene-graph.json",
                 }
             )
+
+    graph_total: float | None = None
+    if isinstance(sg_data, dict):
+        total = 0.0
+        for scene in sg_data.get("scenes") or []:
+            if isinstance(scene, dict):
+                with contextlib.suppress(TypeError, ValueError):
+                    total += float(scene.get("duration", 0.0) or 0.0)
+        if total > 0:
+            graph_total = total
 
     # 2. Keyframes / Storyboard Gate
     sb_dir = project.root / "out" / "storyboard"
@@ -306,6 +337,18 @@ def critique_project(
     rubric_file = project.root / "out" / "reports" / "vision-critique.json"
     defects.extend(validate_vision_rubric(rubric_file, stage=stage))
 
+    # The vision report fingerprints the exact artifact it evaluated via target_sha256;
+    # load it once so each video deliverable can be bound to that render.
+    rubric_data: dict[str, Any] = {}
+    if rubric_file.is_file():
+        try:
+            rubric_data = json.loads(rubric_file.read_text(encoding="utf-8")) or {}
+            if not isinstance(rubric_data, dict):
+                rubric_data = {}
+        except Exception:
+            rubric_data = {}
+    target_sha256 = rubric_data.get("target_sha256")
+
     # 4. Video Deliverable Gates (if stage == "video")
     if stage == "video":
         for deliv in deliverables:
@@ -320,7 +363,27 @@ def critique_project(
                     }
                 )
                 continue
-            qc = video.qc_report(vpath, expected_duration=30.0, target_lufs=-14.0)
+            video_sha256 = hashlib.sha256(vpath.read_bytes()).hexdigest()
+            if target_sha256 and str(target_sha256) != video_sha256:
+                defects.append(
+                    {
+                        "category": "vision-rubric",
+                        "severity": "error",
+                        "defect": (
+                            f"Vision critique target_sha256 does not match {deliv} artifact "
+                            f"({vpath.name}); report is bound to a different render"
+                        ),
+                        "corrective_action": "Re-issue vision-critique.json for this render",
+                    }
+                )
+            expected_duration: float | None = None
+            for declared in project.deliverables:
+                if declared.id == deliv and declared.duration is not None:
+                    expected_duration = declared.duration
+                    break
+            if expected_duration is None:
+                expected_duration = graph_total
+            qc = video.qc_report(vpath, expected_duration=expected_duration, target_lufs=-14.0)
             if not qc.get("ok"):
                 for check_name, status in qc.get("checks", {}).items():
                     if not status:
