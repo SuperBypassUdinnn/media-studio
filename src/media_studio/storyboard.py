@@ -5,15 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 from media_studio.manifest import Project
 from media_studio.scene_graph import SceneGraph, SceneNode
 from media_studio.stage_3d import Stage3DSpec, render_3d_stage_still
-from media_studio.typography_3d import (
-    Typography3DSpec,
-    composite_z_depth_sandwich,
-)
 
 
 def render_scene_keyframe(
@@ -31,68 +27,21 @@ def render_scene_keyframe(
     primary = palette.get("primary", "#080B11")
     accent = palette.get("accent", "#F59E0B")
 
-    # 1. Base 3D Still
+    # Render True 3D Product Scene with Integrated 3D Typography in Blender
     stage_spec = Stage3DSpec(
         model_path=None,
         preset_geometry="luxury-perfume-flacon",
         shot_scale=scene.shot_scale,
         camera_angle=scene.camera_angle,
+        camera_move=str(scene.camera.get("move", "slow-dolly-in")),
         focal_length_mm=float(scene.camera.get("focal_length_mm", 85.0)),
         dof_fstop=float(scene.camera.get("dof_fstop", 1.8)),
         primary_color=primary,
         accent_color=accent,
+        typography_3d=scene.typography_3d,
+        product_rotation_deg=float(scene.camera.get("product_rotation_deg", 18.0)),
     )
-    matte_png = output_png.with_suffix(".matte.png") if scene.typography_3d else None
-    render_3d_stage_still(stage_spec, output_png, matte_png=matte_png, width=width, height=height)
-
-    # 2. 3D Typography Sandwich
-    if scene.typography_3d and scene.typography_3d.get("text"):
-        typo_spec = Typography3DSpec(
-            text=str(scene.typography_3d.get("text")),
-            subtext=str(scene.typography_3d.get("subtext", "")),
-            color=palette.get("ink", "#F8FAFC"),
-            accent=accent,
-            z_layer=str(scene.typography_3d.get("z_layer", "behind-subject")),
-            focal_point=scene.focal_point,
-        )
-        typo_png = output_png.with_suffix(".typo.png")
-        txt_img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(txt_img)
-        tx = int(scene.focal_point[0] * width)
-        ty = int(scene.focal_point[1] * height)
-
-        font_size = max(24, int(height * 0.055))
-        f_main = ImageFont.load_default(size=font_size)
-        f_sub = ImageFont.load_default(size=int(font_size * 0.45))
-
-        ac_rgb = (245, 158, 11, 255)
-        # Drop shadow / glow behind text
-        for ox, oy in ((-2, -2), (2, -2), (-2, 2), (2, 2), (0, 3)):
-            draw.text(
-                (tx + ox, ty + oy), typo_spec.text, fill=(0, 0, 0, 200), font=f_main, anchor="mm"
-            )
-        draw.text((tx, ty), typo_spec.text, fill=ac_rgb, font=f_main, anchor="mm")
-
-        if typo_spec.subtext:
-            draw.text(
-                (tx, ty + int(font_size * 0.8)),
-                typo_spec.subtext,
-                fill=(248, 250, 252, 230),
-                font=f_sub,
-                anchor="mm",
-            )
-
-        txt_img.save(typo_png)
-
-        composite_z_depth_sandwich(
-            output_png,
-            typo_png,
-            matte_png,
-            output_png,
-            z_layer=typo_spec.z_layer,
-            apply_optical_grade=False,
-        )
-
+    render_3d_stage_still(stage_spec, output_png, width=width, height=height)
     return output_png
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Sequence
@@ -12,17 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
-
 from media_studio import video
 from media_studio.manifest import Project
 from media_studio.reframe import OUTPUT_SIZE
 from media_studio.sfx import SfxCue, mix_transition_sfx
-from media_studio.stage_3d import Stage3DSpec, render_3d_stage_clip, render_3d_stage_still
-from media_studio.typography_3d import (
-    Typography3DSpec,
-    composite_z_depth_sandwich,
-)
+from media_studio.stage_3d import Stage3DSpec, render_3d_stage_clip
 
 
 @dataclass(frozen=True)
@@ -132,89 +125,54 @@ def render_scene_clip(
 
     with tempfile.TemporaryDirectory(prefix=f"sc-{scene.id}-", dir="/tmp/opencode") as tmp_dir:
         scratch = Path(tmp_dir)
-        bg_clip = scratch / "bg.mp4"
+        raw_clip = scratch / "raw.mp4"
 
-        # 1. Base 3D Render
+        # 1. Base 3D Render with True 3D Typography in Blender
         stage_spec = Stage3DSpec(
             model_path=None,
             preset_geometry="luxury-perfume-flacon",
             shot_scale=scene.shot_scale,
             camera_angle=scene.camera_angle,
+            camera_move=str(scene.camera.get("move", "slow-dolly-in")),
             focal_length_mm=float(scene.camera.get("focal_length_mm", 85.0)),
             dof_fstop=float(scene.camera.get("dof_fstop", 1.8)),
             primary_color=primary,
             accent_color=accent,
+            typography_3d=scene.typography_3d,
+            product_rotation_deg=float(scene.camera.get("product_rotation_deg", 18.0)),
         )
         render_3d_stage_clip(
             stage_spec,
-            bg_clip,
+            raw_clip,
             duration=scene.duration,
             fps=fps,
             width=width,
             height=height,
         )
 
-        # 2. Typography 3D & Z-Depth Composite
-        if scene.typography_3d and scene.typography_3d.get("text"):
-            typo_spec = Typography3DSpec(
-                text=str(scene.typography_3d.get("text")),
-                subtext=str(scene.typography_3d.get("subtext", "")),
-                color=palette.get("ink", "#F8FAFC"),
-                accent=accent,
-                z_layer=str(scene.typography_3d.get("z_layer", "behind-subject")),
-                focal_point=scene.focal_point,
-            )
-            # Create transparent typography overlay
-            typo_png = scratch / "typo.png"
-            txt_img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(txt_img)
-            tx = int(scene.focal_point[0] * width)
-            ty = int(scene.focal_point[1] * height)
-            font_size = max(24, int(height * 0.055))
-            f_main = ImageFont.load_default(size=font_size)
-            f_sub = ImageFont.load_default(size=int(font_size * 0.45))
-            ac_rgb = (245, 158, 11, 255)
-            for ox, oy in ((-2, -2), (2, -2), (-2, 2), (2, 2), (0, 3)):
-                draw.text(
-                    (tx + ox, ty + oy),
-                    typo_spec.text,
-                    fill=(0, 0, 0, 200),
-                    font=f_main,
-                    anchor="mm",
-                )
-            draw.text((tx, ty), typo_spec.text, fill=ac_rgb, font=f_main, anchor="mm")
-            if typo_spec.subtext:
-                draw.text(
-                    (tx, ty + int(font_size * 0.8)),
-                    typo_spec.subtext,
-                    fill=(248, 250, 252, 230),
-                    font=f_sub,
-                    anchor="mm",
-                )
-            txt_img.save(typo_png)
+        # 2. Master Optical Finish (35mm grain, color contrast calibration)
+        cmd_grade = [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(raw_clip),
+            "-vf",
+            "noise=alls=2:allf=t+u,eq=contrast=1.03:saturation=1.02",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-color_range",
+            "tv",
+            "-colorspace",
+            "bt709",
+            str(output_mp4),
+        ]
+        subprocess.run(cmd_grade, check=True)
 
-            # Subject matte for behind-subject occlusion
-            matte_png = None
-            if typo_spec.z_layer == "behind-subject":
-                matte_png = scratch / "matte.png"
-                render_3d_stage_still(
-                    stage_spec,
-                    scratch / "dummy.png",
-                    matte_png=matte_png,
-                    width=width,
-                    height=height,
-                )
-
-            composite_z_depth_sandwich(
-                bg_clip,
-                typo_png,
-                matte_png,
-                output_mp4,
-                z_layer=typo_spec.z_layer,
-                apply_optical_grade=True,
-            )
-        else:
-            shutil.copyfile(bg_clip, output_mp4)
+    return output_mp4
 
     return output_mp4
 

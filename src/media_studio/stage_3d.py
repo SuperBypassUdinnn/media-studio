@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from media_studio import blender
 
@@ -27,12 +28,88 @@ class Stage3DSpec:
     accent_color: str = "#F59E0B"
     volumetric_fog: bool = True
     motion_blur: bool = True
+    typography_3d: dict[str, Any] | None = None
+    product_rotation_deg: float = 0.0
 
 
 def build_blender_stage_script(spec: Stage3DSpec, *, frames: int | None = None) -> str:
     """Generate an authoritative Blender 5.3 Python script configuring the 3D stage."""
     primary_hex = spec.primary_color.lstrip("#")
     accent_hex = spec.accent_color.lstrip("#")
+
+    typo_snippet = ""
+    if spec.typography_3d and spec.typography_3d.get("text"):
+        typo_text = str(spec.typography_3d["text"])
+        typo_sub = str(spec.typography_3d.get("subtext", ""))
+        font_style = str(spec.typography_3d.get("font_style", "serif-bold"))
+        declared_font = str(spec.typography_3d.get("font", "serif-bold"))
+
+        font_map = {
+            "serif-bold": "/usr/share/fonts/noto/NotoSerif-Bold.ttf",
+            "serif-monumental": "/usr/share/fonts/TTF/DejaVuSerif-Bold.ttf",
+            "serif-editorial": "/usr/share/fonts/liberation/LiberationSerif-Bold.ttf",
+            "serif-italic": "/usr/share/fonts/liberation/LiberationSerif-Italic.ttf",
+            "serif-regular": "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
+            "Noto Serif": "/usr/share/fonts/noto/NotoSerif-Bold.ttf",
+            "DejaVu Serif": "/usr/share/fonts/TTF/DejaVuSerif-Bold.ttf",
+            "Liberation Serif": "/usr/share/fonts/liberation/LiberationSerif-Bold.ttf",
+        }
+        main_font_file = font_map.get(
+            declared_font,
+            font_map.get(font_style, "/usr/share/fonts/noto/NotoSerif-Bold.ttf"),
+        )
+        sub_font_file = "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf"
+
+        z_pos = float(spec.typography_3d.get("z_pos", 0.58))
+        y_pos = float(
+            spec.typography_3d.get(
+                "y_pos",
+                0.45 if spec.typography_3d.get("z_layer") == "behind-subject" else -0.45,
+            )
+        )
+        scale_val = float(spec.typography_3d.get("scale", 0.28))
+        tracking = float(spec.typography_3d.get("tracking", 1.25))
+
+        typo_snippet = f"""
+# True 3D Text Geometry (Parented to ProductRoot so it rotates in 3D with the flacon!)
+font_main_path = Path("{main_font_file}")
+bpy.ops.object.text_add(location=(0, {y_pos}, {z_pos}))
+title_3d = bpy.context.active_object
+title_3d.name = "Scene3DTitle"
+title_3d.data.body = "{typo_text}"
+title_3d.data.extrude = 0.04
+title_3d.data.bevel_depth = 0.008
+title_3d.data.bevel_resolution = 3
+title_3d.data.align_x = 'CENTER'
+title_3d.data.align_y = 'CENTER'
+title_3d.data.space_character = {tracking}
+if font_main_path.is_file():
+    title_3d.data.font = bpy.data.fonts.load(str(font_main_path))
+title_3d.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+title_3d.scale = ({scale_val}, {scale_val}, {scale_val})
+title_3d.data.materials.append(gold_mat)
+title_3d.parent = root_obj
+"""
+        if typo_sub:
+            sub_z = z_pos - scale_val * 0.75
+            typo_snippet += f"""
+font_sub_path = Path("{sub_font_file}")
+bpy.ops.object.text_add(location=(0, {y_pos}, {sub_z}))
+sub_3d = bpy.context.active_object
+sub_3d.name = "Scene3DSub"
+sub_3d.data.body = "{typo_sub}"
+sub_3d.data.extrude = 0.02
+sub_3d.data.bevel_depth = 0.004
+sub_3d.data.align_x = 'CENTER'
+sub_3d.data.align_y = 'CENTER'
+sub_3d.data.space_character = 1.40
+if font_sub_path.is_file():
+    sub_3d.data.font = bpy.data.fonts.load(str(font_sub_path))
+sub_3d.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+sub_3d.scale = ({scale_val * 0.4}, {scale_val * 0.4}, {scale_val * 0.4})
+sub_3d.data.materials.append(gold_mat)
+sub_3d.parent = root_obj
+"""
 
     anim_snippet = ""
     if frames is not None and frames > 1:
@@ -58,25 +135,35 @@ cam_obj.keyframe_insert(data_path="location", frame=1)
 cam_obj.location = end_cam
 cam_obj.keyframe_insert(data_path="location", frame={frames})
 
-if cam_obj.animation_data and cam_obj.animation_data.action:
-    fcurves = getattr(cam_obj.animation_data.action, "fcurves", None)
-    if fcurves:
-        for fc in fcurves:
-            for kf in fc.keyframe_points:
-                kf.interpolation = 'BEZIER'
-                kf.easing = 'EASE_IN_OUT'
+# Synchronized 3D Product & Text Rotation
+root_start_rot = math.radians(-10.0 if '{spec.camera_move}' == 'orbital-reveal' else -4.0)
+root_end_rot = math.radians(22.0 if '{spec.camera_move}' == 'orbital-reveal' else 14.0)
+root_obj.rotation_euler = (0.0, 0.0, root_start_rot)
+root_obj.keyframe_insert(data_path="rotation_euler", frame=1)
+root_obj.rotation_euler = (0.0, 0.0, root_end_rot)
+root_obj.keyframe_insert(data_path="rotation_euler", frame={frames})
+
+for anim_target in (cam_obj, root_obj):
+    if anim_target.animation_data and anim_target.animation_data.action:
+        fcurves = getattr(anim_target.animation_data.action, "fcurves", None)
+        if fcurves:
+            for fc in fcurves:
+                for kf in fc.keyframe_points:
+                    kf.interpolation = 'BEZIER'
+                    kf.easing = 'EASE_IN_OUT'
 """
 
     return f"""\
 import bpy
 import math
+from pathlib import Path
 
 # Reset scene
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 scene.render.engine = 'BLENDER_EEVEE'
 if hasattr(scene, 'eevee') and hasattr(scene.eevee, 'taa_render_samples'):
-    scene.eevee.taa_render_samples = 16
+    scene.eevee.taa_render_samples = 32
 scene.render.fps = 60
 scene.render.use_motion_blur = {spec.motion_blur}
 scene.render.motion_blur_shutter = 0.5  # 180-degree shutter motion blur
@@ -97,84 +184,173 @@ if bg:
         int('{accent_hex}'[2:4], 16) / 255.0,
         int('{accent_hex}'[4:6], 16) / 255.0,
     )
-    bg.inputs['Color'].default_value = (pr_r, pr_g, pr_b, 1.0)
+    bg.inputs['Color'].default_value = (0.012, 0.016, 0.024, 1.0)
     bg.inputs['Strength'].default_value = 0.25
 
 # 2. Materials
-glass_mat = bpy.data.materials.new("ObsidianGlass")
-glass_mat.use_nodes = True
-bsdf = glass_mat.node_tree.nodes.get("Principled BSDF")
-if bsdf:
-    bsdf.inputs['Base Color'].default_value = (0.06, 0.08, 0.12, 1.0)
-    bsdf.inputs['Roughness'].default_value = 0.04
-    if 'Transmission Weight' in bsdf.inputs:
-        bsdf.inputs['Transmission Weight'].default_value = 0.85
-    elif 'Transmission' in bsdf.inputs:
-        bsdf.inputs['Transmission'].default_value = 0.85
-    bsdf.inputs['IOR'].default_value = 1.50
+# Deep Midnight Obsidian Glass
+obs_mat = bpy.data.materials.new("ObsidianGlass")
+obs_mat.use_nodes = True
+bsdf_obs = obs_mat.node_tree.nodes.get("Principled BSDF")
+if bsdf_obs:
+    bsdf_obs.inputs['Base Color'].default_value = (0.008, 0.010, 0.014, 1.0)
+    bsdf_obs.inputs['Roughness'].default_value = 0.03
+    bsdf_obs.inputs['Metallic'].default_value = 0.05
+    if 'Specular IOR Level' in bsdf_obs.inputs:
+        bsdf_obs.inputs['Specular IOR Level'].default_value = 0.95
+    elif 'Specular' in bsdf_obs.inputs:
+        bsdf_obs.inputs['Specular'].default_value = 0.95
+    if 'IOR' in bsdf_obs.inputs:
+        bsdf_obs.inputs['IOR'].default_value = 1.50
 
-gold_mat = bpy.data.materials.new("GoldMetal")
+# Brushed 24K Gold Metal
+gold_mat = bpy.data.materials.new("Gold24K")
 gold_mat.use_nodes = True
-g_bsdf = gold_mat.node_tree.nodes.get("Principled BSDF")
-if g_bsdf:
-    g_bsdf.inputs['Base Color'].default_value = (ac_r, ac_g, ac_b, 1.0)
-    g_bsdf.inputs['Metallic'].default_value = 1.0
-    g_bsdf.inputs['Roughness'].default_value = 0.18
+bsdf_g = gold_mat.node_tree.nodes.get("Principled BSDF")
+if bsdf_g:
+    bsdf_g.inputs['Base Color'].default_value = (ac_r, ac_g, ac_b, 1.0)
+    bsdf_g.inputs['Metallic'].default_value = 1.0
+    bsdf_g.inputs['Roughness'].default_value = 0.16
 
-ped_mat = bpy.data.materials.new("Pedestal")
+# Engraved Inlay Dark Text Material
+engraved_mat = bpy.data.materials.new("EngravedInlay")
+engraved_mat.use_nodes = True
+bsdf_e = engraved_mat.node_tree.nodes.get("Principled BSDF")
+if bsdf_e:
+    bsdf_e.inputs['Base Color'].default_value = (0.005, 0.005, 0.008, 1.0)
+    bsdf_e.inputs['Roughness'].default_value = 0.2
+
+# Dark Slate Pedestal Material
+ped_mat = bpy.data.materials.new("PedestalSlate")
 ped_mat.use_nodes = True
-p_bsdf = ped_mat.node_tree.nodes.get("Principled BSDF")
-if p_bsdf:
-    p_bsdf.inputs['Base Color'].default_value = (0.08, 0.10, 0.14, 1.0)
-    p_bsdf.inputs['Roughness'].default_value = 0.18
+bsdf_p = ped_mat.node_tree.nodes.get("Principled BSDF")
+if bsdf_p:
+    bsdf_p.inputs['Base Color'].default_value = (0.015, 0.02, 0.03, 1.0)
+    bsdf_p.inputs['Roughness'].default_value = 0.35
 
-# 3. Geometry: Pedestal, Bottle, Gold Collar, Cap, Plate
-bpy.ops.mesh.primitive_cylinder_add(radius=1.8, depth=0.15, location=(0, 0, -0.075))
+# 3. Product Assembly Root (Synchronizes 3D rotation of bottle + plaque + 3D text!)
+root_obj = bpy.data.objects.new("ProductRoot", None)
+scene.collection.objects.link(root_obj)
+root_obj.location = (0, 0, 0)
+
+# Flacon Body: Dimensions (Width=0.55, Depth=0.30, Height=0.75) centered at z=0.455
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0.455))
+bottle = bpy.context.active_object
+bottle.name = "HeroBottle"
+bottle.scale = (0.55, 0.30, 0.75)
+bottle.data.materials.append(obs_mat)
+bpy.ops.object.shade_smooth()
+bev = bottle.modifiers.new("Bevel", type='BEVEL')
+bev.width = 0.035
+bev.segments = 5
+bottle.parent = root_obj
+
+# Gold Neck Collar
+bpy.ops.mesh.primitive_cylinder_add(vertices=64, radius=0.14, depth=0.14, location=(0, 0, 0.90))
+collar = bpy.context.active_object
+collar.name = "GoldCollar"
+collar.data.materials.append(gold_mat)
+bpy.ops.object.shade_smooth()
+c_bev = collar.modifiers.new("Bevel", type='BEVEL')
+c_bev.width = 0.015
+c_bev.segments = 3
+collar.parent = root_obj
+
+# Obsidian Magnetic Cap
+bpy.ops.mesh.primitive_cylinder_add(vertices=64, radius=0.18, depth=0.35, location=(0, 0, 1.145))
+cap = bpy.context.active_object
+cap.name = "CapOnyx"
+cap.data.materials.append(obs_mat)
+bpy.ops.object.shade_smooth()
+cap_bev = cap.modifiers.new("Bevel", type='BEVEL')
+cap_bev.width = 0.02
+cap_bev.segments = 4
+cap.parent = root_obj
+
+# Gold Ring on Cap Base
+bpy.ops.mesh.primitive_cylinder_add(vertices=64, radius=0.184, depth=0.03, location=(0, 0, 0.985))
+cap_ring = bpy.context.active_object
+cap_ring.data.materials.append(gold_mat)
+cap_ring.parent = root_obj
+
+# Gold Cartouche Plaque on Front (Flush on front face at y = -0.152)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, -0.152, 0.455))
+plaque = bpy.context.active_object
+plaque.name = "GoldPlaque"
+plaque.scale = (0.34, 0.005, 0.46)
+plaque.data.materials.append(gold_mat)
+p_bev = plaque.modifiers.new("Bevel", type='BEVEL')
+p_bev.width = 0.01
+p_bev.segments = 3
+plaque.parent = root_obj
+
+# Embossed Text on Plaque
+font_main = Path("/usr/share/fonts/noto/NotoSerif-Bold.ttf")
+font_sub = Path("/usr/share/fonts/liberation/LiberationSerif-Regular.ttf")
+
+bpy.ops.object.text_add(location=(0, -0.156, 0.49))
+pq_txt = bpy.context.active_object
+pq_txt.data.body = "AURA NOIR"
+pq_txt.data.extrude = 0.008
+pq_txt.data.align_x = 'CENTER'
+pq_txt.data.align_y = 'CENTER'
+pq_txt.data.space_character = 1.35
+if font_main.is_file():
+    pq_txt.data.font = bpy.data.fonts.load(str(font_main))
+pq_txt.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+pq_txt.scale = (0.045, 0.045, 0.045)
+pq_txt.data.materials.append(engraved_mat)
+pq_txt.parent = root_obj
+
+bpy.ops.object.text_add(location=(0, -0.156, 0.39))
+pq_sub = bpy.context.active_object
+pq_sub.data.body = "EXTRAIT DE PARFUM"
+pq_sub.data.extrude = 0.005
+pq_sub.data.align_x = 'CENTER'
+pq_sub.data.align_y = 'CENTER'
+pq_sub.data.space_character = 1.45
+if font_sub.is_file():
+    pq_sub.data.font = bpy.data.fonts.load(str(font_sub))
+pq_sub.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+pq_sub.scale = (0.022, 0.022, 0.022)
+pq_sub.data.materials.append(engraved_mat)
+pq_sub.parent = root_obj
+
+{typo_snippet}
+
+# Pedestal
+bpy.ops.mesh.primitive_cylinder_add(vertices=64, radius=1.6, depth=0.10, location=(0, 0, -0.05))
 ped = bpy.context.active_object
 ped.name = "Pedestal"
 ped.data.materials.append(ped_mat)
 bpy.ops.object.shade_smooth()
+ped_bev = ped.modifiers.new("Bevel", type='BEVEL')
+ped_bev.width = 0.02
+ped_bev.segments = 3
 
-bpy.ops.mesh.primitive_cylinder_add(radius=0.35, depth=0.9, location=(0, 0, 0.45))
-bottle = bpy.context.active_object
-bottle.name = "HeroBottle"
-bottle.data.materials.append(glass_mat)
-bpy.ops.object.shade_smooth()
-
-bpy.ops.mesh.primitive_cylinder_add(radius=0.16, depth=0.18, location=(0, 0, 0.99))
-collar = bpy.context.active_object
-collar.data.materials.append(gold_mat)
-bpy.ops.object.shade_smooth()
-
-bpy.ops.mesh.primitive_cube_add(size=0.32, location=(0, 0, 1.22))
-cap = bpy.context.active_object
-cap.data.materials.append(glass_mat)
-bpy.ops.object.shade_smooth()
-
-bpy.ops.mesh.primitive_cube_add(size=0.35, location=(0, -0.36, 0.45))
-plate = bpy.context.active_object
-plate.scale = (0.7, 0.02, 1.1)
-plate.data.materials.append(gold_mat)
+# Static 3D Product Angle for Stills
+root_obj.rotation_euler = (0.0, 0.0, math.radians({spec.product_rotation_deg}))
 
 # 4. Camera & Dynamic Aim Target
 target = bpy.data.objects.new("LookTarget", None)
 scene.collection.objects.link(target)
+target.location = (0, 0, 0.58)
 
 if '{spec.shot_scale}' == 'ECU':
-    target.location = (0.0, -0.36, 0.65)
-    cam_loc = (0.0, -2.6, 0.75)
+    target.location = (0.0, -0.36, 0.55)
+    cam_loc = (0.0, -2.4, 0.65)
 elif '{spec.shot_scale}' == 'CU':
-    target.location = (0.0, 0.0, 1.05)
-    cam_loc = (0.0, -3.2, 1.25)
+    target.location = (0.0, 0.0, 0.85)
+    cam_loc = (0.0, -2.8, 1.05)
 elif '{spec.shot_scale}' == 'WS':
     target.location = (0.0, 0.0, 0.55)
-    cam_loc = (0.0, -7.5, 1.4)
+    cam_loc = (0.0, -6.8, 1.2)
 else:  # MS
-    target.location = (0.0, 0.0, 0.68)
-    cam_loc = (0.0, -4.5, 0.85)
+    target.location = (0.0, 0.0, 0.58)
+    cam_loc = (0.0, -3.8, 0.80)
 
 if '{spec.camera_angle}' == 'low-hero':
-    cam_loc = (cam_loc[0], cam_loc[1] * 0.95, cam_loc[2] * 0.75)
+    cam_loc = (cam_loc[0], cam_loc[1] * 0.95, cam_loc[2] * 0.70)
 elif '{spec.camera_angle}' == 'high-zenith':
     cam_loc = (cam_loc[0], cam_loc[1] * 0.75, cam_loc[2] * 1.8)
 
@@ -194,28 +370,49 @@ track.track_axis = 'TRACK_NEGATIVE_Z'
 track.up_axis = 'UP_Y'
 {anim_snippet}
 
-# 5. Chiaroscuro 3-Point Studio Lighting
-key_data = bpy.data.lights.new("KeyLight", type='SPOT')
-key_data.energy = 5500.0
-key_data.spot_size = math.radians(52.0)
-key_data.color = (ac_r, ac_g, ac_b)
-key_obj = bpy.data.objects.new("KeyLight", key_data)
-key_obj.location = (1.8, -2.2, 1.8)
-scene.collection.objects.link(key_obj)
+# 5. Chiaroscuro Studio Lighting (Side Grazing Strips + Flush Plaque Spot)
+# Left Strip Light
+strip_l = bpy.data.lights.new("StripL", type='AREA')
+strip_l.energy = 220.0
+strip_l.size = 0.15
+strip_l.size_y = 2.4
+strip_l.color = (1.0, 0.95, 0.90)
+strip_l_obj = bpy.data.objects.new("StripL", strip_l)
+strip_l_obj.location = (-1.5, -1.8, 0.9)
+strip_l_obj.rotation_euler = (math.radians(70.0), 0.0, math.radians(-35.0))
+scene.collection.objects.link(strip_l_obj)
 
-fill_data = bpy.data.lights.new("FillLight", type='AREA')
-fill_data.energy = 5500.0 / {spec.key_to_fill_ratio}
-fill_data.size = 2.5
-fill_obj = bpy.data.objects.new("FillLight", fill_data)
-fill_obj.location = (-2.2, -1.2, 1.2)
-scene.collection.objects.link(fill_obj)
+# Right Strip Light (Warm Amber)
+strip_r = bpy.data.lights.new("StripR", type='AREA')
+strip_r.energy = 280.0
+strip_r.size = 0.15
+strip_r.size_y = 2.4
+strip_r.color = (1.0, 0.82, 0.35)
+strip_r_obj = bpy.data.objects.new("StripR", strip_r)
+strip_r_obj.location = (1.6, -1.8, 0.9)
+strip_r_obj.rotation_euler = (math.radians(70.0), 0.0, math.radians(35.0))
+scene.collection.objects.link(strip_r_obj)
 
-rim_data = bpy.data.lights.new("RimLight", type='SPOT')
-rim_data.energy = 9500.0
-rim_data.spot_size = math.radians(65.0)
-rim_data.color = (1.0, 0.95, 0.85)
-rim_obj = bpy.data.objects.new("RimLight", rim_data)
-rim_obj.location = (0.0, 2.0, 2.2)
+# Plaque Soft Key Light
+plaque_spot = bpy.data.lights.new("PlaqueSpot", type='SPOT')
+plaque_spot.energy = 160.0
+plaque_spot.spot_size = math.radians(45.0)
+plaque_spot.color = (1.0, 0.92, 0.82)
+plaque_spot_obj = bpy.data.objects.new("PlaqueSpot", plaque_spot)
+plaque_spot_obj.location = (0.6, -2.4, 1.2)
+scene.collection.objects.link(plaque_spot_obj)
+plaque_spot_track = plaque_spot_obj.constraints.new(type='TRACK_TO')
+plaque_spot_track.target = target
+plaque_spot_track.track_axis = 'TRACK_NEGATIVE_Z'
+plaque_spot_track.up_axis = 'UP_Y'
+
+# High Rim Spot
+rim = bpy.data.lights.new("RimSpot", type='SPOT')
+rim.energy = 750.0
+rim.spot_size = math.radians(65.0)
+rim.color = (0.98, 0.78, 0.25)
+rim_obj = bpy.data.objects.new("RimSpot", rim)
+rim_obj.location = (0.0, 1.8, 1.9)
 scene.collection.objects.link(rim_obj)
 """
 
