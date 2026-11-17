@@ -266,11 +266,34 @@ def render_scene_graph(
                 None, sfx_cues, output=a_mixed, total_duration=elapsed, target_lufs=-14.0
             )
 
-            # Final mux
+            # Mux video + audio into intermediate
+            v_mux = c_scratch / "v_mux.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-v",
+                    "error",
+                    "-i",
+                    str(v_concat),
+                    "-i",
+                    str(a_mixed),
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-shortest",
+                    str(v_mux),
+                ],
+                check=True,
+            )
+
+            # Final loudness-normalized encode
             video.encode_with_loudness(
-                v_concat,
+                v_mux,
                 final_mp4,
-                audio_track=a_mixed,
                 target_lufs=-14.0,
                 fps=fps,
             )
