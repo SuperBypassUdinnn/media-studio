@@ -108,7 +108,7 @@ def compute_scene_cache_key(project: Project, scene: SceneNode, *, aspect: str, 
 
 #: Formal JSON Schema contract for scene-graph documents, published alongside
 #: this module at ``schemas/scene-graph.schema.json``.
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "scene-graph.schema.json"
+SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "schemas" / "scene-graph.schema.json"
 
 #: Engines declared by the scene-graph schema, in canonical order.
 VALID_ENGINES = ("blender-3d", "effectcraft", "html-motion", "remotion", "flow-gen", "composite")
