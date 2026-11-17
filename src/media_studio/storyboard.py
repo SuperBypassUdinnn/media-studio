@@ -20,14 +20,30 @@ def render_scene_keyframe(
     width: int = 1920,
     height: int = 1080,
 ) -> Path:
-    """Render a full-resolution 1080p keyframe image for one scene at its visual peak."""
+    """Render a full-resolution keyframe still for one scene at its visual peak.
+
+    Dispatches to the engine declared on ``scene.engine`` instead of always
+    rendering the Blender 3D flacon path:
+
+      - ``effectcraft``   -> single EffectCraft frame (render-frame)
+      - ``html-motion`` / ``remotion`` -> single HTML/Playwright still frame
+      - ``blender-3d`` / ``composite`` -> Blender 3D stage still
+    """
     output_png = Path(output_png)
     output_png.parent.mkdir(parents=True, exist_ok=True)
+
+    engine = (scene.engine or "composite").strip()
+
+    if engine == "effectcraft":
+        return _render_effectcraft_frame(project, scene, output_png, width=width, height=height)
+    if engine in ("html-motion", "remotion"):
+        return _render_html_motion_frame(project, scene, output_png, width=width, height=height)
+
+    # blender-3d (and composite/default) -> Blender 3D stage still
     palette = getattr(project.brand, "palette", {}) or {}
     primary = palette.get("primary", "#080B11")
     accent = palette.get("accent", "#F59E0B")
 
-    # Render True 3D Product Scene with Integrated 3D Typography in Blender
     stage_spec = Stage3DSpec(
         model_path=None,
         preset_geometry="luxury-perfume-flacon",
@@ -41,7 +57,117 @@ def render_scene_keyframe(
         typography_3d=scene.typography_3d,
         product_rotation_deg=float(scene.camera.get("product_rotation_deg", 18.0)),
     )
-    render_3d_stage_still(stage_spec, output_png, width=width, height=height)
+    return render_3d_stage_still(stage_spec, output_png, width=width, height=height)
+
+
+def _render_effectcraft_frame(
+    project: Project,
+    scene: SceneNode,
+    output_png: Path,
+    *,
+    width: int = 1920,
+    height: int = 1080,
+) -> Path:
+    """Render a single EffectCraft frame (1-frame still) to PNG."""
+    from media_studio.effectcraft import EffectCraftRunner, build_ecp
+
+    output_png = Path(output_png)
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+
+    spec = {
+        "width": width,
+        "height": height,
+        "fps": 1.0,
+        "duration": 1.0,
+        "layers": list((scene.flow_gen or {}).get("layers", [])),
+    }
+    ec_proj = output_png.with_suffix(".ecproj")
+    build_ecp(spec, ec_proj)
+
+    runner = EffectCraftRunner()
+    runner.render_frame(
+        ec_proj,
+        output_png,
+        seconds=0.0,
+        transparent=False,
+        scale=1.0,
+        timeout=30,
+    )
+    return output_png
+
+
+def _render_html_motion_frame(
+    project: Project,
+    scene: SceneNode,
+    output_png: Path,
+    *,
+    width: int = 1920,
+    height: int = 1080,
+) -> Path:
+    """Render a single HTML/Playwright still frame to PNG."""
+    from playwright.sync_api import sync_playwright
+
+    from media_studio.html_motion import (
+        _brand_params,
+        _resolve_chromium_executable,
+        resolve_template,
+    )
+
+    output_png = Path(output_png)
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+
+    template_path = resolve_template("cinematic-product-hero.html")
+    params = dict(scene.camera or {})
+    params.update(_brand_params(project) or {})
+    params.update(
+        {
+            "width": width,
+            "height": height,
+            "fps": 30,
+            "duration": scene.duration,
+            "transparent": False,
+        }
+    )
+
+    with sync_playwright() as playwright_obj:
+        chromium = _resolve_chromium_executable(playwright_obj)
+        if chromium is None:
+            raise RuntimeError(
+                "no Chromium executable found; install one or cache a binary under "
+                "~/.cache/ms-playwright/ (playwright install chromium)"
+            )
+        browser = playwright_obj.chromium.launch(
+            executable_path=chromium,
+            headless=True,
+            args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+        )
+        try:
+            context = browser.new_context(
+                viewport={"width": width, "height": height}, device_scale_factor=1
+            )
+            try:
+                page = context.new_page()
+                try:
+                    page.goto(template_path.as_uri(), wait_until="networkidle")
+                    page.add_style_tag(content="html, body { background: transparent !important; }")
+                    page.evaluate(
+                        "(p) => window.__msSeek(p.t, p.f, p.n, p.p)",
+                        {
+                            "t": 0.0,
+                            "f": 0,
+                            "n": 1,
+                            "p": params,
+                        },
+                    )
+                    page.evaluate("() => new Promise((r) => requestAnimationFrame(r))")
+                    page.screenshot(path=str(output_png), omit_background=True)
+                finally:
+                    page.close()
+            finally:
+                context.close()
+        finally:
+            browser.close()
+
     return output_png
 
 
