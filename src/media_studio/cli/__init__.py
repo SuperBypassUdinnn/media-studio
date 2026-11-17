@@ -44,6 +44,7 @@ from .audio import (
     register_audio_parser,
 )
 from .common import EXIT_FAILURE, EXIT_OK, STAGING_CLASS_FOR_KIND
+from .critique import register_critique_parser
 from .design import (
     cmd_design_logo,
     cmd_design_render,
@@ -173,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_audio_parser(subparsers)
     register_gen_parser(subparsers)
     register_promo_parser(subparsers)
+    register_critique_parser(subparsers)
 
     return parser
 

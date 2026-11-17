@@ -1,0 +1,3 @@
+[submodule "submodules/media-mcp"]
+	path = submodules/media-mcp
+	url = https://github.com/SuperBypassUdinnn/media-mcp.git
