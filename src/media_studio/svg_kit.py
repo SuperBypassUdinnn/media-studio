@@ -27,6 +27,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from .design import DEFAULT_TOKENS, brand_tokens, font_environment, font_families, query_box
+from .fonts import run_inkscape
 from .manifest import Project
 
 ElementTree.register_namespace("", "http://www.w3.org/2000/svg")
@@ -1063,18 +1064,15 @@ def render_png(
     if height is not None:
         extra.append(f"--export-height={height}")
     env = dict(os.environ) if environment is None else dict(environment)
-    completed = subprocess.run(
+    completed = run_inkscape(
         [
-            "inkscape",
             f"--export-type={kind}",
             f"--export-filename={png_path}",
             *extra,
             str(svg_path),
         ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
+        destination=png_path,
+        environment=env,
     )
     if completed.returncode != 0 or not png_path.is_file():
         raise SvgError(

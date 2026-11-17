@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from xml.etree import ElementTree
 
-from .fonts import escape, family_of, font_environment
+from .fonts import escape, family_of, font_environment, run_inkscape
 from .manifest import Project, VariantSpec
 
 TEMPLATE_DIRECTORY = "templates/design"
@@ -416,18 +416,15 @@ def render_variant(
         (pdf_path, []),
     ):
         kind = export.suffix.lstrip(".")
-        completed = subprocess.run(
+        completed = run_inkscape(
             [
-                "inkscape",
                 f"--export-type={kind}",
                 f"--export-filename={export}",
                 *extra,
                 str(svg_path),
             ],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=environment,
+            destination=export,
+            environment=environment,
         )
         if completed.returncode != 0 or not export.is_file():
             raise DesignError(

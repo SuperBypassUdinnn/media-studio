@@ -278,21 +278,50 @@ def escape(text: str) -> str:
     )
 
 
+def run_inkscape(
+    arguments: list[str],
+    *,
+    destination: Path,
+    environment: dict[str, str] | None,
+) -> subprocess.CompletedProcess[str]:
+    """Run one Inkscape export and retry once when the process dies during startup.
+
+    Inkscape aborts intermittently under parallel load: a ``Gio::DBus::Error`` escapes as
+    SIGABRT before any export work happens, and a second attempt on a fresh process
+    succeeds. Only that transient crash is retried; a real error (bad SVG, bad flags)
+    fails fast without a second run.
+    """
+
+    last: subprocess.CompletedProcess[str] | None = None
+    for _attempt in range(2):
+        completed = subprocess.run(
+            ["inkscape", *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+        if completed.returncode == 0 and destination.is_file():
+            return completed
+        last = completed
+        if "Gio::DBus::Error" not in (completed.stderr or ""):
+            break
+    assert last is not None
+    return last
+
+
 def _inkscape(
     source: Path, destination: Path, *, width: int, environment: dict[str, str] | None
 ) -> None:
-    completed = subprocess.run(
+    completed = run_inkscape(
         [
-            "inkscape",
             "--export-type=png",
             f"--export-filename={destination}",
             f"--export-width={width}",
             str(source),
         ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
+        destination=destination,
+        environment=environment,
     )
     if completed.returncode != 0 or not destination.is_file():
         raise FontError(f"inkscape failed on {source.name}: {completed.stderr.strip()[:200]}")
