@@ -51,9 +51,11 @@ def media_sources(tmp_path: Path) -> dict[str, Path]:
     sources = tmp_path / "sources"
     sources.mkdir()
     for name, pattern in (
-        ("shot-1.mp4", "testsrc2=size=320x180:rate=24:duration=2"),
-        ("shot-2.mp4", "testsrc=size=320x180:rate=24:duration=2"),
-        ("shot-3.mp4", "testsrc2=size=320x180:rate=24:duration=2"),
+        # shot-2 is 2.5s long: the manifest starts it at in=0.5 and holds it for 2.0s, so the
+        # read must fit the source exactly or melt repeats the last frame and QC sees a freeze.
+        ("shot-1.mp4", "testsrc2=size=320x180:rate=24:duration=2.0"),
+        ("shot-2.mp4", "testsrc=size=320x180:rate=24:duration=2.5"),
+        ("shot-3.mp4", "testsrc2=size=320x180:rate=24:duration=2.0"),
     ):
         generate(
             sources / name,
@@ -140,7 +142,7 @@ assets:
     manifest += """video:
   shots:
     - { asset: shot-1 }
-    - { asset: shot-2, in: 0.5 }
+    - { asset: shot-2, in: 0.5, duration: 2.0 }
     - { asset: shot-3 }
   voice: { asset: voice }
   music: { asset: music, gain: 1.0, fade_in: 0.3, fade_out: 0.5, duck: true }
