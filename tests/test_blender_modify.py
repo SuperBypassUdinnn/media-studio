@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 import pytest
@@ -10,10 +11,15 @@ from media_studio.blender import BlenderError, ModifyResult, modify_model
 
 
 def _have_blender() -> bool:
-    return (
-        subprocess.run(["blender", "--background", "--version"], capture_output=True).returncode
-        == 0
-    )
+    if shutil.which("blender") is None:
+        return False
+    try:
+        return (
+            subprocess.run(["blender", "--background", "--version"], capture_output=True).returncode
+            == 0
+        )
+    except (FileNotFoundError, OSError):
+        return False
 
 
 def test_modify_model_rejects_missing_file(tmp_path):

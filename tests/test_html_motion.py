@@ -116,7 +116,7 @@ def _fake_playwright(page: SimpleNamespace) -> _FakePlaywrightCtx:
     browser = _fake_browser(page)
     pw.chromium = SimpleNamespace()
     pw.chromium.launch = mock.MagicMock(return_value=browser)
-    pw.chromium.executable_path = "/no/such/chrome"
+    pw.chromium.executable_path = str(Path(__file__).resolve())
     pw.stop = mock.MagicMock()
     return _FakePlaywrightCtx(pw)
 

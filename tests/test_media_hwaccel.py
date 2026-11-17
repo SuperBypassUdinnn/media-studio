@@ -85,6 +85,7 @@ def test_run_ffmpeg_encode_with_fallback_retries_with_cpu(tmp_path, monkeypatch)
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(media, "run_command", fake_run)
+    monkeypatch.setattr(media, "detect_nvenc_available", lambda: True)
 
     video.run_ffmpeg_encode_with_fallback(command_builder, output=output, label="encode")
 

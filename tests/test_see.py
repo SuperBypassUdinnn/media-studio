@@ -9,6 +9,13 @@ import pytest
 
 from media_studio.see import SeeError, peek
 
+try:
+    import librosa  # noqa: F401
+
+    HAS_LIBROSA = True
+except ImportError:
+    HAS_LIBROSA = False
+
 
 def generate(destination: Path, arguments: list[str]) -> Path:
     """Render a fixture with ffmpeg's lavfi sources."""
@@ -171,6 +178,7 @@ class TestPeekVideoModes:
         assert result.sheet.is_file() and result.sheet.stat().st_size > 0
         assert result.facts["scene_sampling"] == "none found; fell back to uniform"
 
+    @pytest.mark.skipif(not HAS_LIBROSA, reason="librosa not installed")
     def test_beats_mode_on_video_with_audio(self, tmp_path: Path) -> None:
         clip = generate(
             tmp_path / "withaudio.mp4",

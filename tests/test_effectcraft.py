@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -298,7 +299,7 @@ def test_build_ecp_pretty_json_is_valid(tmp_path):
 
 
 @pytest.mark.skipif(
-    subprocess.run(["which", "effectcraft"], capture_output=True).returncode != 0,
+    shutil.which("effectcraft") is None,
     reason="effectcraft not installed",
 )
 def test_integration_render_title_sequence(tmp_path):
@@ -312,7 +313,7 @@ def test_integration_render_title_sequence(tmp_path):
 
 
 @pytest.mark.skipif(
-    subprocess.run(["which", "effectcraft"], capture_output=True).returncode != 0,
+    shutil.which("effectcraft") is None,
     reason="effectcraft not installed",
 )
 def test_integration_lyric_overlay(tmp_path):
@@ -939,7 +940,7 @@ def test_unknown_promo_preset_raises():
 
 
 @pytest.mark.skipif(
-    subprocess.run(["which", "effectcraft"], capture_output=True).returncode != 0,
+    shutil.which("effectcraft") is None,
     reason="effectcraft not installed",
 )
 @pytest.mark.slow

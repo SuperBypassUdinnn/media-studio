@@ -43,6 +43,7 @@ def cube(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
+@blender_required
 def test_environment_prioritises_system_binaries() -> None:
     """Blender's embedded Python loses its stdlib if a user shim comes first."""
 
@@ -52,6 +53,7 @@ def test_environment_prioritises_system_binaries() -> None:
     assert built.env["VK_ICD_FILENAMES"] == blender.VULKAN_ICD
 
 
+@blender_required
 def test_environment_reports_a_shim_when_it_needs_one() -> None:
     built = blender.environment()
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -116,9 +117,19 @@ def environment(*, create_shim: bool = True) -> BlenderEnvironment:
         notes.append("PATH reordered so /usr/bin precedes user shims")
     env["VK_ICD_FILENAMES"] = VULKAN_ICD
 
-    probe = subprocess.run(
-        [BLENDER, "--background", "--version"], capture_output=True, text=True, check=False, env=env
-    )
+    if shutil.which(BLENDER) is None:
+        raise BlenderError(f"blender executable not found on PATH: {BLENDER}")
+
+    try:
+        probe = subprocess.run(
+            [BLENDER, "--background", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise BlenderError(f"blender executable cannot run: {BLENDER}") from exc
     missing = _missing_library(probe.stderr or "")
     if probe.returncode == 0 or not missing:
         return BlenderEnvironment(env=env, notes=tuple(notes))
@@ -153,7 +164,7 @@ def available() -> bool:
 
     try:
         version = version_string()
-    except BlenderError:
+    except (BlenderError, FileNotFoundError, OSError):
         return False
     return bool(version)
 
@@ -162,14 +173,17 @@ def version_string() -> str:
     """Blender's version, or an explanation of why it cannot start."""
 
     built = environment()
-    completed = subprocess.run(
-        [BLENDER, "--background", "--version"],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=built.env,
-        timeout=300,
-    )
+    try:
+        completed = subprocess.run(
+            [BLENDER, "--background", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=built.env,
+            timeout=300,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise BlenderError(f"blender executable not found: {BLENDER}") from exc
     if completed.returncode != 0:
         missing = _missing_library(completed.stderr or "")
         raise BlenderError(f"blender failed to start: {missing or completed.stderr.strip()[:200]}")

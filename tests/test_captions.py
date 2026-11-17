@@ -112,14 +112,14 @@ def test_ass_marginv_9x16_is_380_and_16x9_below_200() -> None:
     assert int(style_16x9["MarginV"]) < 200
 
 
-def test_ass_t_tags_always_inside_braces() -> None:
+def test_ass_t_tags_always_inside_braces(tmp_path: Path) -> None:
     zone = safe_zone_for("9:16", 1080, 1920)
     words = [
         CaptionWord("Hello", 0.0, 0.5),
         CaptionWord("world", 0.5, 1.0),
     ]
     chunks = [CaptionChunk(text="Hello world", start=0.0, end=1.0, words=words)]
-    path = Path("/tmp/opencode/t-braces-test.ass")
+    path = tmp_path / "t-braces-test.ass"
     _write_ass(chunks, "promo-pop", zone, "#38BDF8", path, width=1080, height=1920)
     text = path.read_text(encoding="utf-8")
     dialogue = [line for line in text.splitlines() if line.startswith("Dialogue:")]
@@ -171,12 +171,12 @@ def test_ass_ts_emits_2_digit_centiseconds() -> None:
     assert _ass_ts(3661.09) == "1:01:01.09"
 
 
-def test_write_ass_emits_playres() -> None:
+def test_write_ass_emits_playres(tmp_path: Path) -> None:
     zone = safe_zone_for("9:16", 1080, 1920)
     chunks = [
         CaptionChunk(text="Hello", start=0.0, end=1.0, words=[CaptionWord("Hello", 0.0, 1.0)])
     ]
-    path = Path("/tmp/opencode/playres-test.ass")
+    path = tmp_path / "playres-test.ass"
     _write_ass(chunks, "promo-pop", zone, "#38BDF8", path, width=1080, height=1920)
     text = path.read_text(encoding="utf-8")
     assert "PlayResX: 1080" in text

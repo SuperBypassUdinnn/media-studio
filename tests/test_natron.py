@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import xml.etree.ElementTree as ElementTree
 from unittest import mock
@@ -277,7 +278,7 @@ def test_merge_operator_validation():
 
 
 @pytest.mark.skipif(
-    subprocess.run(["which", "NatronRenderer"], capture_output=True).returncode != 0,
+    shutil.which("NatronRenderer") is None,
     reason="NatronRenderer not installed",
 )
 def test_integration_render_synthetic_clip(tmp_path):
@@ -311,7 +312,7 @@ def test_integration_render_synthetic_clip(tmp_path):
 
 
 @pytest.mark.skipif(
-    subprocess.run(["which", "NatronRenderer"], capture_output=True).returncode != 0,
+    shutil.which("NatronRenderer") is None,
     reason="NatronRenderer not installed",
 )
 def test_integration_glow_raises_peak_luminance(tmp_path):

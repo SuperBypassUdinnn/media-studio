@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -387,7 +388,7 @@ def test_render_promo_auto_assembles_dual_aspect_and_qc_passes(
     assert (root / "out" / "promo" / "master-16x9-sheet.png").is_file()
 
     # Temp dirs under /tmp/opencode/promo-* must be cleaned up.
-    leftovers = list(Path("/tmp/opencode").glob("promo-*"))
+    leftovers = list(Path("/tmp/opencode").glob(f"promo-{os.getpid()}-*"))
     assert leftovers == []
 
 
@@ -1124,6 +1125,7 @@ def test_encode_with_loudness_carries_youtube_bitrate_and_bt709(tmp_path, monkey
         return subprocess.CompletedProcess(args=command, returncode=0)
 
     monkeypatch.setattr(video.media, "run_command", fake_run_command)
+    monkeypatch.setattr(video.media, "detect_nvenc_available", lambda: True)
     monkeypatch.setattr(
         video.media,
         "measure_loudness",

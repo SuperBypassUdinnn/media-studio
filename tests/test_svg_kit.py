@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -352,6 +353,7 @@ def _has_vtracer() -> bool:
     return True
 
 
+@pytest.mark.skipif(shutil.which("potrace") is None, reason="potrace not installed")
 def test_trace_color_png_yields_one_group_per_color(tmp_path: Path) -> None:
     source = _three_colour_png(tmp_path / "logo.png")
     result = trace(source, tmp_path / "logo.svg", engine="potrace", mode="color", colors=3)
@@ -362,6 +364,7 @@ def test_trace_color_png_yields_one_group_per_color(tmp_path: Path) -> None:
     assert fills >= {"#ff0000", "#0000ff", "#00ff00"}
 
 
+@pytest.mark.skipif(shutil.which("potrace") is None, reason="potrace not installed")
 def test_trace_preprocessing_flattens_alpha_and_removes_pinholes(tmp_path: Path) -> None:
     source = _pinhole_png(tmp_path / "hole.png")
     result = trace(source, tmp_path / "hole.svg", flatten_bg="#ffffff", fill_holes=3)

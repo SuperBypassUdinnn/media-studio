@@ -8,6 +8,7 @@ stubbing ``run_command`` and ``normalize_loudness``.
 from __future__ import annotations
 
 import json
+import shutil
 import wave
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -146,6 +147,10 @@ def test_clean_voiceover_ffmpeg_chain_on_noisy_wav(tmp_path: Path) -> None:
     assert abs(loud["integrated"] - (-16.0)) < 1.5
 
 
+@pytest.mark.skipif(
+    shutil.which("espeak-ng") is None and shutil.which("espeak") is None,
+    reason="espeak-ng not installed",
+)
 def test_synthesize_speech_espeak_real_offline(tmp_path: Path) -> None:
     """espeak-ng (always on PATH) synthesizes offline with real ffmpeg normalization."""
 
