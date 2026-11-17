@@ -3,49 +3,169 @@ source: bundled (synthesized in-house, media-studio)
 sample_rate_hz: 48000
 sample_width_bytes: 2
 description: |
-  Deterministic CC0 starter SFX pack for promo/AMV transitions: whoosh sweeps,
-  sub-bass and crisp impacts, a riser build, and a UI pop. Synthesized with
-  NumPy/SciPy (no third-party recordings), so every file is freely reusable.
+  World-class CC0 4-layer sound design and foley pack: atmospheric room drones,
+  diegetic luxury product foley, speed-ramped transitions, and sub-bass trailer impacts.
 effects:
+  # --- Layer 1: Ambience & Drones ---
+  - id: velvet-night-drone
+    file: velvet-night-drone.wav
+    tags: [ambience, drone, luxury, noir, warm]
+    channels: 1
+    duration_s: ~3.0
+    description: Warm low drone with 55Hz fundamental and soft harmonics for luxury/noir atmospheres.
+  - id: sub-room-ambience
+    file: sub-room-ambience.wav
+    tags: [ambience, room, rumble, low]
+    channels: 1
+    duration_s: ~2.5
+    description: Subtle room acoustic presence with 42Hz foundation.
+  - id: warm-analog-air
+    file: warm-analog-air.wav
+    tags: [ambience, air, analog, texture]
+    channels: 1
+    duration_s: ~2.0
+    description: Filtered analog noise air floor.
+  - id: ethereal-pad-swell
+    file: ethereal-pad-swell.wav
+    tags: [ambience, swell, pad, harmonic]
+    channels: 1
+    duration_s: ~3.0
+    description: Lush harmonic pad swell in A major.
+
+  # --- Layer 2: Diegetic Foley & Product ---
+  - id: glass-crystal-resonance
+    file: glass-crystal-resonance.wav
+    tags: [foley, glass, crystal, resonance, luxury]
+    channels: 1
+    duration_s: ~1.2
+    description: Pure 1.85kHz crystal flacon ring with long decay.
+  - id: perfume-atomizer-mist
+    file: perfume-atomizer-mist.wav
+    tags: [foley, mist, spray, atomizer]
+    channels: 1
+    duration_s: ~0.7
+    description: Crisp transient spray with air dispersion.
+  - id: liquid-amber-swirl
+    file: liquid-amber-swirl.wav
+    tags: [foley, liquid, swirl, amber]
+    channels: 1
+    duration_s: ~1.0
+    description: Fluid resonance of viscous liquid swirl.
+  - id: water-droplet-obsidian
+    file: water-droplet-obsidian.wav
+    tags: [foley, droplet, water, obsidian]
+    channels: 1
+    duration_s: ~0.5
+    description: Clean pitch-bent droplet impact.
+  - id: magnetic-cap-click
+    file: magnetic-cap-click.wav
+    tags: [foley, click, cap, magnetic]
+    channels: 1
+    duration_s: ~0.3
+    description: Sharp tactile double-click of luxury magnetic cap.
+  - id: metallic-gleam-shimmer
+    file: metallic-gleam-shimmer.wav
+    tags: [foley, shimmer, gleam, metallic]
+    channels: 1
+    duration_s: ~1.5
+    description: High chime shimmer for specular light sweeps.
+  - id: silk-cloth-sweep
+    file: silk-cloth-sweep.wav
+    tags: [foley, cloth, silk, sweep]
+    channels: 1
+    duration_s: ~0.8
+    description: Soft textured cloth rustle.
+
+  # --- Layer 3: Cinematic Transitions & Risers ---
+  - id: deep-cinema-whoosh
+    file: deep-cinema-whoosh.wav
+    tags: [transition, whoosh, cinema, low]
+    channels: 1
+    duration_s: ~1.2
+    description: Deep cinematic camera move sweep.
+  - id: whip-air-transient
+    file: whip-air-transient.wav
+    tags: [transition, whip, fast, transient]
+    channels: 1
+    duration_s: ~0.4
+    description: Fast whip cut air transient.
+  - id: reverse-vacuum-riser
+    file: reverse-vacuum-riser.wav
+    tags: [transition, riser, vacuum, reverse]
+    channels: 1
+    duration_s: ~1.5
+    description: Exponential reverse vacuum suction riser.
+  - id: orchestral-tension-riser
+    file: orchestral-tension-riser.wav
+    tags: [transition, riser, tension, orchestral]
+    channels: 1
+    duration_s: ~2.0
+    description: Dissonant acoustic tension riser.
+  - id: optical-flare-flash
+    file: optical-flare-flash.wav
+    tags: [transition, flash, flare, beam]
+    channels: 1
+    duration_s: ~0.8
+    description: Bright resonant tone for light leak/flare hits.
   - id: whoosh-soft
     file: whoosh-soft.wav
-    tags: [whoosh, sweep, soft, transition]
+    tags: [transition, whoosh, sweep, soft]
     channels: 2
     duration_s: ~0.9
-    description: Soft filtered-noise whoosh sweep, 650 Hz -> 210 Hz.
-    use: gentle scene wipes and slide transitions.
+    description: Soft filtered-noise whoosh sweep.
   - id: whoosh-fast
     file: whoosh-fast.wav
-    tags: [whoosh, sweep, fast, transition]
+    tags: [transition, whoosh, sweep, fast]
     channels: 2
     duration_s: ~0.55
-    description: Fast, energetic whoosh sweep, 1300 Hz -> 260 Hz.
-    use: whip pans and quick cuts.
+    description: Fast energetic whoosh sweep.
+  - id: riser-build
+    file: riser-build.wav
+    tags: [transition, riser, build, sweep]
+    channels: 1
+    duration_s: ~1.6
+    description: Exponential pitch riser.
+
+  # --- Layer 4: Sub-Bass Drops & Impacts ---
+  - id: sub-drop-40hz
+    file: sub-drop-40hz.wav
+    tags: [impact, sub, bass, drop]
+    channels: 1
+    duration_s: ~1.0
+    description: Saturated 80Hz to 40Hz sub-bass pitch drop.
+  - id: braam-low-horn
+    file: braam-low-horn.wav
+    tags: [impact, braam, horn, trailer]
+    channels: 1
+    duration_s: ~2.0
+    description: Cinematic trailer brass braam.
+  - id: cinematic-taiko-boom
+    file: cinematic-taiko-boom.wav
+    tags: [impact, taiko, boom, drum]
+    channels: 1
+    duration_s: ~1.4
+    description: Deep wooden drum acoustic impact.
+  - id: crystalline-impact-hit
+    file: crystalline-impact-hit.wav
+    tags: [impact, crystalline, hit, glass]
+    channels: 1
+    duration_s: ~1.0
+    description: High glass transient with resonant bass body.
   - id: impact-sub
     file: impact-sub.wav
     tags: [impact, sub, bass, punch]
     channels: 1
     duration_s: ~0.7
     description: Sub-bass impact punch with 48 Hz fundamental.
-    use: zoom punch-ins and beat drops.
   - id: impact-hit
     file: impact-hit.wav
     tags: [impact, hit, transient, crisp]
     channels: 1
     duration_s: ~0.45
-    description: Crisp transient hit with a 900 Hz click.
-    use: flash cuts and RGB-split hits.
-  - id: riser-build
-    file: riser-build.wav
-    tags: [riser, build, sweep, tension]
-    channels: 1
-    duration_s: ~1.6
-    description: Exponential pitch riser, 220 Hz -> 1760 Hz.
-    use: builds before a transition or drop.
+    description: Crisp transient hit with click.
   - id: ui-pop
     file: ui-pop.wav
-    tags: [ui, pop, click, short]
+    tags: [foley, ui, pop, click]
     channels: 1
     duration_s: ~0.18
-    description: Short plucky UI pop, 1 kHz.
-    use: button hits and micro-transitions.
+    description: Short plucky UI pop.

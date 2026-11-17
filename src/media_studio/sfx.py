@@ -24,11 +24,14 @@ class SfxError(RuntimeError):
 
 @dataclass(frozen=True)
 class SfxCue:
-    """One SFX placement: a bundled id or file path, a time offset, and gain."""
+    """One SFX placement: a bundled id or file path, a time offset, gain, and J/L-cut offsets."""
 
     path_or_id: str
     at: float
     gain_db: float = 0.0
+    lead_in_sec: float = 0.0
+    trail_out_sec: float = 0.0
+    layer: str = "transition"
 
 
 @dataclass(frozen=True)
@@ -70,13 +73,14 @@ def _entry_for(effect: dict) -> SfxEntry:
     )
 
 
-def list_bundled_sfx(tag: str | None = None) -> list[SfxEntry]:
-    """Return bundled SFX entries, optionally filtered by tag."""
+def list_bundled_sfx(tag: str | None = None, layer: str | None = None) -> list[SfxEntry]:
+    """Return bundled SFX entries, optionally filtered by tag or layer."""
 
     manifest = _load_manifest()
     entries = [_entry_for(effect) for effect in (manifest.get("effects") or [])]
-    if tag:
-        entries = [entry for entry in entries if tag in entry.tags]
+    target_tag = layer or tag
+    if target_tag:
+        entries = [entry for entry in entries if target_tag in entry.tags]
     return entries
 
 
@@ -98,20 +102,24 @@ def mix_transition_sfx(
     events: list[SfxCue],
     *,
     output: Path,
-    total_duration: float,
+    total_duration: float | None = None,
+    duration: float | None = None,
     target_lufs: float = -14.0,
 ) -> Path:
     """Mix SFX cues over ``base_audio`` into ``output``.
 
     ``base_audio`` may be ``None`` or ``"none"`` for a pure SFX bed (silent
-    base). Each cue is delayed to ``at`` seconds, gained by ``gain_db``, then
-    all sources are summed with ``amix``, hard-limited at ``0.84`` (~ -1.5
+    base). Each cue is delayed to its effective placement time (honoring J-Cut
+    lead_in_sec clamped at 0.0), gained by ``gain_db``, and optionally tailed out,
+    then all sources are summed with ``amix``, hard-limited at ``0.84`` (~ -1.5
     dBTP) and loudness-normalised to ``target_lufs``. Output is exactly
     ``total_duration`` seconds of PCM-16 WAV at 48 kHz.
     """
 
-    if total_duration <= 0.0:
-        raise SfxError(f"total_duration must be positive, got {total_duration}")
+    dur = total_duration if total_duration is not None else duration
+    if dur is None or dur <= 0.0:
+        raise SfxError(f"duration must be positive, got {dur}")
+    total_duration = float(dur)
 
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -145,16 +153,20 @@ def mix_transition_sfx(
     else:
         parts.append(f"anullsrc=r={AUDIO_RATE}:cl=stereo:duration={total_duration:.6f}[base]")
 
-    # Each SFX cue: normalise, delay to its placement time, apply gain.
+    # Each SFX cue: normalise, delay to its placement time, apply gain and J/L-cuts.
     for cue_index, (cue, sfx_path) in enumerate(resolved_events):
         input_index = next_input_index
         inputs.extend(["-i", str(sfx_path)])
         next_input_index += 1
-        at_ms = max(0, round(cue.at * 1000.0))
-        parts.append(
+        effective_at = max(0.0, float(cue.at) - max(0.0, float(cue.lead_in_sec)))
+        at_ms = max(0, round(effective_at * 1000.0))
+        filter_chain = (
             f"[{input_index}:a]aformat=sample_rates={AUDIO_RATE}:channel_layouts=stereo"
-            f",adelay={at_ms}ms:all=1,volume={cue.gain_db}dB[s{cue_index}]"
+            f",adelay={at_ms}ms:all=1,volume={cue.gain_db}dB"
         )
+        if cue.trail_out_sec > 0:
+            filter_chain += f",afade=t=out:st={effective_at:.3f}:d={cue.trail_out_sec:.3f}"
+        parts.append(f"{filter_chain}[s{cue_index}]")
 
     # Sum everything, limit true peak, normalise loudness.
     amix_inputs = "[base]" + "".join(f"[s{i}]" for i in range(len(resolved_events)))

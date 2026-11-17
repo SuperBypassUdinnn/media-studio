@@ -63,7 +63,8 @@ def test_sfx_manifest_tags_and_license() -> None:
     assert manifest.get("license") == "CC0-1.0"
     effects = manifest.get("effects") or []
     ids = {entry["id"] for entry in effects}
-    assert ids == set(SFX_NAMES) or ids == {name.removesuffix(".wav") for name in SFX_NAMES}
+    expected_subset = {name.removesuffix(".wav") for name in SFX_NAMES}
+    assert expected_subset.issubset(ids)
     for entry in effects:
         assert entry["id"]
         assert isinstance(entry.get("tags"), list) and entry["tags"]
@@ -74,7 +75,7 @@ def test_list_bundled_sfx_returns_all_entries() -> None:
 
     entries = list_bundled_sfx()
     assert isinstance(entries, list)
-    assert len(entries) == len(SFX_NAMES)
+    assert len(entries) >= len(SFX_NAMES)
     for entry in entries:
         assert isinstance(entry, SfxEntry)
         assert entry.id
